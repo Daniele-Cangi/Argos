@@ -40,6 +40,31 @@ Gamma market metadata can include question, description, condition ID, resolutio
 Official reference:
 `https://docs.polymarket.com/api-reference/markets/get-market-by-id`
 
+### Observed against the live API on 2026-08-07 (M1)
+
+Confirmed by fetching `GET /markets` and `GET /markets/{id}` and recording the
+responses in `tests/fixtures/gamma/`. These are observations of live behaviour,
+not documented guarantees — re-verify before relying on them.
+
+- `outcomes`, `clobTokenIds`, and `outcomePrices` arrive as **JSON-encoded
+  strings**, e.g. `'["Yes", "No"]'`, not as arrays. The normalizer accepts both.
+- `resolutionSource` is **frequently the empty string**, even for markets whose
+  `description` names a resolution authority in prose. Treating an empty
+  `resolutionSource` as "no source" would be wrong; treating the prose as a
+  parsed source would be worse. ARGOS records both and raises
+  `resolution_source_missing` as an ambiguity flag.
+- `id` is a decimal string; `conditionId` is a 0x-prefixed 32-byte hash;
+  `clobTokenIds` entries are long decimal strings. `questionID` is a *different*
+  value from `conditionId`, and neither is interchangeable with a token id.
+- Some markets carry outcomes `["Yes", "No"]` while the description describes a
+  resolution to `"Other"` — a real semantic gap the compiler flags rather than
+  reconciles.
+- `endDate` is RFC 3339 with `Z`; `endDateIso` is a bare date. `startDate` may
+  carry milliseconds. Timestamps have been observed to be absent entirely.
+- `GET /markets/0` answers `404`, so an unknown id is a terminal error, not a
+  retryable one.
+- No authentication was sent on any request, and none was required.
+
 ## Prices
 
 Polymarket documents prices as implied probabilities. The displayed price is generally bid/ask midpoint, with last trade used when spread is wider than the platform threshold. A user cannot necessarily transact at displayed price.

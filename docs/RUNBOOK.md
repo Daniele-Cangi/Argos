@@ -46,6 +46,28 @@ uv run argos config                  # validated settings + config fingerprint
 uv run argos manifest --mode inspect # run manifest record (schema run_manifest.v1)
 ```
 
+### Market discovery and audit (M1)
+
+These two commands reach the public Gamma API. They are read-only and send no
+credentials.
+
+```bash
+uv run argos markets discover --limit 20
+uv run argos markets discover --min-liquidity 5000 --min-hours-to-end 48 --json
+uv run argos markets discover --save-raw          # archive the payload under ARGOS_DATA_DIR
+uv run argos markets audit 2063134                # Markdown report for a human reviewer
+uv run argos markets audit 2063134 --json         # market_audit.v1 record
+```
+
+`discover` always reports its full sample: how many markets Gamma returned, how
+many normalized, how many were quarantined and why, and how many the selection
+policy excluded and why. The policy itself is included in the JSON output —
+a sample without its policy cannot be interpreted later.
+
+`audit` makes no probability claim. `yes_condition` and `no_condition` are
+deliberately empty: extracting them from prose is semantic work gated behind the
+owner review after M4.
+
 ## Configuration
 
 Settings come from `ARGOS_*` environment variables; `.env.example` lists them.

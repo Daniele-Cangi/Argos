@@ -42,7 +42,14 @@ def _hermetic_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _clean_log_context() -> Iterator[None]:
-    """Structlog contextvars are process-global; never let them leak across tests."""
+    """Structlog state is process-global; never let it leak across tests.
+
+    ``configure_logging`` binds a logger to a concrete stream. A CLI test binds it
+    to the ``CliRunner`` capture buffer, which is closed when that test ends — so
+    without this reset the next test that logs anything dies with "I/O operation
+    on closed file", in a module that never touched the CLI.
+    """
     structlog.contextvars.clear_contextvars()
     yield
     structlog.contextvars.clear_contextvars()
+    structlog.reset_defaults()

@@ -67,16 +67,27 @@ milestone named, because later code would inherit the defect.
 - [ ] Sub-microsecond `ReplayClock.advance_by` truncates to no movement; revisit if M3
       ever schedules sub-µs gaps.
 
-## Next — M1
+## Now — M1
 
-- [ ] Official API research note refresh.
-- [ ] Gamma client port and adapter.
-- [ ] Raw response fixture format.
-- [ ] MarketDefinition normalization.
-- [ ] Binary market selector.
-- [ ] Token/outcome quarantine.
-- [ ] Contract compiler skeleton.
-- [ ] Market audit CLI.
+- [x] Official API research note refresh (verified against the live API 2026-08-07).
+- [x] Gamma client port and adapter.
+- [x] Raw response fixture format (payload + provenance sidecar, hash-checked).
+- [x] MarketDefinition normalization.
+- [x] Binary market selector.
+- [x] Token/outcome quarantine.
+- [x] Contract compiler skeleton.
+- [x] Market audit CLI.
+- [ ] M1 closure review (architecture + security + testing).
+
+### Carried into M2 from M1
+
+- [ ] Paginate discovery. `list_markets` fetches one page; a research sample
+      larger than one page needs cursor handling and a documented stopping rule.
+- [ ] Persist `MarketDefinitionV1` and `QuarantinedMarketV1` records. They are
+      currently computed and reported but only the raw payload is archived.
+- [ ] The raw archive in `argos.store` is deliberately minimal and is not the
+      event store M2 requires; decide whether it survives or is absorbed.
+- [ ] Discovery does not yet emit a run manifest linking sample to configuration.
 
 ## Later — M2
 
