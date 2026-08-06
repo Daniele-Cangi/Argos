@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import orjson
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from argos.errors import ConfigurationError, ExecutionProhibitedError
@@ -45,8 +45,11 @@ class Settings(BaseSettings):
     data_dir: Path = Path(".data")
     log_level: LogLevel = "INFO"
 
-    http_timeout_seconds: float = Field(default=10.0, gt=0)
-    http_max_attempts: int = Field(default=5, ge=1)
+    # Ceilings matter as much as floors: docs/09_SECURITY.md requires capped retry
+    # rates, and an unbounded attempt count turns a transient 5xx from a public
+    # endpoint into a self-inflicted request storm.
+    http_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+    http_max_attempts: int = Field(default=5, ge=1, le=10)
 
     execution_enabled: bool = False
     """Always false through M4. Present so that enabling it fails loudly (ADR-0007)."""
@@ -123,5 +126,17 @@ def load_settings(**overrides: Any) -> Settings:
         return Settings(**overrides)
     except ExecutionProhibitedError:
         raise
-    except Exception as exc:  # pydantic ValidationError and friends
-        raise ConfigurationError("invalid ARGOS configuration", detail=str(exc)) from exc
+    except ValidationError as exc:
+        # Only field names and error types: pydantic embeds the offending value in
+        # its message, and an operator who pastes a credential into the wrong
+        # ARGOS_* variable must not see it echoed into stderr or CI logs
+        # (docs/09_SECURITY.md).
+        raise ConfigurationError(
+            "invalid ARGOS configuration",
+            problems=[
+                {"field": ".".join(str(part) for part in error["loc"]), "error": error["type"]}
+                for error in exc.errors(include_url=False)
+            ],
+        ) from exc
+    except Exception as exc:
+        raise ConfigurationError("invalid ARGOS configuration", detail=type(exc).__name__) from exc

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime, timedelta
 from typing import Protocol, final, runtime_checkable
 
 import anyio
 
-from argos.errors import ClockRegressionError, NaiveDatetimeError
+from argos.errors import ClockRegressionError, InvalidDurationError, NaiveDatetimeError
 
 
 def ensure_utc(moment: datetime) -> datetime:
@@ -21,6 +22,21 @@ def ensure_utc(moment: datetime) -> datetime:
             "timestamps must carry an explicit timezone", value=moment.isoformat()
         )
     return moment.astimezone(UTC)
+
+
+def _require_duration(seconds: float) -> float:
+    """Reject durations that cannot describe elapsed time.
+
+    ``nan`` slips past a plain ``seconds < 0`` guard: it would hang
+    ``anyio.sleep`` under a live clock and raise a bare ``ValueError`` from
+    ``timedelta`` under a replay clock. Both failures are caught here instead,
+    with a code the taxonomy can count.
+    """
+    if not math.isfinite(seconds):
+        raise InvalidDurationError("duration must be a finite number", seconds=repr(seconds))
+    if seconds < 0:
+        raise InvalidDurationError("duration must be non-negative", seconds=seconds)
+    return seconds
 
 
 @runtime_checkable
@@ -44,9 +60,7 @@ class LiveClock:
         return datetime.now(UTC)
 
     async def sleep(self, seconds: float) -> None:
-        if seconds < 0:
-            raise ValueError("sleep duration must be non-negative")
-        await anyio.sleep(seconds)
+        await anyio.sleep(_require_duration(seconds))
 
 
 @final
@@ -79,15 +93,14 @@ class ReplayClock:
         self._now = target
 
     def advance_by(self, seconds: float) -> None:
-        """Move the clock forward by ``seconds``."""
-        if seconds < 0:
-            raise ClockRegressionError(
-                "replay clock cannot advance by a negative duration", seconds=seconds
-            )
-        self._now = self._now + timedelta(seconds=seconds)
+        """Move the clock forward by ``seconds``.
+
+        A negative argument is an invalid *duration*, not a regression: the clock
+        never moved. Asking to move to an earlier *instant* is
+        :meth:`advance_to`'s :class:`ClockRegressionError`.
+        """
+        self._now = self._now + timedelta(seconds=_require_duration(seconds))
 
     async def sleep(self, seconds: float) -> None:
         """Advance virtual time without waiting in real time."""
-        if seconds < 0:
-            raise ValueError("sleep duration must be non-negative")
-        self.advance_by(seconds)
+        self.advance_by(_require_duration(seconds))

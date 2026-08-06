@@ -105,6 +105,16 @@ class NaiveDatetimeError(ClockError):
     code = "argos.naive_datetime"
 
 
+class InvalidDurationError(ClockError, ValueError):
+    """A duration is negative or not finite.
+
+    Also a :class:`ValueError` so that callers written against the stdlib sleep
+    contract keep working, while the failure still carries a countable code.
+    """
+
+    code = "argos.invalid_duration"
+
+
 # --- sources and ingestion ------------------------------------------------------
 
 

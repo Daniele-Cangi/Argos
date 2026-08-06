@@ -78,10 +78,17 @@ def _load_or_exit() -> Settings:
 
 
 def _code_revision() -> str | None:
-    """Return the current git revision, or None when it cannot be determined."""
+    """Return this repository's git revision, or None when it cannot be proven.
+
+    git discovers repositories upward from ``cwd``. Installed as a wheel,
+    ``REPO_ROOT`` is inside the virtualenv, so a bare ``rev-parse HEAD`` would
+    happily return the HEAD of whatever repository happens to contain it — and
+    stamp a manifest with provenance for code that never produced the run.
+    The toplevel is therefore verified before the revision is trusted.
+    """
     try:
         result = subprocess.run(
-            ("git", "rev-parse", "HEAD"),
+            ("git", "-c", "core.fsmonitor=false", "rev-parse", "--show-toplevel", "HEAD"),
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
@@ -90,7 +97,18 @@ def _code_revision() -> str | None:
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    return result.stdout.strip() or None if result.returncode == 0 else None
+    if result.returncode != 0:
+        return None
+
+    lines = result.stdout.split()
+    if len(lines) != 2:
+        return None
+    toplevel, revision = lines
+    if Path(toplevel).resolve() != REPO_ROOT:
+        return None
+    if len(revision) != 40 or not all(char in "0123456789abcdef" for char in revision):
+        return None
+    return revision
 
 
 if __name__ == "__main__":

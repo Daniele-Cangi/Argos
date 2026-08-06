@@ -7,14 +7,15 @@ that a replay run produces an identical manifest on every execution.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
-from pydantic import Field
+from pydantic import Field, field_serializer, field_validator
 
 from argos.clock import Clock, ensure_utc
 from argos.config.settings import Settings
-from argos.domain.versioning import VersionedModel
+from argos.domain.versioning import VersionedModel, freeze, thaw
 
 
 class RunManifest(VersionedModel):
@@ -28,7 +29,26 @@ class RunManifest(VersionedModel):
     argos_version: str
     code_revision: str | None = None
     config_fingerprint: str
-    settings_snapshot: dict[str, Any]
+    settings_snapshot: Mapping[str, Any]
+
+    @field_validator("created_at")
+    @classmethod
+    def _normalize_created_at(cls, value: datetime) -> datetime:
+        """Anchor the timestamp on validation, not only in :func:`build_run_manifest`.
+
+        A manifest read back from disk must be as trustworthy as one just built,
+        and two manifests describing the same instant must serialize identically.
+        """
+        return ensure_utc(value)
+
+    @field_validator("settings_snapshot")
+    @classmethod
+    def _freeze_snapshot(cls, value: Mapping[str, Any]) -> Mapping[str, Any]:
+        return cast(Mapping[str, Any], freeze(value))
+
+    @field_serializer("settings_snapshot")
+    def _serialize_snapshot(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        return cast(dict[str, Any], thaw(value))
 
     def describe(self) -> str:
         """Return a one-line human summary for CLI output and logs."""
