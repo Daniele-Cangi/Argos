@@ -4,14 +4,14 @@ Work top to bottom unless a milestone dependency requires reordering.
 
 ## Now — M0
 
-- [ ] Verify Claude settings, agents, skills, and hooks load.
-- [ ] Lock dependencies.
-- [ ] Create package module skeleton.
-- [ ] Settings and run-manifest contract.
-- [ ] Clock abstraction.
-- [ ] Error taxonomy and structured logging.
-- [ ] CI green from clean checkout.
-- [ ] ADR index and M0 closure review.
+- [x] Verify Claude settings, agents, skills, and hooks load.
+- [x] Lock dependencies.
+- [x] Create package module skeleton.
+- [x] Settings and run-manifest contract.
+- [x] Clock abstraction.
+- [x] Error taxonomy and structured logging.
+- [x] CI green from clean checkout (verified locally; remote CI run pending).
+- [ ] ADR index and M0 closure review (architecture + security + testing).
 
 ## Next — M1
 
