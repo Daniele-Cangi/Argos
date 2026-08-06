@@ -1,0 +1,14 @@
+# Architecture Decision Records
+
+| ID | Decision | Status |
+|---|---|---|
+| 0001 | Research-only, read-only first | Accepted |
+| 0002 | Python modular monolith | Accepted |
+| 0003 | Deterministic arrival-order replay | Accepted |
+| 0004 | Immutable source-linked event storage | Accepted |
+| 0005 | LLMs do not form the forecasting core | Accepted |
+| 0006 | Probability naming requires calibration | Accepted |
+| 0007 | Execution is outside the autonomous scope | Accepted |
+| 0008 | Public Polymarket APIs first | Accepted |
+
+Create new ADRs by copying the structure used below. Never rewrite an accepted ADR to hide a changed decision; supersede it.

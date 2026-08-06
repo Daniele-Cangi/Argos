@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+dist/
+build/
+*.egg-info/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Claude local state
+.claude/settings.local.json
+
+# ARGOS generated data
+.data/
+data/
+artifacts/
+reports/generated/
+*.sqlite
+*.sqlite3
+*.db
+*.duckdb
+*.parquet
+*.jsonl
+*.ndjson
+*.pcap
+*.log
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
