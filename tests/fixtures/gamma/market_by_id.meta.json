@@ -1,0 +1,11 @@
+{
+  "byte_length": 3772,
+  "note": "A single market fetched by its Gamma id.",
+  "parser_version": "gamma-market-normalizer/1",
+  "payload_kind": "gamma.markets.by_id",
+  "raw_sha256": "83a6a270e4c8c4006451b879f43a8b9d605257d76db01752ddfd268ed61f0757",
+  "redaction": "none \u2014 the endpoint is public and unauthenticated, and no request carried credentials",
+  "retrieved_at": "2026-08-06T22:40:17Z",
+  "source": "gamma",
+  "source_endpoint": "https://gamma-api.polymarket.com/markets/2063134"
+}
