@@ -122,3 +122,122 @@ def test_no_execution_surface_in_source(path: Path) -> None:
     lowered = {name.lower() for name in declared}
     offending = {name for name in lowered for token in FORBIDDEN_EXECUTION_TOKENS if token in name}
     assert not offending, f"{path.name} declares execution-related names: {sorted(offending)}"
+
+
+# --- layering ---------------------------------------------------------------------
+
+# docs/02_ARCHITECTURE.md: dependency direction points inwards. Domain contracts sit
+# at the bottom and may not reach back up into adapters, configuration, or the CLI.
+FORBIDDEN_DOMAIN_SIBLINGS = frozenset(
+    {
+        "argos.baselines",
+        "argos.cli",
+        "argos.compiler",
+        "argos.config",
+        "argos.evaluation",
+        "argos.ingestion",
+        "argos.projections",
+        "argos.replay",
+        "argos.resolution",
+        "argos.sources",
+        "argos.store",
+    }
+)
+
+
+def _imported_modules(tree: ast.Module) -> set[str]:
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            modules.add(node.module)
+    return modules
+
+
+@pytest.mark.parametrize("path", _modules(DOMAIN), ids=lambda p: p.name)
+def test_domain_does_not_depend_on_outer_layers(path: Path) -> None:
+    imported = _imported_modules(_parse(path))
+    offending = {
+        module
+        for module in imported
+        for forbidden in FORBIDDEN_DOMAIN_SIBLINGS
+        if module == forbidden or module.startswith(f"{forbidden}.")
+    }
+    assert not offending, f"{path.name} imports an outer layer: {sorted(offending)}"
+
+
+@pytest.mark.parametrize("path", _modules(DOMAIN), ids=lambda p: p.name)
+def test_domain_does_not_read_the_environment(path: Path) -> None:
+    """Configuration reaches the domain as a validated object, never as os.environ."""
+    for node in ast.walk(_parse(path)):
+        if isinstance(node, ast.Attribute):
+            assert node.attr not in {"environ", "getenv"}, (
+                f"{path.name} reads the process environment directly"
+            )
+        if isinstance(node, ast.Name):
+            assert node.id != "getenv", f"{path.name} reads the process environment directly"
+
+
+# --- security regression ----------------------------------------------------------
+
+# docs/09_SECURITY.md and .claude/rules/no-execution.md: the research core talks only
+# to public read endpoints. An authenticated channel or credential parameter appearing
+# in a URL literal would not be caught by the declared-name scan above.
+FORBIDDEN_ENDPOINT_MARKERS = (
+    "ws/user",
+    "/auth",
+    "api-key",
+    "api_secret",
+    "passphrase",
+    "private-key",
+    "mnemonic",
+)
+
+
+@pytest.mark.parametrize("path", _modules(SRC), ids=lambda p: p.name)
+def test_no_authenticated_endpoint_literal_in_source(path: Path) -> None:
+    literals = [
+        node.value.lower()
+        for node in ast.walk(_parse(path))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+    offending = {
+        literal
+        for literal in literals
+        for marker in FORBIDDEN_ENDPOINT_MARKERS
+        if marker in literal
+    }
+    assert not offending, f"{path.name} contains an authenticated endpoint: {sorted(offending)}"
+
+
+def test_settings_declare_no_credential_shaped_field() -> None:
+    """Settings feed run manifests and log lines; a secret field would leak into both."""
+    from argos.config import Settings
+
+    credential_tokens = ("key", "secret", "token", "password", "passphrase", "credential")
+    offending = {
+        name
+        for name in Settings.model_fields
+        for token in credential_tokens
+        if token in name.lower()
+    }
+    assert not offending, f"Settings exposes credential-shaped fields: {sorted(offending)}"
+
+
+def test_every_default_endpoint_is_public_and_encrypted() -> None:
+    from argos.config import Settings
+
+    settings = Settings()
+    urls = [
+        value
+        for name, value in settings.snapshot().items()
+        if name.endswith("_url") and isinstance(value, str)
+    ]
+    assert len(urls) == 4
+    for url in urls:
+        assert url.startswith(("https://", "wss://")), f"{url} is not encrypted"
+        assert url.endswith("polymarket.com") or ".polymarket.com/" in url, (
+            f"{url} is not a Polymarket public endpoint"
+        )
+        assert "@" not in url, f"{url} embeds credentials"
