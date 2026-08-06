@@ -5,7 +5,6 @@ import re
 import sys
 from typing import Any
 
-
 BLOCKED: tuple[tuple[str, str], ...] = (
     (r"\brm\s+-rf\b", "Recursive force deletion is prohibited."),
     (r"\bremove-item\b[^\n]*\b-recurse\b", "Recursive PowerShell deletion is prohibited."),
@@ -14,9 +13,18 @@ BLOCKED: tuple[tuple[str, str], ...] = (
     (r"\bgit\s+push\b[^\n]*(--force|-f\b)", "Force push is prohibited."),
     (r"\bcurl\b[^\n]*\|\s*(sh|bash|zsh)\b", "Piping network content to a shell is prohibited."),
     (r"\bwget\b[^\n]*\|\s*(sh|bash|zsh)\b", "Piping network content to a shell is prohibited."),
-    (r"clob\.polymarket\.com[^\n]*/(order|orders|cancel)", "Direct trading endpoint access is outside M0-M4."),
-    (r"\b(private[_-]?key|mnemonic|seed[_ -]?phrase)\s*=", "Private credential material is prohibited."),
-    (r"\b(cat|type|get-content)\b[^\n]*\.env\b", "Reading local environment secrets through shell is prohibited."),
+    (
+        r"clob\.polymarket\.com[^\n]*/(order|orders|cancel)",
+        "Direct trading endpoint access is outside M0-M4.",
+    ),
+    (
+        r"\b(private[_-]?key|mnemonic|seed[_ -]?phrase)\s*=",
+        "Private credential material is prohibited.",
+    ),
+    (
+        r"\b(cat|type|get-content)\b[^\n]*\.env\b",
+        "Reading local environment secrets through shell is prohibited.",
+    ),
 )
 
 

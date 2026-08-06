@@ -5,7 +5,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 FULL_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("uv", "run", "ruff", "check", "."),
     ("uv", "run", "ruff", "format", "--check", "."),
