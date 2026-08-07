@@ -393,3 +393,111 @@ def test_manifest_command_reports_a_resolvable_working_tree_in_this_checkout() -
     payload = orjson.loads(result.stdout)
     assert payload["code_revision"] is not None
     assert payload["working_tree"] in {"clean", "dirty"}
+
+
+# --- security review: `CLEAN` is a positive claim and must never be a guess -------
+#
+# `working_tree=CLEAN` asserts that the code on disk is the code at `code_revision`.
+# Three ways to hold a genuinely modified tree while `git status --porcelain`
+# prints nothing were reproduced against `_code_revision` during the security
+# review of this slice. Each must degrade to UNKNOWN, never to CLEAN.
+
+
+def _git(path: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=path, check=True, capture_output=True, text=True
+    ).stdout
+
+
+def test_a_genuinely_clean_tree_is_still_reported_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard must not be degenerate: if everything below reports UNKNOWN,
+    the field would be useless rather than safe."""
+    _init_repo(tmp_path)
+    monkeypatch.setattr(cli, "REPO_ROOT", tmp_path)
+    assert cli._working_tree_status() is WorkingTreeStatus.CLEAN
+
+
+def test_assume_unchanged_cannot_report_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--assume-unchanged` makes git ignore edits to a tracked file outright, so
+    the file executing differs from HEAD while `status` prints nothing."""
+    _init_repo(tmp_path)
+    _git(tmp_path, "update-index", "--assume-unchanged", "tracked.txt")
+    (tmp_path / "tracked.txt").write_text("TAMPERED\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "REPO_ROOT", tmp_path)
+
+    assert _git(tmp_path, "status", "--porcelain").strip() == "", "precondition: git is blind"
+    assert cli._working_tree_status() is WorkingTreeStatus.UNKNOWN
+
+
+def test_skip_worktree_cannot_report_clean(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _init_repo(tmp_path)
+    _git(tmp_path, "update-index", "--skip-worktree", "tracked.txt")
+    (tmp_path / "tracked.txt").write_text("TAMPERED\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "REPO_ROOT", tmp_path)
+
+    assert cli._working_tree_status() is WorkingTreeStatus.UNKNOWN
+
+
+def test_environment_injected_config_cannot_suppress_untracked_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`status.showUntrackedFiles=no` is a real developer performance setting, so
+    this is the likely accidental path, not only a hostile one. `-c` loses to
+    `GIT_CONFIG_*`, which is why the environment is scrubbed rather than pinned."""
+    _init_repo(tmp_path)
+    (tmp_path / "untracked.py").write_text("x = 1\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "REPO_ROOT", tmp_path)
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "status.showUntrackedFiles")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "no")
+
+    assert cli._working_tree_status() is WorkingTreeStatus.DIRTY
+
+
+def test_git_dir_cannot_redirect_the_revision_to_a_foreign_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With `GIT_DIR` set and no `GIT_WORK_TREE`, git reports cwd as
+    `--show-toplevel` while `HEAD` comes from the foreign repository — so the M0
+    toplevel check passes and the manifest is stamped with someone else's code."""
+    foreign = tmp_path / "foreign"
+    local = tmp_path / "local"
+    foreign.mkdir()
+    local.mkdir()
+    _init_repo(foreign)
+    _init_repo(local)
+    # Identical content, author and timestamp yield identical commit hashes, so
+    # the two repositories have to be told apart deliberately.
+    (foreign / "divergent.txt").write_text("foreign\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=foreign, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "foreign"], cwd=foreign, check=True, capture_output=True
+    )
+    foreign_head = _git(foreign, "rev-parse", "HEAD").strip()
+    local_head = _git(local, "rev-parse", "HEAD").strip()
+    assert foreign_head != local_head
+
+    monkeypatch.setattr(cli, "REPO_ROOT", local)
+    monkeypatch.setenv("GIT_DIR", str(foreign / ".git"))
+
+    revision, _ = cli._code_revision()
+    assert revision == local_head, "GIT_DIR must not redirect provenance to another repository"
+
+
+def test_a_probe_does_not_write_to_the_git_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Provenance collection is a read: `--no-optional-locks` keeps `git status`
+    from refreshing `.git/index` as a side effect."""
+    _init_repo(tmp_path)
+    index = tmp_path / ".git" / "index"
+    before = index.stat().st_mtime_ns
+    monkeypatch.setattr(cli, "REPO_ROOT", tmp_path)
+
+    cli._working_tree_status()
+
+    assert index.stat().st_mtime_ns == before

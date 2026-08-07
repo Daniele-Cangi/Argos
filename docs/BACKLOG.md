@@ -142,6 +142,34 @@ milestone named, because later code would inherit the defect.
       for retry/backoff/reconnect waits, and their own seeded `random.Random` for
       jitter. A shared bounded-retry helper is justified once the second client exists.
 
+### Carried from the pre-M2 security review
+
+- [ ] **Before the M2 capture loop** — `source_jitter_seed` lives on `Settings`, so
+      every `GammaClient` in a process draws the *identical* backoff sequence. Today
+      the CLI builds one client per invocation, so it is inert. A capture loop
+      constructing one client per market would have them all retry at the same
+      instants — a self-synchronized thundering herd against an already-degraded
+      endpoint, which is worse politeness than the module-global RNG it replaced.
+      Mix a per-client discriminator into the seed when the loop lands, and keep it
+      recorded so the run stays reproducible. Not a security issue: predictable
+      retry timing against a public unauthenticated read endpoint has no attacker
+      value, and reproducibility is the right trade.
+- [ ] **Before the first source with a credential in its URL** —
+      `SourceProvenanceV1.endpoint` stores the full request URL including the query
+      string, and `input_provenance` now persists it in the run manifest. A planted
+      `?token=SUPERSECRET` round-trips verbatim. No exposure today (Gamma is
+      unauthenticated and nothing populates the field yet), but unlike
+      `settings_snapshot` this persisted surface carries no "exclude credentials"
+      contract. Stripping the query string is the wrong fix — `limit`/`offset` are
+      legitimate provenance. Needs a redaction rule at the boundary that writes it.
+      Note a static boundary test cannot catch this: the risk is runtime URL
+      content, not a declared field name.
+- [ ] The `_working_tree_needs_a_trusted_revision` model validator embeds the input
+      dict in its pydantic message. Unreachable from the CLI (every
+      `_code_revision` failure path returns `(None, UNKNOWN)`) and pydantic
+      truncated the value before `data_dir` in review, but it is one more place a
+      filesystem path could reach stderr.
+
 ## Later — M2
 
 - [ ] CLOB snapshot adapter.

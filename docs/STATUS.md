@@ -132,6 +132,37 @@ high-severity findings are closed and covered by regression tests.
   deliberately not built in this slice, to avoid scope drift into a milestone
   that has not started.
 
+## Pre-M2 security review
+
+Verdict: **PASS, no blockers.** Both M1 high-severity properties were
+re-measured rather than re-read, and both survive the pacer rewrite: a 1.2 GiB
+gzip bomb is refused at 45 MB accumulated with peak RSS 116 MiB, and the
+overall deadline bounded a 3-attempt call at 20.90 s against a 20.9 s budget.
+The seeded jitter cannot exceed `MAX_BACKOFF_SECONDS` at any legal
+configuration, so it cannot outrun the deadline budget.
+
+Two MEDIUM findings landed on the `working_tree` field this slice introduced,
+and both are **fixed here** rather than deferred, because a manifest that
+positively asserts the wrong provenance is worse than one that admits it does
+not know:
+
+| Finding | Reproduced | Fix |
+|---|---|---|
+| `git status --porcelain` reported **clean** for a genuinely modified tree — via `assume-unchanged`/`skip-worktree` index bits, and via `status.showUntrackedFiles=no` injected through `GIT_CONFIG_*` (also a real developer performance setting, so the accidental path is the likely one) | Yes — file on disk read `TAMPERED` while status printed nothing | Index bits are treated as unknowable (`UNKNOWN`, never `CLEAN`); untracked mode pinned on the command line; the git environment is scrubbed |
+| `GIT_DIR` defeated the M0 toplevel check: git reports cwd as `--show-toplevel` while `HEAD` comes from a foreign repository | Yes — returned a throwaway repository's HEAD instead of this one's | Same environment scrub, applied to both git calls |
+
+Six regression tests cover these, including one asserting a genuinely clean
+tree is still reported `CLEAN` — the guard must not be degenerate. Provenance
+probes now run with `--no-optional-locks`, so collecting provenance no longer
+writes to `.git/index`.
+
+Three LOW findings are recorded in `docs/BACKLOG.md` rather than fixed, each
+with no current exposure: the shared jitter seed becoming a thundering herd
+once a capture loop exists, `SourceProvenanceV1.endpoint` persisting a full
+URL with no redaction contract, and a validator message that could embed a
+path. Predictable retry timing against a public unauthenticated endpoint was
+assessed and is **not** treated as a risk; reproducibility is the right trade.
+
 ## M0 checklist
 
 - [x] Run `/bootstrap` and create initial task plan.

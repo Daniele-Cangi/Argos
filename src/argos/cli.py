@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, Final, NoReturn
 from uuid import uuid4
 
 import orjson
@@ -252,6 +253,60 @@ def _load_or_exit() -> Settings:
         raise typer.Exit(code=2) from exc
 
 
+# git reads its own behaviour from the environment, so a provenance probe that
+# inherits the ambient environment is not probing what it thinks it is.
+# `GIT_DIR` alone makes `--show-toplevel` report the cwd while `HEAD` comes from
+# a foreign repository, defeating the toplevel check; `GIT_CONFIG_COUNT` and
+# friends inject arbitrary config, including the `status.showUntrackedFiles=no`
+# that turns a dirty tree clean. All of it is stripped before either call.
+_GIT_ENV_OVERRIDES: Final = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+)
+
+# `-c` beats a config file but loses to `GIT_CONFIG_*`, so the environment is
+# scrubbed above as well as pinned here. `--no-optional-locks` keeps a
+# read-only provenance probe from rewriting `.git/index` mtimes.
+_GIT_BASE_ARGV: Final = ("git", "--no-optional-locks", "-c", "core.fsmonitor=false")
+
+
+def _git_env() -> dict[str, str]:
+    scrubbed = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in _GIT_ENV_OVERRIDES and not key.startswith("GIT_CONFIG")
+    }
+    # A repository owned by another uid would otherwise abort with
+    # "dubious ownership"; the toplevel check below is what establishes trust.
+    scrubbed["GIT_TERMINAL_PROMPT"] = "0"
+    return scrubbed
+
+
+def _run_git(*arguments: str) -> subprocess.CompletedProcess[str] | None:
+    """Run a git command from ``REPO_ROOT``, or return None if it cannot be trusted."""
+    try:
+        completed = subprocess.run(
+            (*_GIT_BASE_ARGV, *arguments),
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+            env=_git_env(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        # Includes TimeoutExpired. stderr is deliberately never logged: it can
+        # carry absolute paths from a foreign checkout.
+        return None
+    return completed if completed.returncode == 0 else None
+
+
 def _code_revision() -> tuple[str | None, WorkingTreeStatus]:
     """Return this repository's git revision and working-tree cleanliness.
 
@@ -264,22 +319,18 @@ def _code_revision() -> tuple[str | None, WorkingTreeStatus]:
     ``HEAD`` alone: a run built from uncommitted changes is not reproducible
     from the revision string by itself.
 
-    Working-tree status is only ever reported once the same toplevel check has
-    passed for the revision; a revision that could not be proven yields
-    ``WorkingTreeStatus.UNKNOWN`` rather than a guess.
+    ``CLEAN`` is a positive claim that the code on disk is the code at ``HEAD``,
+    so every way of *not knowing* degrades to ``UNKNOWN`` rather than to
+    ``CLEAN``. Three ways to hold a genuinely modified tree while
+    ``git status`` reports nothing were reproduced against this function, and
+    each is closed here: untracked files suppressed by
+    ``status.showUntrackedFiles=no`` (pinned on the command line and scrubbed
+    from the environment), and the two index bits — ``assume-unchanged`` and
+    ``skip-worktree`` — which make git ignore edits to a tracked file
+    altogether and are therefore treated as unknowable rather than clean.
     """
-    try:
-        result = subprocess.run(
-            ("git", "-c", "core.fsmonitor=false", "rev-parse", "--show-toplevel", "HEAD"),
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None, WorkingTreeStatus.UNKNOWN
-    if result.returncode != 0:
+    result = _run_git("rev-parse", "--show-toplevel", "HEAD")
+    if result is None:
         return None, WorkingTreeStatus.UNKNOWN
 
     lines = result.stdout.split()
@@ -291,22 +342,32 @@ def _code_revision() -> tuple[str | None, WorkingTreeStatus]:
     if len(revision) != 40 or not all(char in "0123456789abcdef" for char in revision):
         return None, WorkingTreeStatus.UNKNOWN
 
-    try:
-        status = subprocess.run(
-            ("git", "-c", "core.fsmonitor=false", "status", "--porcelain"),
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return revision, WorkingTreeStatus.UNKNOWN
-    if status.returncode != 0:
-        return revision, WorkingTreeStatus.UNKNOWN
+    return revision, _working_tree_status()
 
-    working_tree = WorkingTreeStatus.DIRTY if status.stdout.strip() else WorkingTreeStatus.CLEAN
-    return revision, working_tree
+
+def _working_tree_status() -> WorkingTreeStatus:
+    """Classify the working tree, degrading to ``UNKNOWN`` whenever git may be blind."""
+    listed = _run_git("ls-files", "-v")
+    if listed is None:
+        return WorkingTreeStatus.UNKNOWN
+    for line in listed.stdout.splitlines():
+        if not line:
+            continue
+        tag = line[0]
+        # Lowercase marks assume-unchanged; 'S' marks skip-worktree. Either way
+        # git will not notice an edit to that file, so "clean" is unprovable.
+        if tag.islower() or tag == "S":
+            return WorkingTreeStatus.UNKNOWN
+
+    status = _run_git(
+        "status",
+        "--porcelain",
+        "--untracked-files=normal",
+        "--ignore-submodules=none",
+    )
+    if status is None:
+        return WorkingTreeStatus.UNKNOWN
+    return WorkingTreeStatus.DIRTY if status.stdout.strip() else WorkingTreeStatus.CLEAN
 
 
 if __name__ == "__main__":
