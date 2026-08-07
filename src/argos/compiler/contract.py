@@ -135,8 +135,9 @@ def compile_market_contract(
     """Compile the rule skeleton for ``market``.
 
     Deterministic: the same market and timestamp always produce the same record,
-    and ``contract_id`` is derived from the source hash rather than generated, so
-    recompiling the same evidence does not invent a new identity.
+    and ``contract_id`` is derived from the market's rule-bearing content rather
+    than generated (see :func:`_contract_id`), so recompiling the same evidence
+    does not invent a new identity.
     """
     flags = tuple(_detect_ambiguity(market))
     return CompiledMarketContractV1(

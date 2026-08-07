@@ -367,6 +367,21 @@ def test_source_text_cannot_forge_a_section_of_the_audit(field: str) -> None:
     assert lines.count("- capture ready: **yes**") <= 1
 
 
+def test_bidirectional_overrides_cannot_visually_reorder_the_rule_text() -> None:
+    """A quieter forgery than an escape sequence: U+202E reverses what a reviewer
+    reads without changing a byte, so a clause can display as its own opposite."""
+    rendered = render_market_audit(_audit(description="Resolves YES ‮if not X‬"))
+    assert "‮" not in rendered
+    assert "‬" not in rendered
+    assert "Resolves YES" in rendered
+
+
+def test_zero_width_joiners_are_left_alone() -> None:
+    """They are load-bearing in several writing systems and reorder nothing."""
+    rendered = render_market_audit(_audit(description="ന്‍ नी"))
+    assert "‍" in rendered
+
+
 @pytest.mark.parametrize("field", ["question", "description", "resolutionSource"])
 def test_terminal_escape_sequences_never_reach_the_reviewer(field: str) -> None:
     """OSC 52 writes to the reviewer's clipboard; \\x1b[2J clears their screen."""

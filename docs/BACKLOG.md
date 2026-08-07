@@ -98,6 +98,13 @@ milestone named, because later code would inherit the defect.
       archive does not use `O_NOFOLLOW`. Requires an attacker who already has write
       access to the data dir, so it is low, but the M2 store should close it.
 - [ ] The rendered audit is asserted by substring, never against a golden file.
+- [ ] **Before M2** — `supersedes_contract_id` is never populated by any caller. It
+      becomes load-bearing the moment a second contract is persisted for the same
+      market: ADR-0004 makes superseding records the correction mechanism, so the
+      chain has to start forming when the store lands.
+- [ ] `_write_atomically` renames without an `fsync`, so a power loss can make the
+      rename durable before the contents. Acceptable for an archive that disclaims
+      durability; the M2 event store cannot inherit it.
 - [ ] Duplicate market ids inside one page are accepted twice with no dedup counter;
       it belongs with the M2 idempotent store.
 - [ ] The Hypothesis market strategy generates only payloads the normalizer accepts,

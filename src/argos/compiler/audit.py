@@ -186,21 +186,37 @@ def _number(value: object) -> str:
 
 
 def _sanitize(text: str) -> str:
-    """Neutralize control characters in third-party text before it is displayed.
+    """Neutralize display-controlling characters in third-party text.
 
     The market question and description are written by whoever created the market.
     Rendered raw they can clear the reviewer's terminal, rewrite its title, or
     write to the clipboard via OSC 52 — so the reviewer would be reading an
-    artifact the source controls. Tabs and newlines survive; everything else in
-    C0/C1 is replaced with a visible marker rather than dropped, because a
-    disappearing character is its own kind of forgery.
+    artifact the source controls. Bidirectional overrides are the quieter version
+    of the same attack: they visually reorder text without changing it, so a
+    clause can be made to read as its own opposite.
+
+    Tabs and newlines survive. Everything neutralized is replaced with a visible
+    marker rather than dropped, because a disappearing character is its own kind
+    of forgery. Zero-width joiners are left alone: they are load-bearing in
+    several writing systems and cannot reorder anything.
     """
     return "".join(
-        character
-        if character in "\n\t"
-        or not (unicodedata.category(character) == "Cc" or 0x7F <= ord(character) <= 0x9F)
-        else "\N{REPLACEMENT CHARACTER}"
+        "\N{REPLACEMENT CHARACTER}" if _is_display_control(character) else character
         for character in text
+    )
+
+
+def _is_display_control(character: str) -> bool:
+    if character in "\n\t":
+        return False
+    codepoint = ord(character)
+    if unicodedata.category(character) == "Cc" or 0x7F <= codepoint <= 0x9F:
+        return True
+    # LRE/RLE/PDF/LRO/RLO, LRI/RLI/FSI/PDI, and the LRM/RLM marks.
+    return (
+        codepoint in {0x200E, 0x200F}
+        or 0x202A <= codepoint <= 0x202E
+        or (0x2066 <= codepoint <= 0x2069)
     )
 
 
