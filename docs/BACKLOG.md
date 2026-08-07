@@ -77,7 +77,7 @@ milestone named, because later code would inherit the defect.
 - [x] Token/outcome quarantine.
 - [x] Contract compiler skeleton.
 - [x] Market audit CLI.
-- [ ] M1 closure review (architecture + security + testing).
+- [x] M1 closure review (architecture + security + testing).
 
 ### Carried from the M1 closure reviews
 

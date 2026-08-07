@@ -4,8 +4,8 @@ Last updated: 2026-08-07
 
 ## Current state
 
-- Current milestone: **M1 — Market discovery and contract skeleton** (deliverables
-  implemented, closure reviews pending). M0 closed.
+- Current milestone: **M1 — Market discovery and contract skeleton — closed**;
+  next is M2 CLOB capture. M0 closed.
 - Autonomous target: **complete M0-M4**
 - Owner gate: **required after M4**
 - Execution capability: **prohibited and absent**
@@ -13,8 +13,21 @@ Last updated: 2026-08-07
 
 ## Current objective
 
-Close M1: obtain architecture, security, and testing reviews for the discovery
-slice, then start M2 CLOB capture.
+Start M2: resolve the pacing-versus-timekeeping ADR **before** any second source
+adapter is written, then build the CLOB snapshot adapter and the event store.
+
+## M1 closure
+
+| Review | Verdict |
+|---|---|
+| Architecture | BLOCK → **APPROVE_WITH_FOLLOWUPS** after both blockers were fixed and re-verified against the reviewer's own reproductions |
+| Security | **PASS** — both blocking findings re-measured with the original instruments: the gzip bomb peaks at 93 MiB instead of 1.2 GiB, the endless drip stops on the deadline |
+| Testing | Coverage report acted on; suite 75 → 536 tests across M0 and M1, no xfail |
+
+**The one obligation that gates M2**: the pacing-versus-timekeeping ADR. No second
+source adapter may sleep its backoff on the injected clock until it is resolved —
+`ReplayClock.sleep` advances virtual time and the jitter is unseeded, so an
+adapter holding the scheduler's clock would break M3's identical-hash criterion.
 
 ## M1 exit criteria
 
