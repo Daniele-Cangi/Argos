@@ -159,21 +159,31 @@ class GammaClient:
         The per-request timeout is httpx's *read* timeout, which is per chunk: a
         server dripping one byte per interval keeps a request alive forever. This
         deadline is the thing that actually bounds the call.
+
+        It budgets for the whole retry allowance, so it is deliberately looser
+        than ``http_timeout_seconds`` — at the defaults, 90s rather than 10s. Size
+        ``http_timeout_seconds`` as a per-attempt read timeout, not as the
+        wall-clock bound on the call.
         """
         attempts = self._settings.http_max_attempts
         return self._settings.http_timeout_seconds * attempts + MAX_BACKOFF_SECONDS * (attempts - 1)
 
     async def _get(self, path: str, params: dict[str, Any]) -> GammaResponse:
-        try:
-            with anyio.fail_after(self._deadline_seconds):
-                return await self._get_within_deadline(path, params)
-        except TimeoutError as error:
+        # move_on_after, not fail_after: only a cancellation this scope actually
+        # caught may be reported as a deadline. fail_after would also convert a
+        # stray TimeoutError from below into a deadline that never expired, and
+        # double-count the failure.
+        with anyio.move_on_after(self._deadline_seconds) as scope:
+            return await self._get_within_deadline(path, params)
+
+        if scope.cancelled_caught:
             self._count(failures=1)
             raise SourceTimeoutError(
                 "gamma exceeded the overall deadline for this request",
                 endpoint=path,
                 deadline_seconds=self._deadline_seconds,
-            ) from error
+            )
+        raise AssertionError("unreachable: the scope either returns or is cancelled")
 
     async def _get_within_deadline(self, path: str, params: dict[str, Any]) -> GammaResponse:
         attempts = 0

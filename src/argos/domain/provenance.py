@@ -40,6 +40,12 @@ class SourceProvenanceV1(VersionedModel):
     raw_sha256: str = Field(min_length=SHA256_LENGTH, max_length=SHA256_LENGTH)
     byte_length: int = Field(ge=0)
 
+    reconstructed: bool = False
+    """True when this record was rebuilt for bytes already in the archive, rather
+    than written at the moment they were retrieved. The retrieval time and endpoint
+    then describe a *later* fetch of the same bytes, so a reader must not treat them
+    as first-hand provenance."""
+
     @field_validator("retrieved_at")
     @classmethod
     def _anchor_retrieved_at(cls, value: datetime) -> datetime:

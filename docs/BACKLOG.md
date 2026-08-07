@@ -94,9 +94,10 @@ milestone named, because later code would inherit the defect.
       cannot build the record and a stored `human_reviewed` contract cannot be
       deserialized. Keep it until that flow exists, then move the check to the
       compiler and let the review flow write the verdict.
-- [ ] `read_raw_payload` follows a pre-existing symlink at the target path, and the
-      archive does not use `O_NOFOLLOW`. Requires an attacker who already has write
-      access to the data dir, so it is low, but the M2 store should close it.
+- [x] Symlink handling in the archive. Closed in M1 rather than deferred: the
+      resolve check refuses a symlinked directory, `os.replace` replaces a symlink
+      at the target instead of writing through it, and the temp file is created
+      with `O_CREAT | O_EXCL | O_NOFOLLOW`.
 - [ ] The rendered audit is asserted by substring, never against a golden file.
 - [ ] **Before M2** — `supersedes_contract_id` is never populated by any caller. It
       becomes load-bearing the moment a second contract is persisted for the same

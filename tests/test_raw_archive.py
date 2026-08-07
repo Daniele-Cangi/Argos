@@ -6,7 +6,7 @@ mechanical rather than a convention.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import orjson
@@ -179,6 +179,43 @@ def test_a_damaged_sidecar_is_reported_as_a_storage_error(tmp_path: Path, damage
 
     with pytest.raises(StorageError):
         read_raw_payload(tmp_path, sha256_hex(RAW))
+
+
+def test_a_restored_sidecar_is_marked_as_a_reconstruction(tmp_path: Path) -> None:
+    """A repair is not a first-hand record: the bytes were retrieved earlier, from
+    somewhere this call knows nothing about. Writing the new fetch's time and URL
+    as if they were the original would quietly falsify provenance (invariant 7)."""
+    first = _provenance(endpoint="https://gamma-api.polymarket.com/first")
+    path = write_raw_payload(tmp_path, raw=RAW, provenance=first)
+    path.with_name(f"{sha256_hex(RAW)}.meta.json").unlink()
+
+    later = _provenance(
+        endpoint="https://gamma-api.polymarket.com/second",
+        retrieved_at=RETRIEVED + timedelta(days=200),
+    )
+    write_raw_payload(tmp_path, raw=RAW, provenance=later)
+
+    _, restored = read_raw_payload(tmp_path, sha256_hex(RAW))
+    assert restored.reconstructed is True
+
+
+def test_a_first_hand_record_is_not_marked_as_reconstructed(tmp_path: Path) -> None:
+    write_raw_payload(tmp_path, raw=RAW, provenance=_provenance())
+    _, provenance = read_raw_payload(tmp_path, sha256_hex(RAW))
+    assert provenance.reconstructed is False
+
+
+def test_a_symlink_at_the_temp_path_cannot_be_written_through(tmp_path: Path) -> None:
+    """`os.replace` protects the final path; the temp path needs its own guard."""
+    archive = tmp_path / "archive"
+    (archive / "gamma").mkdir(parents=True)
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"original")
+    (archive / "gamma" / f"{sha256_hex(RAW)}.meta.json.partial").symlink_to(victim)
+
+    with pytest.raises(OSError):
+        write_raw_payload(archive, raw=RAW, provenance=_provenance())
+    assert victim.read_bytes() == b"original"
 
 
 def test_rewriting_a_payload_restores_a_lost_sidecar(tmp_path: Path) -> None:

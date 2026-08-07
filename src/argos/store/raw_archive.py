@@ -50,6 +50,7 @@ def write_raw_payload(
         )
 
     sidecar = target.with_name(f"{provenance.raw_sha256}.meta.json")
+    recorded = provenance
     if target.exists():
         if target.read_bytes() != raw:
             raise ImmutabilityViolationError(
@@ -61,6 +62,11 @@ def write_raw_payload(
         # to repair it.
         if sidecar.exists():
             return target
+        # But a repair is not a first-hand record. These bytes were retrieved at
+        # some earlier moment from some earlier URL, and this call knows only when
+        # *it* fetched them — so the reconstruction is marked rather than passed
+        # off as the original provenance (invariant 7).
+        recorded = SourceProvenanceV1(**{**provenance.model_dump(), "reconstructed": True})
 
     target.parent.mkdir(parents=True, exist_ok=True)
     # Sidecar first, then payload, each renamed into place: a torn write then
@@ -68,15 +74,27 @@ def write_raw_payload(
     # unknown and never a truncated file that fails its own hash check.
     _write_atomically(
         sidecar,
-        orjson.dumps(provenance.to_record(), option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS),
+        orjson.dumps(recorded.to_record(), option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS),
     )
     _write_atomically(target, raw)
     return target
 
 
 def _write_atomically(path: Path, payload: bytes) -> None:
+    """Write via a temp file and rename, refusing to follow a symlink at either.
+
+    ``os.replace`` onto the final path replaces a symlink rather than writing
+    through it, but the temp path needs its own guard: a pre-placed symlink there
+    would let a payload be written straight through to a file outside the archive.
+    """
     temporary = path.with_name(f"{path.name}.partial")
-    temporary.write_bytes(payload)
+    descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
     os.replace(temporary, path)
 
 

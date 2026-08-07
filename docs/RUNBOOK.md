@@ -64,6 +64,11 @@ many normalized, how many were quarantined and why, and how many the selection
 policy excluded and why. The policy itself is included in the JSON output —
 a sample without its policy cannot be interpreted later.
 
+`ARGOS_HTTP_TIMEOUT_SECONDS` is a **per-attempt read timeout**, not the wall-clock
+bound on a call. The bound is the overall deadline, which budgets for the whole
+retry allowance: `timeout × attempts + 10s × (attempts − 1)`. At the defaults
+(10s, 5 attempts) a request is bounded at 90 seconds, not 10.
+
 `audit` makes no probability claim. `yes_condition` and `no_condition` are
 deliberately empty: extracting them from prose is semantic work gated behind the
 owner review after M4.

@@ -89,8 +89,12 @@ def render_market_audit(audit: MarketAuditV1) -> str:
     """Render the audit as Markdown for a human reviewer."""
     market = audit.market
     contract = audit.contract
+    # Every third-party string goes through _inline or _blockquote. The identity
+    # fields are as attacker-controlled as the prose: `market_id` and `slug` come
+    # from the response body and are validated for presence, not for content, so
+    # rendering them raw put a working OSC 52 clipboard write in the H1 title.
     lines: list[str] = [
-        f"# Market audit — {market.market_id}",
+        f"# Market audit — {_inline(market.market_id)}",
         "",
         f"*{audit.audit_version} · {audit.audited_at.isoformat()} · "
         f"compiler {contract.compiler_version}*",
@@ -104,17 +108,17 @@ def render_market_audit(audit: MarketAuditV1) -> str:
         "",
         "## Identity",
         "",
-        f"- market id: `{market.market_id}`",
+        f"- market id: `{_inline(market.market_id)}`",
         f"- condition id: `{market.condition_id}`",
-        f"- slug: `{market.slug}`",
-        f"- event id: `{market.event_id or 'none'}`",
+        f"- slug: `{_inline(market.slug)}`",
+        f"- event id: `{_inline(market.event_id) if market.event_id else 'none'}`",
         f"- source payload sha256: `{market.raw_payload_sha256}`",
         "",
         "## Outcome to token mapping",
         "",
     ]
     for outcome in market.outcomes:
-        lines.append(f"- **{outcome}** → `{market.token_id_for(outcome)}`")
+        lines.append(f"- **{_inline(outcome)}** → `{market.token_id_for(outcome)}`")
     lines += [
         "",
         "## Lifecycle",
@@ -130,7 +134,7 @@ def render_market_audit(audit: MarketAuditV1) -> str:
         "- declared resolution source: "
         + (_inline(contract.resolution_source) or "**none declared**"),
         "",
-        "Rule text as published, verbatim:",
+        f"Rule text as published, verbatim ({len(contract.source_rule_material)} characters):",
         "",
         _blockquote(contract.source_rule_material or "*(the market publishes no description)*"),
         "",

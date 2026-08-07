@@ -325,7 +325,7 @@ def test_every_line_of_the_rule_text_is_quoted() -> None:
     """A multi-line description must not be able to introduce unquoted Markdown."""
     description = "Rules line one.\n\n# Not a heading\n\n- not a bullet of ours"
     rendered = render_market_audit(_audit(description=description))
-    body = rendered.split("Rule text as published, verbatim:", 1)[1]
+    body = rendered.split("Rule text as published, verbatim", 1)[1]
     for line in description.splitlines():
         assert (f"> {line}" if line else ">") in body
     assert "\n# Not a heading" not in rendered
@@ -380,6 +380,26 @@ def test_zero_width_joiners_are_left_alone() -> None:
     """They are load-bearing in several writing systems and reorder nothing."""
     rendered = render_market_audit(_audit(description="ന്‍ नी"))
     assert "‍" in rendered
+
+
+def test_the_identity_fields_are_as_untrusted_as_the_prose() -> None:
+    """`market_id`, `slug`, `event_id`, and the outcome labels all come from the
+    response body and are validated for presence, not content. Rendered raw they
+    put a working OSC 52 clipboard write in the document's H1 title."""
+    rendered = render_market_audit(
+        _audit(
+            id="1\x1b[2J\x1b]52;c;cHduZWQ=\x07",
+            slug="s\n# FORGED HEADING",
+            outcomes='["Yes\\u001b[31m\\n## FORGED", "No"]',
+            clobTokenIds='["111", "222"]',
+        )
+    )
+    assert "\x1b" not in rendered
+    assert "\x07" not in rendered
+    headings = [line for line in rendered.splitlines() if line.startswith("#")]
+    assert "# FORGED HEADING" not in headings
+    assert "## FORGED" not in headings
+    assert sum(1 for line in headings if line.startswith("# ")) == 1, "one title only"
 
 
 @pytest.mark.parametrize("field", ["question", "description", "resolutionSource"])
