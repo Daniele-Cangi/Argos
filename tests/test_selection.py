@@ -150,6 +150,110 @@ def test_time_clauses_are_skipped_without_an_as_of() -> None:
     assert len(select_markets([ended], MarketSelectionPolicy()).selected) == 1
 
 
+def test_an_empty_input_is_an_empty_result_not_an_error() -> None:
+    result = select_markets([], MarketSelectionPolicy(), as_of=NOW)
+    assert result.total == 0
+    assert result.counts_by_reason() == {}
+
+
+# --- boundaries ---------------------------------------------------------------------
+
+
+def test_a_market_exactly_at_the_liquidity_floor_is_kept() -> None:
+    """`min_liquidity` is a floor, not a strict threshold."""
+    policy = MarketSelectionPolicy(min_liquidity=Decimal("500"))
+    assert select_markets([_market(liquidity="500")], policy, as_of=NOW).selected
+
+
+def test_a_market_one_unit_below_the_liquidity_floor_is_excluded() -> None:
+    policy = MarketSelectionPolicy(min_liquidity=Decimal("500"))
+    result = select_markets([_market(liquidity="499.999999999")], policy, as_of=NOW)
+    assert result.excluded[0].reason is ExclusionReason.BELOW_MIN_LIQUIDITY
+
+
+def test_a_liquidity_floor_is_compared_exactly_not_through_a_float() -> None:
+    """0.1 + 0.2 != 0.3 in binary; a market at the floor must not be lost to that."""
+    policy = MarketSelectionPolicy(min_liquidity=Decimal("0.3"))
+    assert select_markets([_market(liquidity="0.30")], policy, as_of=NOW).selected
+
+
+def test_a_market_ending_exactly_at_as_of_has_already_ended() -> None:
+    ends_now = NOW.isoformat().replace("+00:00", "Z")
+    result = select_markets([_market(endDate=ends_now)], MarketSelectionPolicy(), as_of=NOW)
+    assert result.excluded[0].reason is ExclusionReason.ALREADY_ENDED
+
+
+def test_a_market_ending_one_microsecond_after_as_of_is_still_live() -> None:
+    later = (NOW + timedelta(microseconds=1)).isoformat().replace("+00:00", "Z")
+    assert select_markets([_market(endDate=later)], MarketSelectionPolicy(), as_of=NOW).selected
+
+
+def test_a_market_at_exactly_min_hours_to_end_is_kept() -> None:
+    policy = MarketSelectionPolicy(min_hours_to_end=48)
+    exactly = (NOW + timedelta(hours=48)).isoformat().replace("+00:00", "Z")
+    assert select_markets([_market(endDate=exactly)], policy, as_of=NOW).selected
+
+
+def test_a_zero_hour_floor_still_excludes_a_market_that_has_ended() -> None:
+    """`min_hours_to_end=0` is a real configuration, not a synonym for `None`."""
+    policy = MarketSelectionPolicy(min_hours_to_end=0)
+    past = (NOW - timedelta(seconds=1)).isoformat().replace("+00:00", "Z")
+    result = select_markets([_market(endDate=past)], policy, as_of=NOW)
+    assert result.excluded[0].reason is ExclusionReason.ALREADY_ENDED
+
+
+def test_a_negative_hour_floor_is_rejected_by_the_policy_itself() -> None:
+    with pytest.raises(Exception):  # noqa: B017 - pydantic raises ValidationError
+        MarketSelectionPolicy(min_hours_to_end=-1)
+
+
+# --- accounting ---------------------------------------------------------------------
+
+
+def test_selection_is_idempotent_and_free_of_shared_state() -> None:
+    """Core invariant: no hidden global state may change output with processing order."""
+    markets = [_market(id="1"), _market(id="2", closed=True), _market(id="3")]
+    policy = MarketSelectionPolicy()
+    first = select_markets(markets, policy, as_of=NOW)
+    second = select_markets(markets, policy, as_of=NOW)
+    third = select_markets(list(reversed(markets)), policy, as_of=NOW)
+    assert first == second
+    assert first.counts_by_reason() == third.counts_by_reason()
+    assert {m.market_id for m in first.selected} == {m.market_id for m in third.selected}
+
+
+def test_a_duplicate_market_is_selected_twice_rather_than_deduplicated() -> None:
+    """M1 has no dedup; the accounting must still add up so M2 can see the duplicate."""
+    duplicate = _market(id="7")
+    result = select_markets([duplicate, duplicate], MarketSelectionPolicy(), as_of=NOW)
+    assert result.total == 2
+    assert len(result.selected) == 2
+
+
+def test_every_exclusion_names_a_market_that_was_offered() -> None:
+    markets = [_market(id=str(index), closed=index % 2 == 0) for index in range(6)]
+    result = select_markets(markets, MarketSelectionPolicy(), as_of=NOW)
+    offered = {market.market_id for market in markets}
+    assert {exclusion.market_id for exclusion in result.excluded} <= offered
+    assert {market.market_id for market in result.selected} <= offered
+    assert result.total == len(markets)
+
+
+def test_the_policy_records_every_clause_including_the_inactive_ones() -> None:
+    """A sample is uninterpretable without the policy that produced it.
+
+    Replaces a `describe()` summary that was unused in `src/` and dropped
+    `min_hours_to_end=0` and `min_liquidity=Decimal(0)`, both of which compare
+    equal to `False`. The full dump is what discovery records, and it cannot
+    silently omit a clause that was applied.
+    """
+    recorded = MarketSelectionPolicy(min_liquidity=Decimal("0")).model_dump(mode="json")
+    assert set(recorded) == set(MarketSelectionPolicy.model_fields)
+    assert recorded["min_liquidity"] == "0", "a zero floor is a declared clause, not an absence"
+    assert recorded["min_volume"] is None
+    assert recorded["exclude_ended"] is True
+
+
 def test_the_policy_is_immutable_and_serializable() -> None:
     policy = MarketSelectionPolicy(min_liquidity=Decimal("100"))
     with pytest.raises(Exception):  # noqa: B017 - pydantic raises ValidationError

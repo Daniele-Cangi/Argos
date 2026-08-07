@@ -8,17 +8,23 @@ search for the ones we did not.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import orjson
 import pytest
 from hypothesis import given
+from hypothesis import settings as hypothesis_settings
 from hypothesis import strategies as st
 
 from argos.clock import ReplayClock, ensure_utc
 from argos.config import RunManifest, Settings
 from argos.config.settings import ENV_PREFIX, unknown_environment_keys
+from argos.domain.market import MarketDefinitionV1
+from argos.domain.provenance import SourceProvenanceV1, sha256_hex
+from argos.domain.selection import MarketSelectionPolicy, select_markets
 from argos.errors import ClockRegressionError, NaiveDatetimeError
+from argos.ingestion import normalize_market, normalize_markets
 
 # Timestamps outside this window cannot be produced by a Polymarket capture and only
 # exercise datetime's own overflow behaviour at the type boundary.
@@ -217,3 +223,235 @@ def test_any_prefixed_variable_is_either_a_known_field_or_reported(name: str) ->
 def test_a_known_field_is_recognised_in_any_case(field: str, upper: bool) -> None:
     name = f"{ENV_PREFIX}{field}"
     assert unknown_environment_keys({name.upper() if upper else name.lower(): "value"}) == []
+
+
+# --- provenance hashing -------------------------------------------------------------
+
+
+PAYLOADS = st.binary(max_size=512)
+
+
+@given(payload=PAYLOADS)
+def test_a_payload_always_matches_the_provenance_taken_from_it(payload: bytes) -> None:
+    provenance = _provenance_for(payload)
+    assert provenance.matches(payload)
+    assert provenance.raw_sha256 == sha256_hex(payload)
+    assert len(provenance.raw_sha256) == 64
+
+
+@given(payload=PAYLOADS, other=PAYLOADS)
+def test_provenance_never_matches_different_bytes(payload: bytes, other: bytes) -> None:
+    """A hash link that accepted the wrong bytes would make invariant 7 decorative."""
+    assert _provenance_for(payload).matches(other) is (payload == other)
+
+
+@given(payload=PAYLOADS)
+def test_a_provenance_record_round_trips_and_keeps_its_link(payload: bytes) -> None:
+    provenance = _provenance_for(payload)
+    restored = SourceProvenanceV1.from_record(provenance.to_record())
+    assert restored == provenance
+    assert restored.matches(payload)
+
+
+HEX_DIGESTS = st.text(alphabet="0123456789abcdefABCDEF", min_size=64, max_size=64)
+
+
+@given(payload=PAYLOADS, digest=HEX_DIGESTS)
+def test_a_digest_is_stored_lowercased_so_two_records_never_disagree(
+    payload: bytes, digest: str
+) -> None:
+    provenance = _provenance_for(payload, raw_sha256=digest)
+    assert provenance.raw_sha256 == digest.lower()
+
+
+def _provenance_for(payload: bytes, **overrides: Any) -> SourceProvenanceV1:
+    fields: dict[str, Any] = {
+        "source": "gamma",
+        "endpoint": "https://gamma-api.polymarket.com/markets",
+        "http_status": 200,
+        "retrieved_at": ANCHOR,
+        "raw_sha256": sha256_hex(payload),
+        "byte_length": len(payload),
+    }
+    fields.update(overrides)
+    return SourceProvenanceV1(**fields)
+
+
+# --- normalization round trips ------------------------------------------------------
+
+ANCHOR = datetime(2026, 8, 7, 12, 0, tzinfo=UTC)
+DIGEST = "d" * 64
+
+LABEL_TEXT = st.text(
+    alphabet=st.characters(blacklist_categories=("Cs",)), min_size=1, max_size=12
+).filter(lambda text: bool(text.strip()))
+CONDITION_IDS = st.binary(min_size=32, max_size=32).map(lambda value: "0x" + value.hex())
+TOKEN_IDS = st.integers(min_value=1, max_value=10**60).map(str)
+MONEY = st.one_of(
+    st.none(),
+    st.decimals(min_value=0, max_value=10**12, allow_nan=False, allow_infinity=False, places=6).map(
+        str
+    ),
+)
+
+
+@st.composite
+def gamma_markets(draw: st.DrawFn) -> dict[str, Any]:
+    """A payload shaped like Gamma's, with the parts the normalizer must handle."""
+    size = draw(st.integers(min_value=1, max_value=4))
+    labels = draw(st.lists(LABEL_TEXT, min_size=size, max_size=size, unique=True))
+    tokens = draw(st.lists(TOKEN_IDS, min_size=size, max_size=size, unique=True))
+    end = draw(st.one_of(st.none(), UTC_MOMENTS))
+    return {
+        "id": str(draw(st.integers(min_value=1, max_value=10**9))),
+        "conditionId": draw(CONDITION_IDS),
+        # Required text fields must be non-blank: the normalizer rejects a
+        # whitespace-only slug by design, so generating one tests the guard, not
+        # the property under test — and does it intermittently, which is worse.
+        "slug": draw(SAFE_TEXT.filter(lambda text: text.strip() != "")),
+        "question": draw(LABEL_TEXT.filter(lambda text: text.strip() != "")),
+        "description": draw(
+            st.text(alphabet=st.characters(blacklist_categories=("Cs",)), max_size=60)
+        ),
+        "resolutionSource": draw(st.text(max_size=20)),
+        "outcomes": orjson.dumps(labels).decode(),
+        "clobTokenIds": orjson.dumps(tokens).decode(),
+        "active": draw(st.booleans()),
+        "closed": draw(st.booleans()),
+        "archived": draw(st.booleans()),
+        "liquidity": draw(MONEY),
+        "volume": draw(MONEY),
+        "endDate": None if end is None else end.isoformat().replace("+00:00", "Z"),
+    }
+
+
+@given(payload=gamma_markets())
+def test_normalizing_the_same_payload_twice_gives_the_same_record(payload: dict[str, Any]) -> None:
+    """M1 exit criterion: repeated normalization of the same raw payload is deterministic."""
+    once = normalize_market(payload, raw_payload_sha256=DIGEST, normalized_at=ANCHOR)
+    twice = normalize_market(payload, raw_payload_sha256=DIGEST, normalized_at=ANCHOR)
+    assert once == twice
+    assert once.to_record() == twice.to_record()
+
+
+@given(payload=gamma_markets())
+def test_a_normalized_market_survives_a_storage_round_trip(payload: dict[str, Any]) -> None:
+    market = normalize_market(payload, raw_payload_sha256=DIGEST, normalized_at=ANCHOR)
+    record = market.to_record()
+    assert MarketDefinitionV1.from_record(record) == market
+    encode = lambda value: orjson.dumps(value, option=orjson.OPT_SORT_KEYS)  # noqa: E731
+    assert encode(MarketDefinitionV1.from_record(record).to_record()) == encode(record)
+
+
+@given(payload=gamma_markets())
+def test_the_token_map_always_covers_exactly_the_outcomes(payload: dict[str, Any]) -> None:
+    """A market that could price an outcome it does not declare is a mapping defect."""
+    market = normalize_market(payload, raw_payload_sha256=DIGEST, normalized_at=ANCHOR)
+    assert tuple(market.outcome_token_map) == market.outcomes
+    assert len(set(market.outcome_token_map.values())) == len(market.outcomes)
+    for outcome in market.outcomes:
+        assert market.token_id_for(outcome) == market.outcome_token_map[outcome]
+
+
+@given(payload=gamma_markets())
+def test_the_source_rule_material_is_never_altered(payload: dict[str, Any]) -> None:
+    """Core invariant 3: rule material is evidence, carried verbatim or not at all."""
+    market = normalize_market(payload, raw_payload_sha256=DIGEST, normalized_at=ANCHOR)
+    assert market.question == payload["question"]
+    assert market.description == (payload["description"] or "")
+    assert market.resolution_source == (payload["resolutionSource"] or "")
+    assert market.raw_payload_sha256 == DIGEST
+
+
+@hypothesis_settings(max_examples=30)
+@given(payloads=st.lists(gamma_markets(), max_size=6))
+def test_a_page_is_fully_accounted_for(payloads: list[dict[str, Any]]) -> None:
+    """Core invariant 14: nothing is dropped, so the two buckets must sum to the input."""
+    report = normalize_markets(payloads, raw_payload_sha256=DIGEST, normalized_at=ANCHOR)
+    assert report.total == len(payloads)
+    assert sum(report.counts_by_reason().values()) == len(report.quarantined)
+    assert all(record.detail for record in report.quarantined)
+
+
+# --- selection accounting -----------------------------------------------------------
+
+
+POLICIES = st.builds(
+    MarketSelectionPolicy,
+    require_binary=st.booleans(),
+    require_standard_outcome_labels=st.booleans(),
+    require_active=st.booleans(),
+    exclude_closed=st.booleans(),
+    exclude_archived=st.booleans(),
+    require_end_time=st.booleans(),
+    min_liquidity=st.one_of(st.none(), st.integers(min_value=0, max_value=10**6).map(Decimal)),
+    min_hours_to_end=st.one_of(st.none(), st.integers(min_value=0, max_value=10_000)),
+)
+
+
+@hypothesis_settings(max_examples=30)
+@given(payloads=st.lists(gamma_markets(), max_size=6), policy=POLICIES)
+def test_selection_accounts_for_every_market_it_was_offered(
+    payloads: list[dict[str, Any]], policy: MarketSelectionPolicy
+) -> None:
+    markets = _normalized(payloads)
+    result = select_markets(markets, policy, as_of=ANCHOR)
+    assert result.total == len(markets)
+    assert sum(result.counts_by_reason().values()) == len(result.excluded)
+    assert all(exclusion.detail for exclusion in result.excluded)
+
+
+@hypothesis_settings(max_examples=30)
+@given(payloads=st.lists(gamma_markets(), max_size=6), policy=POLICIES)
+def test_selection_preserves_order_and_never_invents_a_market(
+    payloads: list[dict[str, Any]], policy: MarketSelectionPolicy
+) -> None:
+    markets = _normalized(payloads)
+    result = select_markets(markets, policy, as_of=ANCHOR)
+    offered = [market.market_id for market in markets]
+    assert sorted(
+        [market.market_id for market in result.selected]
+        + [exclusion.market_id for exclusion in result.excluded]
+    ) == sorted(offered)
+    assert _is_subsequence([m.market_id for m in result.selected], offered)
+    assert _is_subsequence([e.market_id for e in result.excluded], offered)
+
+
+def _is_subsequence(part: list[str], whole: list[str]) -> bool:
+    remaining = iter(whole)
+    return all(item in remaining for item in part)
+
+
+@hypothesis_settings(max_examples=30)
+@given(payloads=st.lists(gamma_markets(), max_size=6), policy=POLICIES)
+def test_selection_is_reproducible(
+    payloads: list[dict[str, Any]], policy: MarketSelectionPolicy
+) -> None:
+    """No hidden global state: the same inputs must always give the same result."""
+    markets = _normalized(payloads)
+    assert select_markets(markets, policy, as_of=ANCHOR) == select_markets(
+        markets, policy, as_of=ANCHOR
+    )
+
+
+@hypothesis_settings(max_examples=30)
+@given(payloads=st.lists(gamma_markets(), min_size=1, max_size=6))
+def test_an_empty_policy_selects_everything_it_is_given(payloads: list[dict[str, Any]]) -> None:
+    """Every exclusion must come from a configured clause, never from a default opinion."""
+    permissive = MarketSelectionPolicy(
+        require_binary=False,
+        require_standard_outcome_labels=False,
+        require_active=False,
+        exclude_closed=False,
+        exclude_archived=False,
+        require_end_time=False,
+    )
+    markets = _normalized(payloads)
+    result = select_markets(markets, permissive)
+    assert len(result.selected) == len(markets)
+    assert result.excluded == ()
+
+
+def _normalized(payloads: list[dict[str, Any]]) -> list[MarketDefinitionV1]:
+    report = normalize_markets(payloads, raw_payload_sha256=DIGEST, normalized_at=ANCHOR)
+    return list(report.accepted)

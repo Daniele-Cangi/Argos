@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import httpx
@@ -167,6 +168,79 @@ def test_audit_of_an_unknown_market_exits_with_the_source_error() -> None:
     result = runner.invoke(app, ["markets", "audit", "0"])
     assert result.exit_code == 1
     assert "argos.source_protocol" in result.output
+
+
+@respx.mock
+def test_an_empty_page_is_an_empty_sample_not_a_failure(page: bytes) -> None:
+    """Discovery past the last page must report zero, not crash and not invent rows."""
+    respx.get(f"{BASE}/markets").mock(return_value=httpx.Response(200, content=b"[]"))
+    result = runner.invoke(app, ["markets", "discover", "--json"])
+    assert result.exit_code == 0, result.output
+
+    report = orjson.loads(result.stdout)
+    assert report["returned"] == 0
+    assert report["normalized"] == 0
+    assert report["quarantined"] == 0
+    assert report["selected"] == 0
+    assert report["markets"] == []
+
+
+@respx.mock
+def test_discover_reports_a_timeout_without_burning_real_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CLI runs on a LiveClock: a failure path must be pinned to one attempt.
+
+    The wall-clock ceiling is the regression guard. With the default budget of five
+    attempts this path would sleep through real exponential backoff (>7s) inside a
+    unit test, which docs/13_TEST_STRATEGY.md forbids.
+    """
+    monkeypatch.setenv("ARGOS_HTTP_MAX_ATTEMPTS", "1")
+    respx.get(f"{BASE}/markets").mock(side_effect=httpx.ReadTimeout("slow"))
+    started = time.monotonic()
+    result = runner.invoke(app, ["markets", "discover"])
+    elapsed = time.monotonic() - started
+
+    assert result.exit_code == 1
+    assert "argos.source_timeout" in result.output
+    assert elapsed < 5.0, f"the failure path slept for {elapsed:.1f}s of real time"
+
+
+@respx.mock
+def test_a_non_json_body_is_reported_as_a_source_error(page: bytes) -> None:
+    respx.get(f"{BASE}/markets").mock(
+        return_value=httpx.Response(200, content=b"<html>maintenance</html>")
+    )
+    result = runner.invoke(app, ["markets", "discover"])
+    assert result.exit_code == 1
+    assert "argos.source_protocol" in result.output
+
+
+@pytest.mark.parametrize("limit", ["0", "-5"])
+def test_a_limit_below_one_is_refused_with_a_usage_error(limit: str) -> None:
+    result = runner.invoke(app, ["markets", "discover", "--limit", limit])
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert result.exit_code == 2
+    assert "limit" in result.output
+
+
+@respx.mock
+def test_saving_the_raw_payload_twice_is_idempotent(
+    page: bytes, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-running discovery must not fail, and must not fork the archive."""
+    monkeypatch.setenv("ARGOS_DATA_DIR", str(tmp_path))
+    respx.get(f"{BASE}/markets").mock(return_value=httpx.Response(200, content=page))
+    first = runner.invoke(app, ["markets", "discover", "--save-raw", "--json"])
+    second = runner.invoke(app, ["markets", "discover", "--save-raw", "--json"])
+    assert first.exit_code == 0 and second.exit_code == 0, second.output
+
+    assert (
+        orjson.loads(first.stdout)["raw_archive_path"]
+        == (orjson.loads(second.stdout)["raw_archive_path"])
+    )
+    archived = sorted(p.name for p in (tmp_path / "gamma").iterdir())
+    assert len(archived) == 2, f"one payload plus one sidecar, got {archived}"
 
 
 @respx.mock

@@ -3,7 +3,7 @@
 ``MarketDefinitionV1`` is ARGOS's normalized view of a market. It is deliberately
 *not* an opinion about whether the market is usable: it validates structural
 consistency (an outcome list that matches its token map, identifiers that are not
-interchangeable) and leaves selection policy to :mod:`argos.projections` callers.
+interchangeable) and leaves scope decisions to :mod:`argos.domain.selection`.
 
 Core invariant 3: the question title is not the resolution contract. The original
 question, description, and resolution source are carried verbatim and linked to
@@ -25,8 +25,12 @@ from argos.domain.provenance import SHA256_LENGTH
 from argos.domain.versioning import VersionedModel, freeze, thaw
 from argos.errors import ContractViolationError, RejectionReason
 
-CONDITION_ID_PATTERN = re.compile(r"^0x[0-9a-f]{64}$")
-TOKEN_ID_PATTERN = re.compile(r"^[0-9]{1,120}$")
+# A condition id addresses a market; a token id addresses one side of it. The two
+# character classes are disjoint, which is what makes confusing them impossible
+# rather than merely discouraged — a mix-up would subscribe a capture to the
+# wrong stream with no error anywhere.
+CONDITION_ID_PATTERN = re.compile(r"0x[0-9a-f]{64}")
+TOKEN_ID_PATTERN = re.compile(r"[0-9]{1,120}")
 
 
 class MarketDefinitionV1(VersionedModel):
@@ -76,7 +80,7 @@ class MarketDefinitionV1(VersionedModel):
     @classmethod
     def _validate_condition_id(cls, value: str) -> str:
         lowered = value.lower()
-        if not CONDITION_ID_PATTERN.match(lowered):
+        if not CONDITION_ID_PATTERN.fullmatch(lowered):
             raise ValueError(f"condition_id must be a 0x-prefixed 32-byte hash, got {value!r}")
         return lowered
 
@@ -103,15 +107,15 @@ class MarketDefinitionV1(VersionedModel):
             )
 
         token_ids = [str(token) for token in self.outcome_token_map.values()]
-        if len(set(token_ids)) != len(token_ids):
-            raise ValueError(f"two outcomes share one token id: {token_ids}")
         for token_id in token_ids:
-            if not TOKEN_ID_PATTERN.match(token_id):
+            # fullmatch, not match: `$` also matches before a trailing newline, so
+            # "123\n" would pass as a well-formed id and then fail to key anything.
+            if not TOKEN_ID_PATTERN.fullmatch(token_id):
                 raise ValueError(f"token id must be a decimal string, got {token_id!r}")
-            # A condition id addresses the market; a token id addresses one side of
-            # it. Confusing them silently subscribes a capture to the wrong stream.
-            if token_id.lower() == self.condition_id:
-                raise ValueError("token id and condition id are not interchangeable")
+        # Compared by value, not by string: "007" and "7" are the same uint256
+        # token, and a string comparison would let both sides of a market map to it.
+        if len({int(token_id) for token_id in token_ids}) != len(token_ids):
+            raise ValueError(f"two outcomes share one token id: {token_ids}")
         return self
 
     @property

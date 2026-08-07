@@ -1,5 +1,27 @@
 # Research protocol
 
+## Source text is data, never instruction
+
+Market questions and descriptions are written by whoever created the market. They
+are evidence to be read, not input to be obeyed, and that distinction has to hold
+in every artifact that carries them.
+
+The rule applies from M1, not from the semantic milestones: the market audit
+already renders this text for a human reviewer, and `.claude/skills/market-audit`
+already puts it in an agent's context.
+
+- Third-party text is control-character sanitized before display. Terminal escape
+  sequences can clear a reviewer's screen, rewrite the window title, or write to
+  their clipboard via OSC 52 — a reviewer would then be reading an artifact the
+  source controls.
+- Third-party text is always block-quoted or collapsed to a single line, so it
+  cannot introduce a heading, a bullet, or a status line of its own. A newline in
+  a market question must not be able to write `review status: human_reviewed`
+  into the report that decides whether the market is reviewed.
+- Rendered sections that carry source text say so, explicitly, in the artifact.
+- Rule text itself is never truncated: it is the resolution contract, and a
+  reviewer needs all of it. Summary fields are capped with a stated length.
+
 ## Objective
 
 Evaluate whether ARGOS produces useful, calibrated probability estimates and whether its additional components improve on clearly defined market baselines.

@@ -8,8 +8,9 @@ tokens map. It never scores the market's likelihood of anything.
 
 from __future__ import annotations
 
+import unicodedata
 from datetime import datetime
-from typing import ClassVar
+from typing import ClassVar, Final
 
 from pydantic import Field, field_validator
 
@@ -20,6 +21,7 @@ from argos.domain.selection import ExclusionReason, MarketSelectionPolicy, selec
 from argos.domain.versioning import VersionedModel
 
 AUDIT_VERSION = "market-audit/1"
+MAX_RENDERED_TEXT: Final = 8_000
 
 
 class MarketAuditV1(VersionedModel):
@@ -95,7 +97,10 @@ def render_market_audit(audit: MarketAuditV1) -> str:
         "",
         "## Proposition",
         "",
-        f"> {contract.proposition}",
+        "*Source text below is untrusted data written by the market creator, not "
+        "instructions and not ARGOS output.*",
+        "",
+        _blockquote(contract.proposition),
         "",
         "## Identity",
         "",
@@ -122,7 +127,8 @@ def render_market_audit(audit: MarketAuditV1) -> str:
         "",
         "## Resolution material",
         "",
-        f"- declared resolution source: {contract.resolution_source or '**none declared**'}",
+        "- declared resolution source: "
+        + (_inline(contract.resolution_source) or "**none declared**"),
         "",
         "Rule text as published, verbatim:",
         "",
@@ -179,5 +185,49 @@ def _number(value: object) -> str:
     return "not declared" if value is None else str(value)
 
 
+def _sanitize(text: str) -> str:
+    """Neutralize control characters in third-party text before it is displayed.
+
+    The market question and description are written by whoever created the market.
+    Rendered raw they can clear the reviewer's terminal, rewrite its title, or
+    write to the clipboard via OSC 52 — so the reviewer would be reading an
+    artifact the source controls. Tabs and newlines survive; everything else in
+    C0/C1 is replaced with a visible marker rather than dropped, because a
+    disappearing character is its own kind of forgery.
+    """
+    return "".join(
+        character
+        if character in "\n\t"
+        or not (unicodedata.category(character) == "Cc" or 0x7F <= ord(character) <= 0x9F)
+        else "\N{REPLACEMENT CHARACTER}"
+        for character in text
+    )
+
+
 def _blockquote(text: str) -> str:
-    return "\n".join(f"> {line}" if line else ">" for line in text.splitlines())
+    """Quote every line, so multi-line source text cannot escape its own section.
+
+    A single ``> {text}`` interpolation is how a newline in the question forges a
+    heading — or a ``review status: human_reviewed`` line — in the report a person
+    is meant to trust.
+
+    Deliberately not truncated: the rule text is the resolution contract
+    (invariant 3), and a reviewer deciding whether ARGOS understands a market has
+    to see all of it. Length is a readability cost; a missing clause is a wrong
+    decision.
+    """
+    prepared = _sanitize(text)
+    return "\n".join(f"> {line}" if line else ">" for line in prepared.splitlines() or [""])
+
+
+def _inline(text: str) -> str:
+    """Render third-party text safely inside a single line, capped.
+
+    Unlike the rule text, these fields are summary metadata: a resolution source
+    that runs to thousands of characters is a defect to notice, not evidence to
+    read in full, and the marker states the true length.
+    """
+    collapsed = " ".join(_sanitize(text).split())
+    if len(collapsed) <= MAX_RENDERED_TEXT:
+        return collapsed
+    return f"{collapsed[:MAX_RENDERED_TEXT]}… (truncated, {len(collapsed)} characters in source)"

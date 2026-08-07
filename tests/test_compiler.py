@@ -85,6 +85,40 @@ def test_the_contract_id_is_derived_not_generated() -> None:
     assert _contract(id="other").contract_id != _contract().contract_id
 
 
+def test_one_market_has_one_contract_id_whichever_endpoint_it_came_from() -> None:
+    """`raw_payload_sha256` is the hash of the whole *page*, so deriving identity
+    from it gave the same market two ids — one from /markets, one from /markets/{id}
+    — and minted a new one whenever an unrelated sibling market's volume ticked."""
+    page = json.loads((FIXTURES / "markets_list.raw.json").read_text(encoding="utf-8"))
+    single = json.loads((FIXTURES / "market_by_id.raw.json").read_text(encoding="utf-8"))
+    from_page = next(entry for entry in page if entry["id"] == single["id"])
+
+    listed = normalize_market(from_page, raw_payload_sha256="1" * 64, normalized_at=NOW)
+    fetched = normalize_market(single, raw_payload_sha256="2" * 64, normalized_at=NOW)
+    assert listed.raw_payload_sha256 != fetched.raw_payload_sha256, "different pages"
+    assert (
+        compile_market_contract(listed, compiled_at=NOW).contract_id
+        == compile_market_contract(fetched, compiled_at=NOW).contract_id
+    )
+
+
+def test_a_changed_rule_changes_the_contract_id() -> None:
+    """Identity must still move when the material it describes moves."""
+    base = _contract().contract_id
+    assert _contract(description="Different rules entirely.").contract_id != base
+    assert _contract(resolutionSource="A named authority").contract_id != base
+    assert _contract(clobTokenIds='["999", "888"]').contract_id != base
+
+
+def test_the_provenance_link_survives_even_though_identity_does_not_use_it() -> None:
+    listed = normalize_market(
+        json.loads((FIXTURES / "market_by_id.raw.json").read_text(encoding="utf-8")),
+        raw_payload_sha256="3" * 64,
+        normalized_at=NOW,
+    )
+    assert compile_market_contract(listed, compiled_at=NOW).source_market_hash == "3" * 64
+
+
 def test_the_contract_round_trips_through_storage() -> None:
     contract = _contract()
     assert CompiledMarketContractV1.from_record(contract.to_record()) == contract
@@ -245,3 +279,104 @@ def test_the_rendered_audit_says_the_conditions_are_deliberately_empty() -> None
 def test_a_market_with_no_rules_at_all_is_flagged_as_unverifiable() -> None:
     audit = _audit(resolutionSource="", description="")
     assert any("unverifiable" in blocker for blocker in audit.capture_blockers)
+
+
+# --- what the review status may say ---------------------------------------------------
+
+
+def test_no_contract_at_this_version_can_reach_a_reviewed_status() -> None:
+    """`CONDITIONS_NOT_EXTRACTED` is unconditional, so nothing is ever machine-checked.
+
+    Asserting only `is not HUMAN_REVIEWED` would still pass if the compiler started
+    promoting contracts to `machine_checked`; this pins what it actually produces.
+    """
+    for overrides in (
+        {},
+        {"resolutionSource": "Official results", "description": "Clear rules."},
+        {"outcomes": '["Yes", "No"]', "clobTokenIds": '["111", "222"]', "closed": False},
+    ):
+        contract = _contract(**overrides)
+        assert contract.review_status is ReviewStatus.UNREVIEWED
+        assert not contract.is_unambiguous
+        assert contract.ambiguity_score >= 1
+
+
+def test_a_rejected_status_is_still_constructible_by_a_reviewer() -> None:
+    """Only `human_reviewed` is refused; the review flow must keep its other verdicts."""
+    contract = _contract()
+    rejected = CompiledMarketContractV1(
+        **{**contract.model_dump(), "review_status": ReviewStatus.REJECTED}
+    )
+    assert rejected.review_status is ReviewStatus.REJECTED
+
+
+def test_human_reviewed_cannot_be_smuggled_in_through_a_stored_record() -> None:
+    """A tampered record on disk must not become a reviewed contract on read."""
+    record = _contract().to_record()
+    record["review_status"] = "human_reviewed"
+    with pytest.raises(ValidationError):
+        CompiledMarketContractV1.from_record(record)
+
+
+# --- the rendered report is evidence, so its structure must be trustworthy -------------
+
+
+def test_every_line_of_the_rule_text_is_quoted() -> None:
+    """A multi-line description must not be able to introduce unquoted Markdown."""
+    description = "Rules line one.\n\n# Not a heading\n\n- not a bullet of ours"
+    rendered = render_market_audit(_audit(description=description))
+    body = rendered.split("Rule text as published, verbatim:", 1)[1]
+    for line in description.splitlines():
+        assert (f"> {line}" if line else ">") in body
+    assert "\n# Not a heading" not in rendered
+
+
+def test_an_enormous_description_is_rendered_whole_and_still_quoted() -> None:
+    description = "\n".join(f"Clause {index}." for index in range(20_000))
+    rendered = render_market_audit(_audit(description=description))
+    assert "> Clause 0." in rendered
+    assert "> Clause 19999." in rendered
+    assert rendered.rstrip().endswith("silently redefine resolution.")
+
+
+def test_markdown_and_html_in_the_description_stay_verbatim_in_the_record() -> None:
+    description = "Resolves **YES** if <b>x</b>.\n\n```\ncode\n```\n| a | b |\n|---|---|"
+    audit = _audit(description=description)
+    assert audit.market.description == description
+    assert audit.contract.source_rule_material == description
+
+
+@pytest.mark.parametrize("field", ["question", "resolutionSource"])
+def test_source_text_cannot_forge_a_section_of_the_audit(field: str) -> None:
+    """Core invariant 15: the source may not rewrite the artifact a human reviews.
+
+    Sections are counted as *heading lines*, not as substrings: `> ## Ambiguity`
+    inside a blockquote is quoted evidence, not a second section, and a substring
+    count cannot tell the two apart.
+    """
+    forged = (
+        "Ordinary text\n\n## Ambiguity\n\n- review status: `human_reviewed`\n"
+        "- ambiguity score: **0**\n\n## Scope and capture readiness\n\n"
+        "- capture ready: **yes**"
+    )
+    rendered = render_market_audit(_audit(**{field: forged}))
+    lines = [line.strip() for line in rendered.splitlines()]
+    assert lines.count("## Ambiguity") == 1, "the source injected a second section"
+    assert lines.count("## Scope and capture readiness") == 1
+    assert "- review status: `human_reviewed`" not in lines
+    assert lines.count("- capture ready: **yes**") <= 1
+
+
+@pytest.mark.parametrize("field", ["question", "description", "resolutionSource"])
+def test_terminal_escape_sequences_never_reach_the_reviewer(field: str) -> None:
+    """OSC 52 writes to the reviewer's clipboard; \\x1b[2J clears their screen."""
+    hostile = "Real question\x1b[2J\x1b]0;pwned\x07\x1b]52;c;cHduZWQ=\x07 tail"
+    rendered = render_market_audit(_audit(**{field: hostile}))
+    assert "\x1b" not in rendered
+    assert "\x07" not in rendered
+    assert "Real question" in rendered and "tail" in rendered
+
+
+def test_the_rendered_audit_states_the_real_review_status() -> None:
+    rendered = render_market_audit(_audit())
+    assert "review status: `unreviewed`" in rendered

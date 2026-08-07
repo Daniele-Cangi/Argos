@@ -82,6 +82,12 @@ class CompiledMarketContractV1(VersionedModel):
 
     yes_condition: str | None = None
     no_condition: str | None = None
+    subject_entities: tuple[str, ...] = ()
+    qualifying_event: str | None = None
+    """Empty for the same reason as the conditions: identifying the entities and the
+    qualifying event means reading the prose, which is gated behind the owner review.
+    Present in the schema so their absence is representable rather than invisible."""
+
     start_boundary: datetime | None = None
     end_boundary: datetime | None = None
 
@@ -91,7 +97,9 @@ class CompiledMarketContractV1(VersionedModel):
 
     ambiguity_flags: tuple[AmbiguityFlag, ...] = ()
     ambiguity_score: int = Field(default=0, ge=0)
-    """A count of unresolved flags. A score, not a probability (invariant 8)."""
+    """A count of unresolved flags — including the compiler's own deferred extraction,
+    which is genuinely unresolved rather than an offset. A score, not a probability
+    (invariant 8): it is an unbounded integer and cannot be read as one."""
 
     review_status: ReviewStatus = ReviewStatus.UNREVIEWED
     review_notes: tuple[str, ...] = ()
@@ -147,7 +155,11 @@ def compile_market_contract(
         end_boundary=market.end_time,
         ambiguity_flags=flags,
         ambiguity_score=len(flags),
-        review_status=(ReviewStatus.MACHINE_CHECKED if not flags else ReviewStatus.UNREVIEWED),
+        # Not a ternary on `flags`: CONDITIONS_NOT_EXTRACTED is unconditional at this
+        # compiler version, so no contract can be machine-checked and a branch on it
+        # would be dead code pretending to be a decision. MACHINE_CHECKED becomes
+        # reachable only when a compiler version extracts the conditions.
+        review_status=ReviewStatus.UNREVIEWED,
         supersedes_contract_id=supersedes_contract_id,
     )
 
@@ -182,9 +194,28 @@ def _detect_ambiguity(market: MarketDefinitionV1) -> list[AmbiguityFlag]:
 
 
 def _contract_id(market: MarketDefinitionV1) -> str:
-    digest = hashlib.sha256(
-        "|".join(
-            (COMPILER_VERSION, market.market_id, market.condition_id, market.raw_payload_sha256)
-        ).encode()
-    ).hexdigest()
+    """Derive an identity from the market's own rule-bearing content.
+
+    Not from ``raw_payload_sha256``: that is the hash of the whole response page,
+    so every market in one discovery page shares it, and the same market fetched
+    by id carries a different one. Deriving from the page would give one market
+    two identities and mint a new one whenever an unrelated sibling market's
+    volume ticked. The provenance link stays in ``source_market_hash``.
+    """
+    parts = (
+        COMPILER_VERSION,
+        market.market_id,
+        market.condition_id,
+        market.question,
+        market.description,
+        market.resolution_source,
+        _stamp(market.start_time),
+        _stamp(market.end_time),
+        "|".join(f"{outcome}={market.token_id_for(outcome)}" for outcome in market.outcomes),
+    )
+    digest = hashlib.sha256("\x1f".join(parts).encode()).hexdigest()
     return f"contract-{digest[:32]}"
+
+
+def _stamp(value: datetime | None) -> str:
+    return value.isoformat() if value else ""

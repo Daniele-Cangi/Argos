@@ -277,3 +277,222 @@ def test_a_normalized_at_in_the_future_is_still_the_callers_choice() -> None:
     later = NORMALIZED_AT + timedelta(days=365)
     market = normalize_market(_market(), raw_payload_sha256=DIGEST, normalized_at=later)
     assert market.normalized_at == later
+
+
+# --- the shape of a page ------------------------------------------------------------
+
+
+def test_a_generator_is_accepted_because_the_parameter_is_an_iterable() -> None:
+    """`normalize_markets` is typed `Iterable`, so a stream must not need a list."""
+    report = normalize_markets(
+        (payload for payload in _page()), raw_payload_sha256=DIGEST, normalized_at=NORMALIZED_AT
+    )
+    assert len(report.accepted) == len(_page())
+    assert report.total == len(_page())
+
+
+def test_an_empty_page_is_an_empty_report_not_a_failure() -> None:
+    """Gamma legitimately answers `[]` past the last page of results."""
+    report = normalize_markets([], raw_payload_sha256=DIGEST, normalized_at=NORMALIZED_AT)
+    assert report.accepted == ()
+    assert report.quarantined == ()
+    assert report.total == 0
+    assert report.counts_by_reason() == {}
+
+
+def test_a_paginated_envelope_never_yields_a_partial_sample() -> None:
+    """If Gamma wraps the page in an object, no market may be accepted from it.
+
+    A silently empty-but-successful discovery run is the dangerous outcome here:
+    the sample would look valid and contain nothing.
+    """
+    with pytest.raises(IngestionError) as caught:
+        normalize_markets(
+            {"data": _page(), "next_cursor": "abc"},
+            raw_payload_sha256=DIGEST,
+            normalized_at=NORMALIZED_AT,
+        )
+    # Refused whole, not quarantined key by key: an envelope is a page-level
+    # structural failure, and per-key records would read as a sample of markets.
+    assert caught.value.reason is RejectionReason.MALFORMED_PAYLOAD
+
+
+@pytest.mark.parametrize("payload", [None, 5, "maintenance in progress"])
+def test_a_top_level_payload_that_is_not_a_list_of_markets_is_refused(payload: object) -> None:
+    with pytest.raises(IngestionError):
+        normalize_markets(payload, raw_payload_sha256=DIGEST, normalized_at=NORMALIZED_AT)  # type: ignore[arg-type]
+
+
+def test_duplicate_market_ids_in_one_page_are_both_kept_and_counted() -> None:
+    """M1 does not deduplicate; it must at least not lose or merge a record silently."""
+    report = normalize_markets(
+        [_market(), _market()], raw_payload_sha256=DIGEST, normalized_at=NORMALIZED_AT
+    )
+    assert report.total == 2
+    assert [m.market_id for m in report.accepted] == [_market()["id"]] * 2
+    assert report.accepted[0].to_record() == report.accepted[1].to_record()
+
+
+# --- source schema drift ------------------------------------------------------------
+
+
+def test_an_unknown_field_is_ignored_rather_than_breaking_the_parse() -> None:
+    """Gamma adds fields without warning; an addition must be a non-event."""
+    baseline = _normalize(_market())
+    drifted = _normalize(
+        _market(brandNewField={"nested": [1, 2, 3]}, anotherOne="whatever", umaResolutionStatus=7)
+    )
+    assert drifted.to_record() == baseline.to_record()
+
+
+@pytest.mark.parametrize("field", ["id", "conditionId", "slug", "question", "outcomes"])
+def test_a_renamed_field_is_refused_rather_than_silently_defaulted(field: str) -> None:
+    """A rename must quarantine the market, never produce a half-filled record."""
+    payload = _market()
+    payload[f"{field}_v2"] = payload.pop(field)
+    with pytest.raises(IngestionError):
+        _normalize(payload)
+
+
+@pytest.mark.parametrize(
+    "outcomes",
+    ['{"0": "Yes", "1": "No"}', "42", '"Yes"', "true", "null"],
+    ids=["object", "number", "nested-string", "bool", "null"],
+)
+def test_outcomes_retyped_to_something_other_than_a_list_is_refused(outcomes: str) -> None:
+    with pytest.raises(IngestionError) as caught:
+        _normalize(_market(outcomes=outcomes))
+    assert caught.value.reason in {
+        RejectionReason.MALFORMED_PAYLOAD,
+        RejectionReason.QUARANTINED_MAPPING,
+    }
+
+
+def test_outcomes_delivered_as_a_real_json_object_is_refused() -> None:
+    with pytest.raises(IngestionError) as caught:
+        _normalize(_market(outcomes={"0": "Yes", "1": "No"}))
+    assert caught.value.reason is RejectionReason.MALFORMED_PAYLOAD
+
+
+def test_a_retyped_boolean_flag_is_refused_rather_than_coerced() -> None:
+    """`"false"` is truthy in Python; coercing it would invert the market's state."""
+    for value in ("false", 0, 1, None):
+        with pytest.raises(IngestionError) as caught:
+            _normalize(_market(closed=value))
+        assert caught.value.reason is RejectionReason.MALFORMED_PAYLOAD
+
+
+def test_a_numeric_id_is_read_as_text_because_gamma_has_used_both() -> None:
+    assert _normalize(_market(id=2063134)).market_id == "2063134"
+
+
+# --- hostile and extreme text -------------------------------------------------------
+
+
+HOSTILE_TEXT = "Will “X” resolve? ‮ rtl bell \t tab \U0001f9ea 中文 ‮ combining é"
+
+
+def test_unicode_and_control_characters_are_preserved_verbatim_and_round_trip() -> None:
+    """Rule material is evidence: it is stored exactly, not sanitized into something else."""
+    market = _normalize(_market(question=HOSTILE_TEXT, description=HOSTILE_TEXT * 3))
+    assert market.question == HOSTILE_TEXT
+    assert market.description == HOSTILE_TEXT * 3
+    assert MarketDefinitionV1.from_record(market.to_record()) == market
+
+
+def test_a_whitespace_only_question_is_not_a_question() -> None:
+    for blank in ("", "   ", "\n\t "):
+        with pytest.raises(IngestionError) as caught:
+            _normalize(_market(question=blank))
+        assert caught.value.reason is RejectionReason.MALFORMED_PAYLOAD
+
+
+def test_an_enormous_question_and_description_are_kept_whole() -> None:
+    long_question = "Will " + "very " * 20_000 + "long?"
+    market = _normalize(_market(question=long_question, description="x" * 500_000))
+    assert market.question == long_question
+    assert len(market.description) == 500_000
+
+
+# --- outcome labels and token ids ---------------------------------------------------
+
+
+def test_duplicate_outcome_labels_are_quarantined() -> None:
+    """Two identical labels cannot address two different tokens."""
+    with pytest.raises(IngestionError) as caught:
+        _normalize(_market(outcomes='["Yes", "Yes"]', clobTokenIds='["111", "222"]'))
+    assert caught.value.reason is RejectionReason.QUARANTINED_MAPPING
+
+
+@pytest.mark.parametrize("label", ["   ", "\t", "\n", ""])
+def test_a_whitespace_only_outcome_label_is_refused(label: str) -> None:
+    with pytest.raises(IngestionError) as caught:
+        _normalize(_market(outcomes=json.dumps(["Yes", label]), clobTokenIds='["111", "222"]'))
+    assert caught.value.reason is RejectionReason.MALFORMED_PAYLOAD
+
+
+def test_an_outcome_label_keeps_its_surrounding_whitespace_verbatim() -> None:
+    """Trimming would quietly turn `" Yes"` into the standard label it is not."""
+    market = _normalize(_market(outcomes='[" Yes", "No"]', clobTokenIds='["111", "222"]'))
+    assert market.outcomes == (" Yes", "No")
+    assert market.token_id_for(" Yes") == "111"
+
+
+def test_zero_padded_token_ids_are_still_the_same_token() -> None:
+    with pytest.raises(IngestionError):
+        _normalize(_market(clobTokenIds='["007", "7"]'))
+
+
+# --- numbers and timestamps ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("1e5", Decimal("1E+5")),
+        ("1E+21", Decimal("1E+21")),
+        ("0.000000000000000000001", Decimal("1E-21")),
+        (1e21, Decimal("1E+21")),
+        ("74637265.46443298", Decimal("74637265.46443298")),
+        (0.1, Decimal("0.1")),
+    ],
+    ids=["sci-string", "sci-caps", "tiny", "sci-float", "long-decimal", "float-tenth"],
+)
+def test_money_values_keep_their_exact_value_in_any_notation(
+    raw: object, expected: Decimal
+) -> None:
+    """Going through `float` would turn 0.1 into 0.1000000000000000055."""
+    assert _normalize(_market(liquidity=raw)).liquidity == expected
+
+
+@pytest.mark.parametrize("raw", ["NaN", "Infinity", "-Infinity", "sNaN"])
+def test_a_non_finite_money_value_is_refused(raw: str) -> None:
+    """A NaN liquidity would defeat every `<` comparison in the selection policy."""
+    with pytest.raises(IngestionError):
+        _normalize(_market(liquidity=raw))
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("2026-08-06T22:38:20.060949Z", datetime(2026, 8, 6, 22, 38, 20, 60949, tzinfo=UTC)),
+        ("2026-01-01T00:00:00+05:30", datetime(2025, 12, 31, 18, 30, tzinfo=UTC)),
+        ("2025-12-31T23:59:59.999999Z", datetime(2025, 12, 31, 23, 59, 59, 999999, tzinfo=UTC)),
+        ("2026-01-01T00:00:00-00:00", datetime(2026, 1, 1, tzinfo=UTC)),
+        ("2026-12-31T23:59:59Z", datetime(2026, 12, 31, 23, 59, 59, tzinfo=UTC)),
+    ],
+    ids=["subsecond", "offset", "year-boundary", "negative-zero-offset", "year-end"],
+)
+def test_timestamps_with_precision_and_offsets_land_on_the_same_instant(
+    raw: str, expected: datetime
+) -> None:
+    market = _normalize(_market(endDate=raw))
+    assert market.end_time == expected
+    assert market.end_time is not None
+    assert market.end_time.tzinfo is UTC
+
+
+def test_sub_microsecond_precision_is_truncated_not_rejected() -> None:
+    """Python's parser keeps microseconds; the loss must be truncation, not a crash."""
+    market = _normalize(_market(endDate="2026-08-06T22:38:20.0609491Z"))
+    assert market.end_time == datetime(2026, 8, 6, 22, 38, 20, 60949, tzinfo=UTC)

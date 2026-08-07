@@ -14,7 +14,7 @@ Two properties matter more than convenience here:
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -64,6 +64,18 @@ def normalize_markets(
     normalized_at: datetime,
 ) -> NormalizationReport:
     """Normalize a page of Gamma markets, quarantining the ones that do not parse."""
+    if isinstance(payloads, str | bytes | Mapping) or not isinstance(payloads, Iterable):
+        # A JSON body of `null`, `5`, `"maintenance"`, or a paginated envelope is
+        # not a page of markets. Iterating a string would fabricate one quarantine
+        # record per character and an envelope one per key — a report that looks
+        # like a sample and is not. A scalar would raise a bare TypeError that no
+        # caller translates. Generators stay acceptable: the parameter is Iterable
+        # by design so a caller can stream a page.
+        raise IngestionError(
+            f"expected a list of markets, got {type(payloads).__name__}",
+            reason=RejectionReason.MALFORMED_PAYLOAD,
+        )
+
     accumulator = _Accumulator()
     for payload in payloads:
         try:
@@ -178,12 +190,29 @@ def _quarantine(
 
 # --- field readers ------------------------------------------------------------------
 
+MAX_REPORTED_VALUE = 200
+
+
+def _clip(value: object) -> str:
+    """Render a source value for an error message without reproducing all of it.
+
+    These messages reach stderr and the quarantine record, and a hostile or
+    merely broken payload can carry megabytes in one field.
+    """
+    rendered = repr(value)
+    if len(rendered) <= MAX_REPORTED_VALUE:
+        return rendered
+    return f"{rendered[:MAX_REPORTED_VALUE]}… ({len(rendered)} characters)"
+
 
 def _require_text(payload: dict[str, Any], key: str) -> str:
     value = payload.get(key)
     if isinstance(value, str) and value.strip():
         return value
-    if isinstance(value, int | float) and not isinstance(value, bool):
+    if isinstance(value, int) and not isinstance(value, bool):
+        # An integer id has one exact text form, so reading it is lossless. A float
+        # does not — 2063134.0 would become "2063134.0" — so it is refused rather
+        # than coerced into an identifier that matches nothing.
         return str(value)
     raise IngestionError(
         f"missing or empty required field {key!r}",
@@ -229,7 +258,7 @@ def _optional_decimal(payload: dict[str, Any], key: str, market_id: str) -> Deci
         return Decimal(str(value))
     except (InvalidOperation, ValueError) as error:
         raise IngestionError(
-            f"field {key!r} is not a number: {value!r}",
+            f"field {key!r} is not a number: {_clip(value)}",
             reason=RejectionReason.MALFORMED_PAYLOAD,
             market_id=market_id,
             field=key,
@@ -256,14 +285,14 @@ def _optional_time(payload: dict[str, Any], key: str, market_id: str) -> datetim
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as error:
         raise IngestionError(
-            f"timestamp field {key!r} is not ISO 8601: {value!r}",
+            f"timestamp field {key!r} is not ISO 8601: {_clip(value)}",
             reason=RejectionReason.INVALID_TIMESTAMP,
             market_id=market_id,
             field=key,
         ) from error
     if parsed.tzinfo is None:
         raise IngestionError(
-            f"timestamp field {key!r} carries no timezone: {value!r}",
+            f"timestamp field {key!r} carries no timezone: {_clip(value)}",
             reason=RejectionReason.INVALID_TIMESTAMP,
             market_id=market_id,
             field=key,
@@ -279,7 +308,7 @@ def _decode_string_list(payload: dict[str, Any], key: str) -> Sequence[str]:
             value = orjson.loads(value)
         except orjson.JSONDecodeError as error:
             raise IngestionError(
-                f"field {key!r} is a string but not JSON: {value!r}",
+                f"field {key!r} is a string but not JSON: {_clip(value)}",
                 reason=RejectionReason.MALFORMED_PAYLOAD,
                 field=key,
             ) from error
@@ -299,7 +328,7 @@ def _decode_string_list(payload: dict[str, Any], key: str) -> Sequence[str]:
     for item in value:
         if not isinstance(item, str) or not item.strip():
             raise IngestionError(
-                f"field {key!r} contains a non-string entry: {item!r}",
+                f"field {key!r} contains a non-string entry: {_clip(item)}",
                 reason=RejectionReason.MALFORMED_PAYLOAD,
                 field=key,
             )
@@ -308,7 +337,23 @@ def _decode_string_list(payload: dict[str, Any], key: str) -> Sequence[str]:
 
 
 def _first_event_id(payload: dict[str, Any]) -> str | None:
+    """Read the owning event id, tolerating the JSON-string encoding Gamma uses.
+
+    ``events`` is delivered as a list today, but ``outcomes`` and ``clobTokenIds``
+    are delivered as JSON strings — so the encoding is a live possibility here too,
+    and silently returning ``None`` for it would drop a field with no reason
+    recorded (invariant 14).
+    """
     events = payload.get("events")
+    if isinstance(events, str):
+        try:
+            events = orjson.loads(events)
+        except orjson.JSONDecodeError as error:
+            raise IngestionError(
+                f"field 'events' is a string but not JSON: {_clip(events)}",
+                reason=RejectionReason.MALFORMED_PAYLOAD,
+                field="events",
+            ) from error
     if isinstance(events, list) and events and isinstance(events[0], dict):
         return _optional_text(events[0], "id")
     return None

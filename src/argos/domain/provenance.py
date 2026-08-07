@@ -30,7 +30,10 @@ class SourceProvenanceV1(VersionedModel):
 
     schema_version: ClassVar[str] = "source_provenance.v1"
 
-    source: str = Field(min_length=1)
+    source: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,31}$")
+    """Constrained because the archive builds a path from it: a value like
+    ``"../elsewhere"`` or an absolute path would place a write outside the archive."""
+
     endpoint: str = Field(min_length=1)
     http_status: int = Field(ge=100, le=599)
     retrieved_at: datetime

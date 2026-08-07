@@ -15,7 +15,6 @@ from collections.abc import Sequence
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import ClassVar
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -59,14 +58,12 @@ class MarketSelectionPolicy(BaseModel):
     min_volume: Decimal | None = None
 
     require_end_time: bool = True
-    min_hours_to_end: int | None = Field(default=None, ge=0)
+    exclude_ended: bool = True
+    """Declared rather than implicit: a run records this policy as its configuration
+    (invariant 13), so a filter that was applied but not described would make the
+    recorded configuration an incomplete account of the sample."""
 
-    def describe(self) -> str:
-        """Return a one-line human summary for report headers."""
-        clauses = [
-            name for name, value in sorted(self.model_dump().items()) if value not in (None, False)
-        ]
-        return ", ".join(clauses) or "no constraints"
+    min_hours_to_end: int | None = Field(default=None, ge=0)
 
 
 class MarketExclusion(BaseModel):
@@ -81,14 +78,16 @@ class MarketExclusion(BaseModel):
 
 
 class SelectionResult(BaseModel):
-    """Selected markets plus a full account of what was left out."""
+    """Selected markets plus a full account of what was left out.
+
+    ``selected`` and ``excluded`` together are exactly the markets considered:
+    nothing enters or leaves without appearing in one of them.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     selected: tuple[MarketDefinitionV1, ...] = ()
     excluded: tuple[MarketExclusion, ...] = ()
-
-    considered: ClassVar[str] = "selected + excluded"
 
     @property
     def total(self) -> int:
@@ -161,7 +160,7 @@ def _first_failure(
         return ExclusionReason.NO_END_TIME, "market declares no end time"
 
     if as_of is not None and market.end_time is not None:
-        if market.end_time <= as_of:
+        if policy.exclude_ended and market.end_time <= as_of:
             return ExclusionReason.ALREADY_ENDED, f"ended at {market.end_time.isoformat()}"
         if policy.min_hours_to_end is not None:
             remaining_hours = (market.end_time - as_of).total_seconds() / 3600

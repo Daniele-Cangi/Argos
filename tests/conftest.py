@@ -12,7 +12,9 @@ the assertion it was meant to exercise. Configuration is part of the experiment
 from __future__ import annotations
 
 import os
+import socket
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
 import structlog
@@ -30,6 +32,48 @@ hypothesis_settings.register_profile(
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
 hypothesis_settings.load_profile("argos")
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _no_outbound_network() -> Iterator[None]:
+    """Make "unit tests do not require internet" structural rather than a convention.
+
+    The M1 exit criterion is currently satisfied because every adapter test happens to
+    mount respx; nothing stops the next one from reaching the real Gamma API and turning
+    a contract test into an availability test. Only outbound IP connects are refused —
+    ``AF_UNIX`` socket pairs are how asyncio builds its own self-pipe.
+    """
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+    real_create_connection = socket.create_connection
+    blocked = (socket.AF_INET, socket.AF_INET6)
+
+    def guard(name: str, original: Any) -> Any:
+        def wrapper(self: socket.socket, address: Any, *args: Any, **kwargs: Any) -> Any:
+            if self.family in blocked:
+                raise RuntimeError(
+                    f"tests must not open a network connection ({name} to {address!r}); "
+                    "record a fixture and mount respx instead"
+                )
+            return original(self, address, *args, **kwargs)
+
+        return wrapper
+
+    def refuse_create_connection(address: Any, *args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError(
+            f"tests must not open a network connection (create_connection to {address!r}); "
+            "record a fixture and mount respx instead"
+        )
+
+    socket.socket.connect = guard("connect", real_connect)  # type: ignore[method-assign]
+    socket.socket.connect_ex = guard("connect_ex", real_connect_ex)  # type: ignore[method-assign]
+    socket.create_connection = refuse_create_connection  # type: ignore[assignment]
+    try:
+        yield
+    finally:
+        socket.socket.connect = real_connect  # type: ignore[method-assign]
+        socket.socket.connect_ex = real_connect_ex  # type: ignore[method-assign]
+        socket.create_connection = real_create_connection  # type: ignore[assignment]
 
 
 @pytest.fixture(autouse=True)

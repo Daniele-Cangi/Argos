@@ -23,8 +23,11 @@ LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
 ENV_PREFIX = "ARGOS_"
 
-_REST_SCHEMES = ("https://", "http://")
-_WS_SCHEMES = ("wss://", "ws://")
+# docs/09_SECURITY.md: reject non-HTTPS endpoints. The integrity of the payloads
+# is the product, so a mistyped or hostile base URL must not silently downgrade
+# the transport that carries them.
+_REST_SCHEMES = ("https://",)
+_WS_SCHEMES = ("wss://",)
 
 
 class Settings(BaseSettings):

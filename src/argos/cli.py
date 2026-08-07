@@ -139,6 +139,11 @@ def markets_discover(
         "normalized": len(report.accepted),
         "quarantined": len(report.quarantined),
         "quarantine_reasons": report.counts_by_reason(),
+        # Identities, not only counts: an operator cannot act on "2 quarantined".
+        "quarantined_markets": [
+            {"market_id": record.market_id, "slug": record.slug, "reason": record.reason.value}
+            for record in report.quarantined
+        ],
         "selected": len(selection.selected),
         "exclusion_reasons": selection.counts_by_reason(),
         "markets": [
@@ -201,6 +206,11 @@ def _run_or_exit(coroutine: Any) -> Any:
         return asyncio.run(coroutine)
     except ArgosError as exc:
         _fail(exc)
+    except ValueError as exc:
+        # An adapter argument the operator got wrong (`--limit 0`) is a usage
+        # error, not a crash. Without this it reaches the user as a traceback.
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
 
 
 def _fail(exc: ArgosError) -> NoReturn:
