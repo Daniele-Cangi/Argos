@@ -13,9 +13,9 @@ import orjson
 import typer
 
 from argos import __version__
-from argos.clock import LiveClock
+from argos.clock import LiveClock, RealPacer
 from argos.compiler import build_market_audit, compile_market_contract, render_market_audit
-from argos.config import Settings, build_run_manifest, load_settings
+from argos.config import RunMode, Settings, WorkingTreeStatus, build_run_manifest, load_settings
 from argos.domain.market import MarketDefinitionV1
 from argos.domain.selection import MarketSelectionPolicy, select_markets
 from argos.errors import ArgosError
@@ -61,17 +61,26 @@ def config() -> None:
     typer.echo(orjson.dumps(payload, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS).decode())
 
 
+# A module-level singleton, not an inline call: ruff (B008) only recognizes
+# builtin literal types (str/int/bool) as safe inline `typer.Option` defaults,
+# not a custom enum, and constructing one per invocation would be pointless
+# anyway since it is immutable.
+_MODE_OPTION = typer.Option(RunMode.INSPECT, help="Kind of run this manifest describes.")
+
+
 @app.command()
-def manifest(mode: str = typer.Option("inspect", help="Label for this run.")) -> None:
+def manifest(mode: RunMode = _MODE_OPTION) -> None:
     """Emit a run manifest for the current configuration."""
     settings = _load_or_exit()
     configure_logging(settings.log_level)
+    code_revision, working_tree = _code_revision()
     run_manifest = build_run_manifest(
         settings=settings,
         clock=LiveClock(),
         run_id=uuid4().hex,
         mode=mode,
-        code_revision=_code_revision(),
+        code_revision=code_revision,
+        working_tree=working_tree,
     )
     typer.echo(
         orjson.dumps(
@@ -101,13 +110,14 @@ def markets_discover(
     settings = _load_or_exit()
     configure_logging(settings.log_level)
     clock = LiveClock()
+    pacer = RealPacer()
     policy = MarketSelectionPolicy(
         min_liquidity=_decimal_option(min_liquidity, "--min-liquidity"),
         min_hours_to_end=min_hours_to_end,
     )
 
     async def run() -> tuple[Any, Any]:
-        async with GammaClient(settings, clock) as client:
+        async with GammaClient(settings, clock, pacer=pacer) as client:
             return (await client.list_markets(limit=limit), clock.now())
 
     response, observed_at = _run_or_exit(run())
@@ -173,9 +183,10 @@ def markets_audit(
     settings = _load_or_exit()
     configure_logging(settings.log_level)
     clock = LiveClock()
+    pacer = RealPacer()
 
     async def run() -> tuple[Any, Any]:
-        async with GammaClient(settings, clock) as client:
+        async with GammaClient(settings, clock, pacer=pacer) as client:
             return (await client.get_market(market_id), clock.now())
 
     response, observed_at = _run_or_exit(run())
@@ -241,14 +252,21 @@ def _load_or_exit() -> Settings:
         raise typer.Exit(code=2) from exc
 
 
-def _code_revision() -> str | None:
-    """Return this repository's git revision, or None when it cannot be proven.
+def _code_revision() -> tuple[str | None, WorkingTreeStatus]:
+    """Return this repository's git revision and working-tree cleanliness.
 
     git discovers repositories upward from ``cwd``. Installed as a wheel,
     ``REPO_ROOT`` is inside the virtualenv, so a bare ``rev-parse HEAD`` would
     happily return the HEAD of whatever repository happens to contain it — and
     stamp a manifest with provenance for code that never produced the run.
-    The toplevel is therefore verified before the revision is trusted.
+    The toplevel is therefore verified before the revision is trusted, and a
+    dirty tree is reported explicitly rather than silently attributed to
+    ``HEAD`` alone: a run built from uncommitted changes is not reproducible
+    from the revision string by itself.
+
+    Working-tree status is only ever reported once the same toplevel check has
+    passed for the revision; a revision that could not be proven yields
+    ``WorkingTreeStatus.UNKNOWN`` rather than a guess.
     """
     try:
         result = subprocess.run(
@@ -260,19 +278,35 @@ def _code_revision() -> str | None:
             timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
-        return None
+        return None, WorkingTreeStatus.UNKNOWN
     if result.returncode != 0:
-        return None
+        return None, WorkingTreeStatus.UNKNOWN
 
     lines = result.stdout.split()
     if len(lines) != 2:
-        return None
+        return None, WorkingTreeStatus.UNKNOWN
     toplevel, revision = lines
     if Path(toplevel).resolve() != REPO_ROOT:
-        return None
+        return None, WorkingTreeStatus.UNKNOWN
     if len(revision) != 40 or not all(char in "0123456789abcdef" for char in revision):
-        return None
-    return revision
+        return None, WorkingTreeStatus.UNKNOWN
+
+    try:
+        status = subprocess.run(
+            ("git", "-c", "core.fsmonitor=false", "status", "--porcelain"),
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return revision, WorkingTreeStatus.UNKNOWN
+    if status.returncode != 0:
+        return revision, WorkingTreeStatus.UNKNOWN
+
+    working_tree = WorkingTreeStatus.DIRTY if status.stdout.strip() else WorkingTreeStatus.CLEAN
+    return revision, working_tree
 
 
 if __name__ == "__main__":

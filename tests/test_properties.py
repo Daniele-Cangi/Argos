@@ -18,7 +18,7 @@ from hypothesis import settings as hypothesis_settings
 from hypothesis import strategies as st
 
 from argos.clock import ReplayClock, ensure_utc
-from argos.config import RunManifest, Settings
+from argos.config import RunManifest, RunMode, Settings, WorkingTreeStatus
 from argos.config.settings import ENV_PREFIX, unknown_environment_keys
 from argos.domain.market import MarketDefinitionV1
 from argos.domain.provenance import SourceProvenanceV1, sha256_hex
@@ -130,23 +130,43 @@ JSON_SCALARS = st.one_of(
     SAFE_TEXT,
 )
 
-MANIFESTS = st.builds(
-    RunManifest,
-    run_id=SAFE_TEXT,
-    mode=SAFE_TEXT,
-    created_at=UTC_MOMENTS,
-    argos_version=SAFE_TEXT,
-    code_revision=st.one_of(st.none(), SAFE_TEXT),
-    config_fingerprint=SAFE_TEXT,
-    settings_snapshot=st.dictionaries(SAFE_TEXT, JSON_SCALARS, max_size=6),
-)
+
+@st.composite
+def _manifests(draw: st.DrawFn) -> RunManifest:
+    """Build manifests that respect the code-revision/working-tree dependency.
+
+    ``working_tree`` may only claim clean or dirty when a revision was actually
+    proven, so the two fields are drawn jointly rather than independently; a
+    plain ``st.builds`` would spend most of its examples on the combination the
+    model rejects by design.
+    """
+    code_revision = draw(st.one_of(st.none(), SAFE_TEXT))
+    working_tree = draw(
+        st.just(WorkingTreeStatus.UNKNOWN)
+        if code_revision is None
+        else st.sampled_from(WorkingTreeStatus)
+    )
+    return RunManifest(
+        run_id=draw(SAFE_TEXT),
+        mode=draw(st.sampled_from(RunMode)),
+        created_at=draw(UTC_MOMENTS),
+        argos_version=draw(SAFE_TEXT),
+        code_revision=code_revision,
+        working_tree=working_tree,
+        config_fingerprint=draw(SAFE_TEXT),
+        settings_snapshot=draw(st.dictionaries(SAFE_TEXT, JSON_SCALARS, max_size=6)),
+        schema_versions=tuple(draw(st.lists(SAFE_TEXT, max_size=4))),
+    )
+
+
+MANIFESTS = _manifests()
 
 
 @given(manifest=MANIFESTS)
 def test_a_record_survives_a_serialization_round_trip(manifest: RunManifest) -> None:
     record = manifest.to_record()
     assert RunManifest.from_record(record) == manifest
-    assert record["schema_version"] == "run_manifest.v1"
+    assert record["schema_version"] == "run_manifest.v2"
 
 
 @given(manifest=MANIFESTS)

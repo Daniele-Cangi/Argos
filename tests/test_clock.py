@@ -3,16 +3,20 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from argos.clock import Clock, LiveClock, ReplayClock, ensure_utc
+from argos.clock import LiveClock, RealPacer, ReplayClock, ensure_utc
 from argos.errors import ClockRegressionError, InvalidDurationError, NaiveDatetimeError
 
 START = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 NEW_YORK = ZoneInfo("America/New_York")
 
 
-def test_both_clocks_satisfy_the_protocol() -> None:
-    assert isinstance(LiveClock(), Clock)
-    assert isinstance(ReplayClock(START), Clock)
+def test_both_clocks_expose_now() -> None:
+    """`Clock` is not `@runtime_checkable` (ADR-0009), so this is a duck-typed
+    check rather than `isinstance`: a structural check on `now` alone cannot
+    distinguish `LiveClock` from `ReplayClock`, which would be worse than none.
+    """
+    assert callable(LiveClock().now)
+    assert callable(ReplayClock(START).now)
 
 
 def test_live_clock_returns_aware_utc() -> None:
@@ -20,9 +24,51 @@ def test_live_clock_returns_aware_utc() -> None:
     assert now.tzinfo is UTC
 
 
-async def test_live_clock_rejects_negative_sleep() -> None:
+# --- pacing: real elapsed time is owned by RealPacer, not by either clock --------
+# ADR-0009 moves `sleep` off the `Clock` protocol entirely: a backoff sleep has no
+# meaning in replay, and only `RealPacer` performs it, via `anyio`.
+
+
+async def test_real_pacer_rejects_negative_wait() -> None:
     with pytest.raises(ValueError):
-        await LiveClock().sleep(-0.1)
+        await RealPacer().wait(-0.1)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+async def test_real_pacer_rejects_non_finite_wait(bad: float) -> None:
+    with pytest.raises(InvalidDurationError) as caught:
+        await RealPacer().wait(bad)
+    assert caught.value.code == "argos.invalid_duration"
+
+
+async def test_real_pacer_wait_of_zero_returns_without_delaying() -> None:
+    """Exercises the non-negative branch without introducing a timing dependency."""
+    before = LiveClock().now()
+    await RealPacer().wait(0)
+    assert LiveClock().now() >= before
+
+
+def test_real_pacer_move_on_after_rejects_a_negative_deadline() -> None:
+    with pytest.raises(ValueError):
+        RealPacer().move_on_after(-0.1)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_real_pacer_move_on_after_rejects_a_non_finite_deadline(bad: float) -> None:
+    with pytest.raises(InvalidDurationError) as caught:
+        RealPacer().move_on_after(bad)
+    assert caught.value.code == "argos.invalid_duration"
+
+
+async def test_real_pacer_move_on_after_bounds_a_slow_body() -> None:
+    """A minimal, deliberately short real-time check that `move_on_after` actually
+    cancels its body — the deadline-during-backoff property itself is proven
+    without real time in `tests/test_gamma_client.py` via `RecordingPacer`.
+    """
+    pacer = RealPacer()
+    with pacer.move_on_after(0.01) as scope:
+        await pacer.wait(1.0)
+    assert scope.cancelled_caught
 
 
 def test_ensure_utc_converts_offset_timestamps() -> None:
@@ -70,12 +116,6 @@ def test_replay_clock_rejects_backwards_moves() -> None:
 def test_replay_clock_rejects_naive_start() -> None:
     with pytest.raises(NaiveDatetimeError):
         ReplayClock(datetime(2026, 1, 1, 12, 0))
-
-
-async def test_replay_sleep_advances_virtual_time_without_waiting() -> None:
-    clock = ReplayClock(START)
-    await clock.sleep(3600)
-    assert clock.now() == START + timedelta(hours=1)
 
 
 def test_replay_clock_is_reproducible() -> None:
@@ -204,13 +244,6 @@ def test_a_non_finite_duration_is_refused_with_a_countable_code(bad: float) -> N
     assert caught.value.code == "argos.invalid_duration"
 
 
-async def test_a_non_finite_sleep_is_refused_by_both_clocks() -> None:
-    with pytest.raises(InvalidDurationError):
-        await ReplayClock(START).sleep(float("nan"))
-    with pytest.raises(InvalidDurationError):
-        await LiveClock().sleep(float("nan"))
-
-
 def test_duration_failures_stay_catchable_as_value_errors() -> None:
     """Callers written against the stdlib sleep contract must not break."""
     assert issubclass(InvalidDurationError, ValueError)
@@ -224,23 +257,3 @@ def test_a_rejected_advance_to_never_leaves_the_clock_in_a_half_moved_state() ->
     with pytest.raises(NaiveDatetimeError):
         clock.advance_to(datetime(2027, 1, 1, 0, 0))
     assert clock.now() == START + timedelta(seconds=60)
-
-
-async def test_replay_sleep_rejects_negative_durations_without_moving_time() -> None:
-    clock = ReplayClock(START)
-    with pytest.raises(ValueError):
-        await clock.sleep(-1)
-    assert clock.now() == START
-
-
-async def test_replay_sleep_of_zero_is_a_no_op() -> None:
-    clock = ReplayClock(START)
-    await clock.sleep(0)
-    assert clock.now() == START
-
-
-async def test_live_clock_sleep_of_zero_returns_without_delaying() -> None:
-    """Exercises the non-negative branch without introducing a timing dependency."""
-    before = LiveClock().now()
-    await LiveClock().sleep(0)
-    assert LiveClock().now() >= before

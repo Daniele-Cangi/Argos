@@ -9,8 +9,16 @@ import pytest
 from pydantic import ValidationError
 
 from argos.clock import ReplayClock
-from argos.config import RunManifest, Settings, build_run_manifest, load_settings
+from argos.config import (
+    RunManifest,
+    RunMode,
+    Settings,
+    WorkingTreeStatus,
+    build_run_manifest,
+    load_settings,
+)
 from argos.config.settings import unknown_environment_keys
+from argos.domain.provenance import SourceProvenanceV1
 from argos.domain.versioning import VersionedModel
 from argos.errors import (
     ConfigurationError,
@@ -23,12 +31,25 @@ START = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _provenance(**overrides: Any) -> SourceProvenanceV1:
+    fields: dict[str, Any] = {
+        "source": "gamma",
+        "endpoint": "/markets",
+        "http_status": 200,
+        "retrieved_at": START,
+        "raw_sha256": "a" * 64,
+        "byte_length": 12,
+    }
+    fields.update(overrides)
+    return SourceProvenanceV1(**fields)
+
+
 def _manifest(**overrides: Any) -> RunManifest:
     fields: dict[str, Any] = {
         "settings": Settings(),
         "clock": ReplayClock(START),
         "run_id": "run-1",
-        "mode": "replay",
+        "mode": RunMode.REPLAY,
     }
     fields.update(overrides)
     return build_run_manifest(**fields)
@@ -90,13 +111,19 @@ def test_fingerprint_is_stable_and_sensitive() -> None:
     assert baseline != Settings(log_level="DEBUG").fingerprint()
 
 
+def test_fingerprint_is_sensitive_to_the_jitter_seed() -> None:
+    """ADR-0009: the seed is configuration, not a runtime accident, so a capture
+    that changed it must be traceable through the manifest's config fingerprint."""
+    assert Settings().fingerprint() != Settings(source_jitter_seed=1).fingerprint()
+
+
 def test_manifest_uses_the_injected_clock_and_is_reproducible() -> None:
     settings = Settings()
     first = build_run_manifest(
-        settings=settings, clock=ReplayClock(START), run_id="run-1", mode="replay"
+        settings=settings, clock=ReplayClock(START), run_id="run-1", mode=RunMode.REPLAY
     )
     second = build_run_manifest(
-        settings=settings, clock=ReplayClock(START), run_id="run-1", mode="replay"
+        settings=settings, clock=ReplayClock(START), run_id="run-1", mode=RunMode.REPLAY
     )
     assert first.created_at == START
     assert first.to_record() == second.to_record()
@@ -105,26 +132,26 @@ def test_manifest_uses_the_injected_clock_and_is_reproducible() -> None:
 
 def test_manifest_round_trips_with_its_schema_version() -> None:
     manifest = build_run_manifest(
-        settings=Settings(), clock=ReplayClock(START), run_id="run-1", mode="replay"
+        settings=Settings(), clock=ReplayClock(START), run_id="run-1", mode=RunMode.REPLAY
     )
     record = manifest.to_record()
-    assert record["schema_version"] == "run_manifest.v1"
+    assert record["schema_version"] == "run_manifest.v2"
     assert RunManifest.from_record(record) == manifest
 
 
 def test_manifest_rejects_a_foreign_schema_version() -> None:
     manifest = build_run_manifest(
-        settings=Settings(), clock=ReplayClock(START), run_id="run-1", mode="replay"
+        settings=Settings(), clock=ReplayClock(START), run_id="run-1", mode=RunMode.REPLAY
     )
     record = manifest.to_record()
-    record["schema_version"] = "run_manifest.v2"
+    record["schema_version"] = "run_manifest.v1"
     with pytest.raises(SchemaVersionError):
         RunManifest.from_record(record)
 
 
 def test_manifest_is_immutable() -> None:
     manifest = build_run_manifest(
-        settings=Settings(), clock=ReplayClock(START), run_id="run-1", mode="replay"
+        settings=Settings(), clock=ReplayClock(START), run_id="run-1", mode=RunMode.REPLAY
     )
     with pytest.raises(ValidationError):
         manifest.run_id = "run-2"  # type: ignore[misc]
@@ -237,6 +264,8 @@ def test_env_example_names_only_real_settings_fields() -> None:
         {"http_timeout_seconds": -1.0},
         {"http_max_attempts": 0},
         {"http_max_attempts": -3},
+        {"source_jitter_seed": -1},
+        {"source_jitter_seed": 2**32},
         {"log_level": "LOUD"},
         {"gamma_base_url": "gamma-api.polymarket.com"},
         {"gamma_base_url": "wss://gamma-api.polymarket.com"},
@@ -252,6 +281,11 @@ def test_invalid_values_are_refused_at_the_boundary(override: dict[str, object])
 @pytest.mark.parametrize("attempts", [1, 2, 10])
 def test_every_legal_retry_count_is_accepted(attempts: int) -> None:
     assert Settings(http_max_attempts=attempts).http_max_attempts == attempts
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2**32 - 1])
+def test_every_legal_jitter_seed_is_accepted(seed: int) -> None:
+    assert Settings(source_jitter_seed=seed).source_jitter_seed == seed
 
 
 @pytest.mark.parametrize("override", [{"http_max_attempts": 11}, {"http_timeout_seconds": 121.0}])
@@ -354,7 +388,7 @@ def test_the_schema_version_cannot_be_smuggled_in_as_a_field() -> None:
     with pytest.raises(ValidationError):
         RunManifest(
             run_id="run-1",
-            mode="replay",
+            mode=RunMode.REPLAY,
             created_at=START,
             argos_version="0.0.0",
             config_fingerprint="f",
@@ -395,7 +429,7 @@ def test_manifest_refuses_a_naive_created_at() -> None:
     with pytest.raises(NaiveDatetimeError):
         RunManifest(
             run_id="run-1",
-            mode="replay",
+            mode=RunMode.REPLAY,
             created_at=datetime(2026, 1, 1, 12, 0),
             argos_version="0.0.0",
             config_fingerprint="f",
@@ -409,7 +443,7 @@ def test_manifest_normalizes_a_non_utc_created_at() -> None:
     offset = datetime(2026, 1, 1, 13, 0, tzinfo=timezone(timedelta(hours=1)))
     manifest = RunManifest(
         run_id="run-1",
-        mode="replay",
+        mode=RunMode.REPLAY,
         created_at=offset,
         argos_version="0.0.0",
         config_fingerprint="f",
@@ -425,3 +459,145 @@ def test_a_subclass_cannot_silently_reuse_its_parents_schema_version() -> None:
 
         class ExtendedManifest(RunManifest):
             extra_note: str = ""
+
+
+# --- mode is an enum, not a free-form string (carried from the M0 closure) --------
+
+
+def test_mode_rejects_a_string_outside_the_enum() -> None:
+    with pytest.raises(ValidationError):
+        _manifest(mode="some-future-milestone")
+
+
+@pytest.mark.parametrize(
+    "mode", [RunMode.DISCOVER, RunMode.AUDIT, RunMode.CAPTURE, RunMode.REPLAY, RunMode.INSPECT]
+)
+def test_every_declared_mode_round_trips(mode: RunMode) -> None:
+    manifest = _manifest(mode=mode)
+    record = manifest.to_record()
+    assert record["mode"] == mode.value
+    assert RunManifest.from_record(record).mode is mode
+
+
+def test_mode_accepts_its_own_string_value_like_any_other_enum_field() -> None:
+    """A stored record round-trips through its serialized value, not the Python name."""
+    manifest = _manifest(mode="capture")
+    assert manifest.mode is RunMode.CAPTURE
+
+
+# --- schema versions and data provenance (carried from the M0 closure) ------------
+
+
+def test_schema_versions_default_to_empty_for_a_run_that_touches_no_schema() -> None:
+    manifest = _manifest(mode=RunMode.INSPECT)
+    assert manifest.schema_versions == ()
+    assert manifest.input_provenance == ()
+
+
+def test_schema_versions_are_deduplicated_and_sorted() -> None:
+    manifest = _manifest(
+        schema_versions=[
+            "compiled_market_contract.v1",
+            "market_definition.v1",
+            "market_definition.v1",
+        ]
+    )
+    assert manifest.schema_versions == ("compiled_market_contract.v1", "market_definition.v1")
+
+
+def test_schema_versions_order_does_not_affect_the_record() -> None:
+    forward = _manifest(schema_versions=["b.v1", "a.v1"])
+    backward = _manifest(schema_versions=["a.v1", "b.v1"])
+    assert forward.to_record() == backward.to_record()
+
+
+def test_an_empty_schema_version_entry_is_refused() -> None:
+    with pytest.raises(ValidationError):
+        _manifest(schema_versions=["market_definition.v1", ""])
+
+
+def test_input_provenance_round_trips_and_links_raw_payloads() -> None:
+    provenance = _provenance(raw_sha256="b" * 64)
+    manifest = _manifest(
+        mode=RunMode.CAPTURE,
+        schema_versions=["market_definition.v1"],
+        input_provenance=[provenance],
+    )
+    record = manifest.to_record()
+    assert record["input_provenance"][0]["raw_sha256"] == "b" * 64
+    assert record["input_provenance"][0]["endpoint"] == "/markets"
+    restored = RunManifest.from_record(record)
+    assert restored.input_provenance == (provenance,)
+
+
+def test_input_provenance_order_does_not_affect_the_record() -> None:
+    first = _provenance(raw_sha256="a" * 64, endpoint="/markets")
+    second = _provenance(raw_sha256="c" * 64, endpoint="/markets/2")
+    forward = _manifest(input_provenance=[first, second])
+    backward = _manifest(input_provenance=[second, first])
+    assert forward.to_record() == backward.to_record()
+
+
+def test_input_provenance_rejects_a_non_provenance_item() -> None:
+    with pytest.raises(ValidationError):
+        _manifest(input_provenance=[{"not": "provenance"}])
+
+
+def test_differently_ordered_inputs_serialize_to_identical_bytes() -> None:
+    """Dict equality (as used elsewhere in this file) can hide an ordering
+    difference orjson would still serialize distinctly; this asserts the actual
+    canonical bytes a persisted manifest would write are identical regardless of
+    the order the caller happened to collect schema versions and provenance in."""
+    first = _provenance(raw_sha256="1" * 64, endpoint="/markets")
+    second = _provenance(raw_sha256="2" * 64, endpoint="/markets/2")
+
+    forward = _manifest(
+        schema_versions=["market_definition.v1", "compiled_market_contract.v1"],
+        input_provenance=[first, second],
+    )
+    backward = _manifest(
+        schema_versions=["compiled_market_contract.v1", "market_definition.v1"],
+        input_provenance=[second, first],
+    )
+
+    forward_bytes = orjson.dumps(forward.to_record(), option=orjson.OPT_SORT_KEYS)
+    backward_bytes = orjson.dumps(backward.to_record(), option=orjson.OPT_SORT_KEYS)
+    assert forward_bytes == backward_bytes
+
+
+# --- working-tree state alongside code_revision (carried from the M0 closure) -----
+
+
+def test_working_tree_defaults_to_unknown() -> None:
+    manifest = _manifest()
+    assert manifest.working_tree is WorkingTreeStatus.UNKNOWN
+
+
+@pytest.mark.parametrize("status", [WorkingTreeStatus.CLEAN, WorkingTreeStatus.DIRTY])
+def test_working_tree_requires_a_trusted_revision(status: WorkingTreeStatus) -> None:
+    """A manifest cannot claim clean/dirty without the revision that makes the
+    claim meaningful — otherwise a wheel install could report a stale CLEAN."""
+    with pytest.raises(ValidationError):
+        _manifest(code_revision=None, working_tree=status)
+
+
+@pytest.mark.parametrize("status", [WorkingTreeStatus.CLEAN, WorkingTreeStatus.DIRTY])
+def test_working_tree_is_recorded_alongside_a_trusted_revision(status: WorkingTreeStatus) -> None:
+    manifest = _manifest(code_revision="a" * 40, working_tree=status)
+    assert manifest.working_tree is status
+    assert RunManifest.from_record(manifest.to_record()).working_tree is status
+
+
+def test_a_dirty_tree_and_a_clean_tree_produce_different_records() -> None:
+    clean = _manifest(code_revision="a" * 40, working_tree=WorkingTreeStatus.CLEAN)
+    dirty = _manifest(code_revision="a" * 40, working_tree=WorkingTreeStatus.DIRTY)
+    assert clean.to_record() != dirty.to_record()
+
+
+def test_unknown_working_tree_is_also_allowed_alongside_a_trusted_revision() -> None:
+    """The validator's one rule is "no clean/dirty claim without a revision" — it
+    does not require the converse. A revision paired with `UNKNOWN` is legitimate:
+    for example a revision resolved from git while `git status` itself failed."""
+    manifest = _manifest(code_revision="a" * 40, working_tree=WorkingTreeStatus.UNKNOWN)
+    assert manifest.code_revision == "a" * 40
+    assert manifest.working_tree is WorkingTreeStatus.UNKNOWN

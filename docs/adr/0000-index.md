@@ -10,5 +10,6 @@
 | 0006 | Probability naming requires calibration | Accepted |
 | 0007 | Execution is outside the autonomous scope | Accepted |
 | 0008 | Public Polymarket APIs first | Accepted |
+| 0009 | Pacing is separate from timekeeping | Accepted |
 
 Create new ADRs by copying the structure used below. Never rewrite an accepted ADR to hide a changed decision; supersede it.

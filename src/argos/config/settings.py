@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     http_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
     http_max_attempts: int = Field(default=5, ge=1, le=10)
 
+    # ADR-0009: retry-backoff jitter is drawn from an adapter-owned
+    # `random.Random`, never from the `random` module's shared global state, so
+    # one market's backoff never depends on how many siblings retried before it
+    # in the same capture loop. The seed is configuration, not a runtime
+    # accident, so it is recorded in the run manifest alongside everything else
+    # that can change a capture's output.
+    source_jitter_seed: int = Field(default=0, ge=0, le=2**32 - 1)
+
     execution_enabled: bool = False
     """Always false through M4. Present so that enabling it fails loudly (ADR-0007)."""
 

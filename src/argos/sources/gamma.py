@@ -12,18 +12,18 @@ schema surprise never destroys the evidence.
 
 from __future__ import annotations
 
+import random
 import re
 from dataclasses import dataclass, replace
 from types import TracebackType
 from typing import Any, Final, Self
 
-import anyio
 import httpx
 import orjson
-from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt
-from tenacity.wait import wait_exponential_jitter
+from tenacity import AsyncRetrying, RetryCallState, retry_if_exception_type, stop_after_attempt
+from tenacity.wait import wait_base
 
-from argos.clock import Clock
+from argos.clock import Clock, Pacer
 from argos.config import Settings
 from argos.domain.provenance import SourceProvenanceV1, sha256_hex
 from argos.errors import SourceProtocolError, SourceTimeoutError, SourceUnavailableError
@@ -57,6 +57,38 @@ class SourceHealth:
     bytes_received: int = 0
 
 
+class _SeededExponentialJitter(wait_base):
+    """Exponential backoff with jitter drawn from an adapter-owned generator.
+
+    tenacity's own ``wait_exponential_jitter`` draws from module-level
+    ``random.uniform`` with no injection hook. In a capture loop over many
+    markets, the backoff one market receives would then depend on how many
+    sibling markets retried before it — order-dependent hidden global state,
+    forbidden by CLAUDE.md and closed by ADR-0009. The formula below is
+    otherwise identical to tenacity's.
+    """
+
+    def __init__(
+        self, rng: random.Random, *, initial: float, max: float, jitter: float = 1.0
+    ) -> None:
+        self._rng = rng
+        self._initial = initial
+        self._max = max
+        self._jitter = jitter
+
+    def __call__(self, retry_state: RetryCallState) -> float:
+        jitter = self._rng.uniform(0, self._jitter)
+        try:
+            # tenacity is untyped here, so `attempt_number` arrives as Any and
+            # would leak an Any return out of this method. Pin it to int.
+            attempt: int = int(retry_state.attempt_number)
+            exp = float(2 ** (attempt - 1))
+            result = self._initial * exp + jitter
+        except OverflowError:
+            result = self._max
+        return max(0.0, min(result, self._max))
+
+
 class _RetryableResponse(Exception):
     """Internal signal: this attempt failed in a way worth retrying."""
 
@@ -70,16 +102,11 @@ class _RetryableResponse(Exception):
 class GammaClient:
     """Async client for the public Gamma API.
 
-    Backoff sleeps go through the injected clock, so a test can pass a
-    :class:`~argos.clock.ReplayClock` and pay no wall-clock seconds for a retry
-    path.
-
-    **Do not hand this client the replay scheduler's clock.** ``ReplayClock.sleep``
-    advances virtual time, and the jitter in the backoff is not seeded — so an
-    adapter retrying under the scheduler's clock would move replay time by a
-    nondeterministic amount and break the M3 requirement that identical input
-    produce an identical output hash. Separating pacing from timekeeping is an
-    open decision recorded in ``docs/BACKLOG.md`` against M2.
+    Timekeeping and pacing are separate ports (ADR-0009): ``clock`` supplies
+    ``retrieved_at`` timestamps, and ``pacer`` supplies retry backoff and the
+    overall request deadline. Only a live pacer exists — retrying has no
+    meaning in replay, where every attempt's outcome is already fixed by the
+    capture.
     """
 
     def __init__(
@@ -87,10 +114,13 @@ class GammaClient:
         settings: Settings,
         clock: Clock,
         *,
+        pacer: Pacer,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._settings = settings
         self._clock = clock
+        self._pacer = pacer
+        self._rng = random.Random(settings.source_jitter_seed)
         self._health = SourceHealth()
         self._client = httpx.AsyncClient(
             base_url=settings.gamma_base_url,
@@ -172,8 +202,10 @@ class GammaClient:
         # move_on_after, not fail_after: only a cancellation this scope actually
         # caught may be reported as a deadline. fail_after would also convert a
         # stray TimeoutError from below into a deadline that never expired, and
-        # double-count the failure.
-        with anyio.move_on_after(self._deadline_seconds) as scope:
+        # double-count the failure. This goes through the pacer, not anyio
+        # directly (ADR-0009): the injected clock has no bearing on real elapsed
+        # time, and the deadline must actually bound backoff sleeps too.
+        with self._pacer.move_on_after(self._deadline_seconds) as scope:
             return await self._get_within_deadline(path, params)
 
         if scope.cancelled_caught:
@@ -190,9 +222,9 @@ class GammaClient:
         try:
             async for attempt in AsyncRetrying(
                 stop=stop_after_attempt(self._settings.http_max_attempts),
-                wait=wait_exponential_jitter(initial=0.5, max=MAX_BACKOFF_SECONDS),
+                wait=_SeededExponentialJitter(self._rng, initial=0.5, max=MAX_BACKOFF_SECONDS),
                 retry=retry_if_exception_type(_RetryableResponse),
-                sleep=self._clock.sleep,
+                sleep=self._pacer.wait,
                 reraise=True,
             ):
                 with attempt:

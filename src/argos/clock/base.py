@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import math
 from datetime import UTC, datetime, timedelta
-from typing import Protocol, final, runtime_checkable
-
-import anyio
+from typing import Protocol, final
 
 from argos.errors import ClockRegressionError, InvalidDurationError, NaiveDatetimeError
 
@@ -39,16 +37,18 @@ def _require_duration(seconds: float) -> float:
     return seconds
 
 
-@runtime_checkable
 class Clock(Protocol):
-    """The only source of time available to application and domain code."""
+    """The only source of time available to application and domain code.
+
+    ``Clock`` is a pure reader with no mutator: it is not ``@runtime_checkable``,
+    because a structural check on ``now`` alone cannot distinguish
+    :class:`LiveClock` from :class:`ReplayClock`, which is worse than no check
+    (ADR-0009). Real elapsed time — waiting and deadlines — is a separate
+    concern owned by :class:`argos.clock.pacing.Pacer`, not by this protocol.
+    """
 
     def now(self) -> datetime:
         """Return the current time as a timezone-aware UTC datetime."""
-        ...
-
-    async def sleep(self, seconds: float) -> None:
-        """Wait ``seconds`` of this clock's time."""
         ...
 
 
@@ -58,9 +58,6 @@ class LiveClock:
 
     def now(self) -> datetime:
         return datetime.now(UTC)
-
-    async def sleep(self, seconds: float) -> None:
-        await anyio.sleep(_require_duration(seconds))
 
 
 @final
@@ -100,7 +97,3 @@ class ReplayClock:
         :meth:`advance_to`'s :class:`ClockRegressionError`.
         """
         self._now = self._now + timedelta(seconds=_require_duration(seconds))
-
-    async def sleep(self, seconds: float) -> None:
-        """Advance virtual time without waiting in real time."""
-        self.advance_by(_require_duration(seconds))

@@ -211,6 +211,94 @@ def test_no_authenticated_endpoint_literal_in_source(path: Path) -> None:
     assert not offending, f"{path.name} contains an authenticated endpoint: {sorted(offending)}"
 
 
+# --- ADR-0009: pacing is separate from timekeeping --------------------------------
+
+
+def test_clock_protocol_exposes_only_now() -> None:
+    """`Clock` is a pure reader (ADR-0009): adding `sleep` back, even quietly on
+    one implementation, would reopen the category error the ADR closed."""
+    from argos.clock import Clock
+
+    public_attrs = {name for name in vars(Clock) if not name.startswith("_")}
+    assert public_attrs == {"now"}
+
+
+def test_replay_clock_has_no_pacing_methods() -> None:
+    """Moving replay time is impossible, not merely forbidden: `ReplayClock` has
+    no `sleep` and no `wait`, so an adapter cannot pace itself on virtual time."""
+    from datetime import UTC, datetime
+
+    from argos.clock import ReplayClock
+
+    clock = ReplayClock(datetime(2026, 1, 1, tzinfo=UTC))
+    assert not hasattr(clock, "sleep")
+    assert not hasattr(clock, "wait")
+
+
+_NO_PACING_PACKAGES = ("domain", "projections", "baselines", "evaluation")
+_PACING_NAMES = frozenset({"Pacer", "RealPacer"})
+
+
+@pytest.mark.parametrize("package", _NO_PACING_PACKAGES)
+def test_no_pacing_import_outside_live_adapters(package: str) -> None:
+    """Pacing is a live-adapter concern (ADR-0009): a scheduler-facing package
+    reaching for it would be the M3 accelerated/stepwise pacer wearing this
+    one's name, and it must never influence a deterministic replay hash."""
+    for path in _modules(SRC / package):
+        tree = _parse(path)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                assert not node.module.endswith("clock.pacing"), (
+                    f"{path.name} imports argos.clock.pacing directly"
+                )
+                imported = {alias.name for alias in node.names}
+                offending = imported & _PACING_NAMES
+                assert not offending, f"{path.name} imports pacing names: {sorted(offending)}"
+            if isinstance(node, ast.Import):
+                offending_modules = {
+                    alias.name for alias in node.names if alias.name.endswith("clock.pacing")
+                }
+                assert not offending_modules, f"{path.name} imports {sorted(offending_modules)}"
+
+
+@pytest.mark.parametrize("package", ("sources", "ingestion"))
+def test_no_direct_anyio_pacing_calls(package: str) -> None:
+    """Without this, the next adapter re-creates ADR-0009's defect 4: `GammaClient`
+    once bounded its request with a bare `anyio.move_on_after`, which reads the
+    event-loop's real clock regardless of which `Clock` it was handed. Pacing must
+    go through the injected `Pacer`, never straight through `anyio`."""
+    pacing_calls = {"sleep", "move_on_after"}
+    for path in _modules(SRC / package):
+        tree = _parse(path)
+        anyio_aliases = {
+            alias.asname or alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+            if alias.name == "anyio"
+        }
+        imported_functions = {
+            alias.asname or alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module == "anyio"
+            for alias in node.names
+            if alias.name in pacing_calls
+        }
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if (
+                isinstance(func, ast.Attribute)
+                and func.attr in pacing_calls
+                and isinstance(func.value, ast.Name)
+                and func.value.id in anyio_aliases
+            ):
+                pytest.fail(f"{path.name} calls anyio.{func.attr}() directly; use a Pacer")
+            if isinstance(func, ast.Name) and func.id in imported_functions:
+                pytest.fail(f"{path.name} calls anyio.{func.id}() directly; use a Pacer")
+
+
 def test_settings_declare_no_credential_shaped_field() -> None:
     """Settings feed run manifests and log lines; a secret field would leak into both."""
     from argos.config import Settings

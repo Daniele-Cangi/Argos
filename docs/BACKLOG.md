@@ -19,18 +19,27 @@ Raised by the architecture, security, and testing reviews of the M0 foundation
 slice. None blocks M0; the ones marked **before M1/M2/M3** must close before the
 milestone named, because later code would inherit the defect.
 
-- [ ] **ADR before M2** — reconcile `Clock.sleep` with ADR-0003's "`ReplayClock`
-      controlled only by the replay scheduler". Today any holder of the protocol can
-      advance replay time, and `ReplayClock.sleep` never awaits while `LiveClock.sleep`
-      yields — a live/replay divergence once the dispatcher is concurrent. Decide before
-      M2 retry/backoff code is written against `clock.sleep`.
+- [x] **ADR before M2** — reconcile `Clock.sleep` with ADR-0003's "`ReplayClock`
+      controlled only by the replay scheduler". Closed by ADR-0009: `Clock` lost
+      `sleep()` entirely (it now exposes only `now()`), and a new `Pacer` port
+      owns all real elapsed time. "An adapter moves replay time" is now
+      impossible rather than forbidden — `ReplayClock` has no mutating pacing
+      method.
 - [ ] **Before M3** — decide what `config_fingerprint` covers. It currently includes
       `data_dir`, but `docs/02_ARCHITECTURE.md` allows output location to differ between
       live and replay, so an otherwise identical replay gets a different fingerprint.
-- [ ] **Before M2** — `RunManifest` needs schema versions (plural), data provenance, and
+- [x] **Before M2** — `RunManifest` needs schema versions (plural), data provenance, and
       a `mode` enum instead of a free-form string, to satisfy invariant 13 in full.
-- [ ] **Before M2** — record working-tree state alongside `code_revision`; a dirty tree
+      Closed: `run_manifest.v2` adds `RunMode` (StrEnum), `schema_versions`
+      (deduplicated, sorted tuple), and `input_provenance` (sorted tuple of
+      `SourceProvenanceV1`). No `v1` manifest was ever persisted, so this is a
+      breaking change with no migration, not a compatible extension. See the
+      new known limitation on `input_provenance` at capture scale, filed under
+      "Carried into M2 from M1" below.
+- [x] **Before M2** — record working-tree state alongside `code_revision`; a dirty tree
       currently yields a manifest that misattributes the code that produced the run.
+      Closed: `WorkingTreeStatus` (clean/dirty/unknown) joins `code_revision`, and a
+      model validator forbids claiming clean/dirty without a proven revision.
 - [ ] **Before M2** — make the container freeze structural on `VersionedModel`, via a
       `FrozenPayload` annotated type or a boundary test forbidding bare `dict`/`list`/
       `set` fields on subclasses. Today a subclass must repeat the validator/serializer
@@ -46,9 +55,14 @@ milestone named, because later code would inherit the defect.
       the `manifest` subcommand; `structlog.configure` is process-global.
 - [ ] `REPO_ROOT = parents[2]` assumes the src layout; under a wheel install `argos
       status` cannot find `docs/STATUS.md`.
-- [ ] Harden the boundary scan: forbid `os`/`pathlib` in `domain`, and split the `Clock`
-      protocol from `LiveClock` so importing the protocol does not pull a wall-clock
-      implementation into the graph.
+- [ ] Harden the boundary scan: forbid `os`/`pathlib` in `domain`. The `Clock`/`LiveClock`
+      half of this item is done as a side effect of ADR-0009: `Clock` now exposes only
+      `now()` and is a plain, minimal protocol. What remains: `argos.clock`'s
+      `__init__.py` re-exports `Pacer`/`RealPacer` (the `anyio`-backed live pacer) "for
+      convenience", so importing the *package* still pulls an anyio-backed
+      implementation into the graph — only importing the `Clock` name itself does not.
+      The boundary test (`test_no_pacing_import_outside_live_adapters`), not the import
+      graph, is what actually keeps pacing out of domain code today.
 - [ ] Type-check tests, not only `src` — `docs/08_DEFINITION_OF_DONE.md` requires strict
       typing on touched code and the tests are touched code.
 - [ ] Add `pytest-cov` and enforce the branch-coverage thresholds in
@@ -81,14 +95,13 @@ milestone named, because later code would inherit the defect.
 
 ### Carried from the M1 closure reviews
 
-- [ ] **ADR before M2** — separate pacing from timekeeping on the `Clock` protocol.
-      `GammaClient` sleeps its backoff on the injected clock, `ReplayClock.sleep`
-      advances virtual time, and `wait_exponential_jitter` draws from an unseeded
-      global RNG — so an adapter given the scheduler's clock would move replay time
-      nondeterministically and break M3's identical-output-hash criterion. The
-      client's docstring warns against it; the type system does not. Options: an
-      injected `sleep` callable defaulting to `anyio.sleep`, or seeded jitter plus
-      an enforced prohibition.
+- [x] **ADR before M2** — separate pacing from timekeeping on the `Clock` protocol.
+      Closed by ADR-0009 (Accepted): `Clock` keeps `now()` only; a new `Pacer` port
+      (`wait`, `move_on_after`; `RealPacer` backed by `anyio`) owns all real elapsed
+      time and is live-only. Retry jitter is drawn from an adapter-owned, seeded
+      `random.Random` via a `wait_base` subclass, closing the unseeded-global-RNG
+      hidden-state defect as well. Four boundary tests guard the regression;
+      `docs/DECISION_LOG.md` records the decision.
 - [ ] Revisit where the `human_reviewed` prohibition lives. Today a field validator
       makes the value unconstructible, which also means the future human-review flow
       cannot build the record and a stored `human_reviewed` contract cannot be
@@ -120,6 +133,14 @@ milestone named, because later code would inherit the defect.
 - [ ] The raw archive in `argos.store` is deliberately minimal and is not the
       event store M2 requires; decide whether it survives or is absorbed.
 - [ ] Discovery does not yet emit a run manifest linking sample to configuration.
+- [ ] **Constraint on the M2 capture-manifest design** — `RunManifest.input_provenance`
+      is an unbounded tuple of `SourceProvenanceV1`, fine at M1 discovery scale (one
+      record per fetched page/market). An M2 capture manifest must not embed one
+      provenance record per ingested event; it must reference the event store instead.
+      Decide the reference shape before the capture manifest is built, not after.
+- [ ] M2's CLOB REST and WebSocket adapters take a `Pacer` (per ADR-0009), not `Clock`,
+      for retry/backoff/reconnect waits, and their own seeded `random.Random` for
+      jitter. A shared bounded-retry helper is justified once the second client exists.
 
 ## Later — M2
 
@@ -135,6 +156,9 @@ milestone named, because later code would inherit the defect.
 - [ ] Replay source and scheduler.
 - [ ] Event-time watermark policy.
 - [ ] Golden replay and hash.
+- [ ] `VirtualPacer` for accelerated/stepwise replay pacing (per ADR-0009's
+      consequences section), living in `argos.replay`, and never influencing the
+      output hash. Deliberately not built pre-M2 to avoid scope drift.
 
 ## Later — M4
 
