@@ -229,7 +229,78 @@ milestone named, because later code would inherit the defect.
       stream (this is where the corresponding M2 exit criterion actually
       lives, since it was never observed on REST)
       (`docs/research/m2-clob-rest-book.md`, "Next questions for the WebSocket
-      research slice").
+      research slice"). **Answered** in `docs/research/m2-clob-websocket.md`
+      against live traffic: no sequence number; a delta's `hash` is the hash of
+      the resulting book state and reconciles exactly with REST; zero-size means
+      removal, observed directly.
+
+### Carried from the M2 security review (verdict PASS_WITH_FINDINGS)
+
+Deliberately **not** fixed in the slice that found them, each with the reason.
+None is a blocker; all are recorded so they are chosen rather than forgotten.
+
+- [ ] **The covert channel through stored text is open and is not closable
+      here.** Security review demonstrated a 31-byte instruction encoded into
+      variation selectors (U+FE00-FE0F, U+E0100-E01EF) surviving into a rendered
+      audit with a zero-glyph visible difference — higher bandwidth than the tag
+      block this slice did close, and the technique that became prominent
+      *because* tag-block filtering became common. ZWJ/ZWNJ carry the same
+      channel at one bit per codepoint. Not filtered because variation selectors
+      are load-bearing for CJK ideographic variants and emoji presentation, and
+      ZWJ/ZWNJ for Indic and Perso-Arabic scripts: filtering them would corrupt
+      legitimate market text while an encoder routes around it through the ~60
+      remaining format characters, or through the Hangul fillers, which are
+      invisible but category `Lo` and so are not reachable by a category sweep
+      at all. **This is a detection problem for the layer that consumes the
+      text, and must be treated as unsolved by anything that reads these
+      records.** It becomes load-bearing at the M4 gate and at M5, where an
+      external-evidence or LLM layer would read exactly this stored text — see
+      `docs/adr/0005-no-llm-forecast-core.md`. `src/argos/domain/text.py`
+      states the residual in its own docstring rather than claiming a closed
+      channel.
+- [ ] `SourceProvenanceV1.http_status` is now nullable, which makes "non-HTTP
+      transport" indistinguishable from "the adapter forgot to set it". There is
+      no transport discriminator, so one silent-substitution risk was replaced by
+      another inside the contract whose job is provenance. Close when the
+      WebSocket adapter lands and a transport field has a real second value.
+- [ ] `schema_version` uniqueness is unenforced across `VersionedModel`
+      subclasses. Two classes both declaring `order_book_snapshot.v1` defeat
+      `read_payload`'s version check — review built a `Trade` out of a book
+      envelope with no error. A registry check in `__init_subclass__` closes it.
+- [ ] Neither `observation_id` nor `rejection_id` is enforced by a validator: a
+      forged id round-trips through `from_record` while `recompute_*` disagrees.
+      The recompute functions exist; nothing obliges a reader to call them. The
+      store slice is the right place to make verification mandatory on read.
+- [ ] `RejectedObservationV1.detail` retains newlines by design, and the M1
+      defence was the sanitizer **plus** block-quoting — only the sanitizer
+      carried across. No ledger renderer exists yet, so this is a claim-versus-
+      property gap to close *before* one is written: either the renderer's line
+      discipline becomes a contract obligation, or the docstring's forgery claim
+      is softened. Do not write a ledger renderer without resolving this.
+- [ ] `SourceProvenanceV1.endpoint` redaction — severity unchanged by review
+      (the same URL set, duplicated, not new URLs), but a credential ever landing
+      in a query string would now be copied into every observation record rather
+      than one page record, and retroactive redaction scales with it. Close while
+      the record count is still small.
+
+### Carried from the WebSocket research
+
+- [ ] **ADR-0010's residual collision is reachable in practice, not
+      theoretical.** `(timestamp, hash)` identifies a post-state, not a wire
+      message: six `price_changes` entries shared one hash inside a single
+      message, and two distinct frames 196 microseconds apart carried an
+      identical `(timestamp, hash)` pair. Measured against the recorded capture,
+      the combined identity separates all 68 real entries, while the *rejected*
+      hash-ranked draft would have silently dropped 10 of them — so content
+      hashing is load-bearing on this source, not belt-and-braces. What remains
+      open is the case where two frames are byte-identical in content as well:
+      the store and the WebSocket adapter must both decide what a delivery is
+      when one book transition arrives across more than one frame.
+- [ ] The capture adapter must set an explicit `User-Agent`. REST `/book`
+      returned 403 for Python's default urllib UA while curl and a browser-like
+      UA succeeded (UNVERIFIED as a general rule — two strings tried, not a
+      study). Do not read "no auth header" as "no client identification
+      expected".
 
 ## Later — M3
 

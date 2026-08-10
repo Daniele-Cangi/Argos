@@ -43,6 +43,22 @@ was also measured and does not hold for this source: polling an unchanged book
 returns an identical `timestamp` and `hash`, so re-polls collide onto one
 identity as intended.
 
+**Quantified after the fact, against the recorded WebSocket capture**
+(`docs/research/fixtures/clob-ws-market-2026-08-10T184742Z.json`, 40 seconds of
+live public traffic, 68 real `price_change` entries):
+
+| Identity design | Distinct ids | Entries silently dropped as "duplicates" |
+|---|---|---|
+| Rejected — source hash outranks payload content | 58 | **10 of 68** |
+| Shipped — every stable discriminator combined | 68 | 0 |
+
+Six `(timestamp, hash)` pairs in that capture are shared by more than one
+distinct entry, because a single book transition moves several price levels at
+once and the hash names the resulting *post-state*, not the wire message. The
+ranked draft would therefore have discarded roughly 15% of a live capture
+without any error being raised. Content hashing is load-bearing on this source,
+not a belt-and-braces addition.
+
 ### 2. `ingest_sequence`, `received_time`, and `capture_run_id` are excluded
 
 The first two differ on every redelivery of the identical event by construction,
@@ -99,8 +115,18 @@ broken, and M3's identical-hash criterion runs through this object.
 - Two source messages that are genuinely different but share every stable field —
   same scope, no sequence or hash, identical payload, equal or absent event times
   — remain indistinguishable. That is irreducible without information the source
-  did not send. A source whose payload carries its own timestamp does not reach
-  it.
+  did not send.
+
+  **This residual is reachable in practice, not theoretical**, and that was not
+  known when this ADR was first written. The WebSocket research
+  (`docs/research/m2-clob-websocket.md`) observed two distinct frames arriving
+  196 microseconds apart carrying an identical `(timestamp, hash)` pair, and six
+  entries sharing one hash inside a single message. `(timestamp, hash)` names a
+  post-state, not a wire message, so one book transition can arrive spread across
+  several frames. Content differed in every observed case, so the shipped
+  identity separated them all — but nothing in the source guarantees that. The
+  store and the WebSocket adapter must each decide what a *delivery* is when one
+  transition arrives across more than one frame; this ADR does not decide it.
 - The store must still decide what a *delivery* record is. `docs/02_ARCHITECTURE.md`
   requires duplicate inserts to be idempotent **and observable**, and per-run
   `ingest_sequence` is what M3 replays by. Because identity excludes both, a

@@ -6,12 +6,15 @@ Last updated: 2026-08-10
 
 - Current milestone: **M2 — CLOB capture — in progress**. M0 and M1 closed. The
   pacing-versus-timekeeping ADR that gated M2 (ADR-0009) is resolved and merged.
-  A first M2 vertical slice has landed: the canonical `ObservationEnvelopeV1` /
-  `RejectedObservationV1` contracts and their identity derivation (ADR-0010),
-  plus a public CLOB REST research note. **No CLOB adapter, no WebSocket
-  adapter, no event store, and no capture CLI exist yet** — this slice is the
-  contract the store and adapters will be built against, not the adapters
-  themselves.
+  Four M2 vertical slices have landed: the canonical `ObservationEnvelopeV1` /
+  `RejectedObservationV1` contracts and their identity derivation (ADR-0010);
+  the first typed payload, `OrderBookSnapshotV1`; a security review of both
+  contracts (verdict **PASS_WITH_FINDINGS**, no blocker, findings closed in
+  `1fb057c`); and a public CLOB WebSocket market-channel research note built
+  from live capture, not documentation alone. **No CLOB adapter, no WebSocket
+  adapter, no event store, and no capture CLI exist yet** — these slices are
+  the contract and the evidence the store and adapters will be built against,
+  not the adapters themselves.
 - Autonomous target: **complete M0-M4**
 - Owner gate: **required after M4**
 - Execution capability: **prohibited and absent**
@@ -108,6 +111,135 @@ three-poll timing experiment):
 - 404 is ambiguous across a closed market, an unknown token, and a
   syntactically valid token that never had a book.
 
+## M2 slice: typed order-book snapshot payload (`OrderBookSnapshotV1`)
+
+Committed as `1901b4e`. The first typed payload named by
+`ObservationEnvelopeV1.payload_schema_version` (`"order_book_snapshot.v1"`,
+`src/argos/domain/orderbook.py`), built and checked against the real REST
+`/book` fixture the earlier research slice recorded, not only constructed
+examples.
+
+- Every `Decimal` price/size/tick-size/last-trade-price field is normalized on
+  the way in (`_normalize_decimal`), closing the ADR-0010 "consequences"
+  constraint directly on the first payload that could have hit it:
+  `Decimal("0.430")` and `Decimal("0.43")` now serialize to identical
+  canonical text, checked against the real recorded two-precision case
+  (`tests/test_orderbook_snapshot.py::test_the_same_price_at_two_text_precisions_produces_identical_canonical_json`,
+  `::test_observation_identity_collapses_across_a_cosmetic_decimal_reformat`).
+- Floats and bools masquerading as `Decimal` are refused outright on every
+  price/size field, even if the caller's own JSON decoding produced one
+  (`tests/test_orderbook_snapshot.py::test_a_float_price_is_refused` and
+  siblings). Wire order (bids ascending, asks descending — the reverse of the
+  naive `[0]` reading) is never trusted: every construction path, not only
+  parsing, is re-validated into "best level first" order and refuses rather
+  than silently re-sorts an out-of-order snapshot.
+- Anomalies — a dropped zero-size level, an off-tick price, a crossed book, a
+  locked book — are recorded as counted, reasoned `OrderBookAnomaly` entries
+  rather than raised or silently dropped, per core invariant 14. A *duplicate*
+  price level on one side has no non-arbitrary resolution and refuses the
+  whole snapshot instead. This vocabulary (`OrderBookAnomalyKind`) is
+  deliberately kept separate from `ObservationQualityFlag`, which lives on the
+  envelope and describes a different class of defect (delivery, not payload
+  content).
+- Zero-size levels were never observed in the REST fixture
+  (`tests/test_orderbook_snapshot.py::test_zero_size_levels_were_never_observed_in_the_real_fixture`),
+  matching the REST research note's suspicion. The WebSocket research below is
+  what actually observed one live, on the delta stream specifically.
+
+No adapter or store consumes this model yet; it is a domain payload type
+built and tested against a recorded fixture, the same relationship
+`MarketDefinitionV1` had to the Gamma fixtures at M1.
+
+## M2 security review: observation and order-book contracts
+
+Verdict: **PASS_WITH_FINDINGS, no blocker.** Findings closed in `1fb057c`.
+Both original M1 attack classes — the resource-exhaustion shape and the
+newline/OSC-52 rendering-forgery shape — were re-measured through the real
+audit/envelope pipeline rather than re-read, and neither regressed from
+consolidating the sanitizer into the shared `argos.domain.text` module (see
+the ADR-0010 slice, "N8" above): the review ran a differential across all
+1,112,064 legal Unicode codepoints and found 0 codepoints the consolidated
+sanitizer stopped neutralizing and 130 gained, i.e. the move is a strict
+superset of the sanitizer it replaced. This is recorded here as the review's
+own measurement; no such full-codespace sweep is committed as a repository
+test today.
+
+| Severity | Finding | Fix |
+|---|---|---|
+| HIGH | Building an envelope traversed the normalized payload four times; a 31.8 MiB payload (legal under the source client's own 32 MiB response cap) cost 2.84 s CPU and 750 MiB RSS, and the `Pacer` deadline could not bound it because a cancel scope cannot interrupt synchronous CPU work — measured at 1.03 s elapsed against a 0.50 s deadline with `cancelled_caught` false. The M1 gzip-bomb class, relocated downstream of the byte cap that fixed it | Capped at `MAX_PAYLOAD_CANONICAL_BYTES` (4 MiB) and serialized once; the same payload is now refused in 0.17 s at 129 MiB peak RSS (`src/argos/domain/observation.py::build_observation_envelope`, `tests/test_observation_envelope_adversarial.py::test_an_oversized_payload_is_refused_inside_the_taxonomy`) |
+| HIGH | `market_id`, `condition_id`, `token_id`, `source_sequence`, `source_hash` stored verbatim — ESC, OSC 52, RLO, and newlines all survived — and unbounded; one measured at 20,000,000 characters beside a `detail` capped at 4,043. The M1 finding recurring | The envelope now refuses a hostile or oversized identifier outright (`_validate_identifier`); the rejection ledger neutralizes and bounds them instead, deliberately, because refusing there would mean the rejection itself could not be written (`tests/test_observation_envelope_adversarial.py::test_rejection_detail_neutralizes_zero_width_and_unicode_tag_characters`, `tests/test_observation_envelope.py::test_a_hostile_identifier_is_refused_from_an_accepted_observation`, `::test_the_rejection_ledger_bounds_a_hostile_identifier_instead_of_refusing_it`) |
+| MEDIUM | Truncation is lossy and identity was derived from the truncated value: two payloads differing only past the cap shared one `observation_id` while their raw hashes differed | `neutralize_and_bound`'s truncation suffix now carries a digest of the full neutralized text, restoring injectivity for anything that hashes the stored value (`src/argos/domain/text.py::neutralize_and_bound`, `tests/test_observation_envelope_adversarial.py::test_truncated_text_stays_distinguishable_and_recomputable`) |
+| MEDIUM | U+061C ALM was missing from the bidi mark set the docstring claimed to cover; U+FFF9-FFFB interlinear annotation is display forgery of the class the sanitizer already closes for bidi | Both now neutralized in `argos.domain.text.is_display_control` |
+| MEDIUM | pydantic's bare `ValueError` past nesting depth 254, and `freeze`/`thaw`'s `RecursionError`, escaped the ARGOS error taxonomy — both trivially reachable from hostile JSON | Both now surface as `ContractViolationError` (`src/argos/domain/observation.py::_canonical_payload`, `tests/test_observation_envelope_adversarial.py::test_a_pathologically_nested_payload_fails_inside_the_taxonomy`) |
+| LOW | The rejection ledger had `recompute_observation_id`'s auditability but no equivalent of its own — a forged `rejection_id` could not be checked against the stored fields | `recompute_rejection_id` added (`src/argos/domain/observation.py::recompute_rejection_id`) |
+
+Deliberately **not** fixed this slice, each filed in `docs/BACKLOG.md` with its
+own reasoning rather than dropped silently:
+
+- the variation-selector/ZWJ/ZWNJ covert channel (a 31-byte instruction was
+  demonstrated surviving into a rendered audit with zero visible glyph
+  difference) — a detection problem for the consuming layer, not something a
+  sanitizer can close, and left explicitly unsolved;
+- `SourceProvenanceV1.http_status` being nullable makes "non-HTTP transport"
+  indistinguishable from "adapter forgot to set it" — no transport
+  discriminator exists yet;
+- `schema_version` uniqueness is unenforced across `VersionedModel`
+  subclasses;
+- neither `observation_id` nor `rejection_id` is enforced by a validator — a
+  forged id round-trips through `from_record` while `recompute_*` disagrees;
+- `SourceProvenanceV1.endpoint` still has no redaction contract for a future
+  credential-in-query mistake, now with a larger blast radius since it
+  persists per observation rather than per run manifest;
+- `RejectedObservationV1.detail` retains newlines by design, and the M1
+  defence was sanitizer **plus** block-quoting — only the sanitizer carried
+  across, because no ledger renderer exists yet to block-quote into.
+
+## M2 research: public market WebSocket channel
+
+`docs/research/m2-clob-websocket.md`, committed as `f508fbb`. Scope is the
+public, unauthenticated market channel only, per
+`.claude/rules/no-execution.md`. Two live captures against real traffic for
+one actively-trading token (~85 combined seconds), not documentation alone,
+answer the three questions the REST research note left open:
+
+- **No sequence number** — confirmed absent by direct observation across both
+  captures, not only by absence from the documentation. Gap detection on this
+  channel, like REST, has to be built on `(timestamp, hash)` reconciliation.
+- **A `price_change` delta's `hash` is the hash of the resulting book state**,
+  and reconciles **exactly** with what REST `/book` returns for the same
+  state — confirmed twice independently, within the WebSocket stream itself
+  and against concurrent REST polls for the same token. This is exact content
+  identity, not heuristic matching.
+- **Zero-size means removal**, observed directly on live traffic, including
+  three removals batched into one update — the M2 exit criterion's convention,
+  with real evidence, on the WebSocket delta stream specifically (never
+  observed on REST, matching the REST note's suspicion).
+
+**Consequence for ingestion design.** `(timestamp, hash)` identifies a
+*post-state*, not a wire message: six `price_changes` entries shared one hash
+in a single message, and two distinct frames 196 microseconds apart carried an
+identical `(timestamp, hash)` pair. An adapter must not assume a 1:1 mapping
+between a WebSocket message and a book transition. This makes the residual
+collision ADR-0010 already documents — "two source messages that are
+genuinely different events but share every stable field... remain
+indistinguishable" — **reachable in practice for this source, not merely
+theoretical**. Filed as a constraint the store and the WebSocket adapter must
+both handle, in `docs/BACKLOG.md`.
+
+Also recorded: REST `/book` returned 403 for Python's default `urllib`
+User-Agent while `curl`'s default UA and a browser-like UA both succeeded.
+**UNVERIFIED as a general rule** — only two User-Agent strings were tried —
+but the capture adapter must set an explicit, reasonable User-Agent and must
+not read "no auth header" as "no client-identification requirement."
+
+No WebSocket adapter exists yet; this is a research document only, the same
+status the REST research note had at its own stage. The document's own
+UNVERIFIED list (idle-timeout duration, reconnect behavior, rate limits,
+maximum token ids per connection, `operation: subscribe/unsubscribe` on an
+open connection, the three `custom_feature_enabled` event types, whether the
+observed `min_order_size`/`neg_risk` omission on one live `book` event is
+systematic) is unresolved and must not be assumed by the capture loop.
+
 ## M2 exit criteria
 
 Tracking `docs/07_MILESTONES.md`. Two criteria have contract-level evidence
@@ -117,9 +249,9 @@ produce evidence against, and are listed as open rather than implied closed.
 | Criterion | Status | Evidence |
 |---|---|---|
 | Duplicate source event does not create a second accepted observation | **Contract-level evidence only** | `_observation_identity` collides an identical redelivery onto one `observation_id` (`tests/test_observation_envelope.py::test_identity_is_stable_across_redelivery`) and does so on the real recorded CLOB payload, not only a constructed one (`docs/research/m2-clob-rest-book.md`, "Consequence for `ObservationEnvelopeV1`"). **Not yet closed**: no event store exists to perform the idempotent insert itself — the identity a store would key on is proven stable, the store is not built |
-| Zero-size level update is represented as removal | Open | Not yet built. The REST research doc found zero-size levels were **never observed** in a snapshot (UNVERIFIED for REST) and is, on current evidence, a property of the WebSocket delta stream, which has not been researched or built |
+| Zero-size level update is represented as removal | Open | Not yet built. `OrderBookSnapshotV1` implements the REST-snapshot side of the convention (a zero-size level is dropped and recorded as an anomaly), and the WebSocket research note now confirms the delta-stream convention directly on live traffic, including a batch of three removals in one update (`docs/research/m2-clob-websocket.md`, "Priority question 3"). **Not yet closed**: no `price_change` payload model, WebSocket adapter, or store exists to apply this to a real delta stream |
 | Reconnect does not reset ingest sequence or silently lose manifest state | Open | No WebSocket adapter and no capture manifest exist yet |
-| Invalid messages enter a rejection ledger with reason and raw hash | **Contract-level evidence only** | `RejectedObservationV1` carries `reason: RejectionReason`, `detail`, and `raw_payload_sha256`; `build_rejected_observation` derives a deterministic `rejection_id` so redelivery of the same invalid bytes for the same reason collapses rather than growing the ledger unbounded (`tests/test_observation_envelope.py::test_rejection_identity_is_stable_across_redelivery`). **Not yet closed**: nothing writes to a ledger yet — there is no store and no adapter producing rejections from real input |
+| Invalid messages enter a rejection ledger with reason and raw hash | **Contract-level evidence only** | `RejectedObservationV1` carries `reason: RejectionReason`, `detail`, and `raw_payload_sha256`; `build_rejected_observation` derives a deterministic `rejection_id` so redelivery of the same invalid bytes for the same reason collapses rather than growing the ledger unbounded (`tests/test_observation_envelope.py::test_rejection_identity_is_stable_across_redelivery`). The security review closed in `1fb057c` bounds and neutralizes hostile identifiers on this record instead of letting them grow it unbounded (see "M2 security review" above). **Not yet closed**: nothing writes to a ledger yet — there is no store and no adapter producing rejections from real input |
 | Book snapshot plus deltas reconstruct a tested projection | Open | No projection, no adapter |
 | No authenticated/user channel or trading code exists | Holds | Unchanged from M0-M1; this slice added no network code at all — only domain contracts and a research note built from public unauthenticated GET requests (`docs/research/m2-clob-rest-book.md`, header) |
 | An interrupted capture closes or marks its manifest incomplete | Open | No capture loop or manifest exists yet |
@@ -130,13 +262,18 @@ Recorded here rather than discovered late by the store or adapter slices that
 build on this one. Full reasoning in `docs/adr/0010-observation-identity.md`
 and `docs/BACKLOG.md`.
 
-- No payload model yet normalizes `Decimal` scale, and `Decimal("0.430")` and
-  `Decimal("0.43")` serialize to different canonical text and therefore mint
-  different `observation_id`s — reproduced directly
+- **Closed by `OrderBookSnapshotV1` (`1901b4e`).** The identity slice noted
+  that no payload model yet normalizes `Decimal` scale, so `Decimal("0.430")`
+  and `Decimal("0.43")` minted different `observation_id`s — reproduced
+  directly
   (`tests/test_observation_envelope_adversarial.py::test_decimal_trailing_zero_precision_changes_identity`)
   and confirmed live: the CLOB endpoint really does report the same price at
   two precisions across `/book` (`"0.430"`) and `/last-trade-price`
-  (`"0.43"`).
+  (`"0.43"`). `OrderBookSnapshotV1._normalize_decimal` now closes this on
+  every price/size/tick-size/last-trade-price field it carries (see "M2
+  slice: typed order-book snapshot payload" above). The general form of the
+  constraint stands: **every future payload model must do the same**, this
+  only closes it for the first one.
 - `ObservationEnvelopeV1` has no `supersedes_observation_id`. Identity depends
   on the normalized payload and deliberately excludes `parser_version`, so
   reprocessing the same raw bytes under a corrected parser mints a new,
@@ -159,6 +296,20 @@ and `docs/BACKLOG.md`.
 - The research doc's UNVERIFIED list (rate limits, the `/books` batch
   endpoint, response headers, zero-size REST levels, halted-market behaviour)
   is unresolved. None of it should be assumed by the capture loop.
+- The WebSocket research note found `(timestamp, hash)` identifies a
+  post-state, not a wire message, and can span more than one frame. This makes
+  ADR-0010's already-documented residual identity collision reachable in
+  practice for this source, not merely theoretical — see "M2 research: public
+  market WebSocket channel" above and `docs/BACKLOG.md`.
+- The security review closed in `1fb057c` left several findings deliberately
+  unfixed with their own reasoning — the variation-selector/ZWJ covert
+  channel, `SourceProvenanceV1.http_status`'s missing transport discriminator,
+  unenforced `schema_version`/`observation_id`/`rejection_id` uniqueness, and
+  `SourceProvenanceV1.endpoint`'s redaction gap. Full list in "M2 security
+  review" above and `docs/BACKLOG.md`.
+
+Quality gate: PASS — ruff, ruff format, mypy strict on 32 source files,
+**779 tests** (up from 710 at the observation-identity slice).
 
 ## Pre-M2 slice: pacing separated from timekeeping (ADR-0009)
 
