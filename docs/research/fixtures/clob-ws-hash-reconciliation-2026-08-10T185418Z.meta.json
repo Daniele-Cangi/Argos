@@ -1,0 +1,14 @@
+{
+  "retrieved_at_utc": "2026-08-10T18:54:18Z",
+  "connect_url": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+  "subscribe_sent": {
+    "assets_ids": ["34691510069031117755834214800869745291092253295564665516660269316660628637961"],
+    "type": "market"
+  },
+  "rest_url_polled_concurrently": "https://clob.polymarket.com/book?token_id=34691510069031117755834214800869745291092253295564665516660269316660628637961",
+  "duration_seconds": 40,
+  "auth": "none",
+  "notes": "Concurrent capture designed to answer the priority research question 'does a delta carry the hash of the book state it produces': the WebSocket market channel (price_change and book event types) was read continuously while the REST /book endpoint for the same token was polled every 3 seconds from the same process. Each record is {wall_time (UTC, ISO 8601, client-side), source in {WS_book, WS_price_change, REST, REST_ERROR}, hash, timestamp, ...}. REST calls without a browser-like User-Agent returned HTTP 403 (see first attempt, not included in this fixture); this capture sets User-Agent: 'Mozilla/5.0 (research fixture capture)' and succeeded. Result: every REST hash observed exactly equals the hash of the most recently preceding WS event for the same token at the same millisecond timestamp (e.g. hash 1c2e9dd2560b5625ecf9cd29a9a83d90d8f09902 at timestamp 1786388061629 appears identically in both a WS_price_change record and the next REST record).",
+  "recorded_by": "argos research subagent",
+  "argos_status_context": "M2 CLOB capture design research, docs/research/m2-clob-websocket.md"
+}

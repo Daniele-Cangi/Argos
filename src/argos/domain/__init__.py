@@ -17,14 +17,27 @@ from argos.domain.observation import (
     read_payload,
     recompute_observation_id,
 )
+from argos.domain.orderbook import (
+    BookSide,
+    OrderBookAnomaly,
+    OrderBookAnomalyKind,
+    OrderBookLevel,
+    OrderBookSnapshotV1,
+    parse_order_book_snapshot,
+)
 from argos.domain.text import neutralize_and_bound, neutralize_untrusted_text
 from argos.domain.versioning import VersionedModel, ensure_supported_version, freeze, thaw
 
 __all__ = [
+    "BookSide",
     "EventTimeStatus",
     "ObservationEnvelopeV1",
     "ObservationQualityFlag",
     "ObservationSource",
+    "OrderBookAnomaly",
+    "OrderBookAnomalyKind",
+    "OrderBookLevel",
+    "OrderBookSnapshotV1",
     "RejectedObservationV1",
     "VersionedModel",
     "build_observation_envelope",
@@ -33,6 +46,7 @@ __all__ = [
     "freeze",
     "neutralize_and_bound",
     "neutralize_untrusted_text",
+    "parse_order_book_snapshot",
     "read_payload",
     "recompute_observation_id",
     "thaw",
