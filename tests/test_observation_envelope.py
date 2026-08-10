@@ -17,6 +17,8 @@ from hypothesis import strategies as st
 from pydantic import ValidationError
 
 from argos.domain.observation import (
+    MAX_IDENTIFIER_LENGTH,
+    MAX_PAYLOAD_CANONICAL_BYTES,
     EventTimeStatus,
     ObservationEnvelopeV1,
     ObservationQualityFlag,
@@ -26,10 +28,24 @@ from argos.domain.observation import (
     build_rejected_observation,
     read_payload,
     recompute_observation_id,
+    recompute_rejection_id,
 )
 from argos.domain.provenance import SourceProvenanceV1, sha256_hex
 from argos.domain.versioning import VersionedModel
-from argos.errors import NaiveDatetimeError, RejectionReason, SchemaVersionError
+from argos.errors import (
+    ContractViolationError,
+    NaiveDatetimeError,
+    RejectionReason,
+    SchemaVersionError,
+)
+
+
+class _Nested(VersionedModel):
+    """Carries an arbitrarily deep tree, to exercise recursion limits."""
+
+    schema_version: ClassVar[str] = "test_nested_depth.v1"
+
+    tree: dict[str, Any]
 
 
 class _Payload(VersionedModel):
@@ -603,10 +619,19 @@ def test_a_separator_inside_a_source_field_cannot_forge_another_field() -> None:
     are all free-form source-controlled strings, a value carrying the separator
     could shift a field boundary and produce byte-identical material for two
     genuinely different observations — so an idempotent insert would drop one.
-    Length-prefixing each component removes the ambiguity."""
-    shifted = _envelope(source_event_type="book\x1fmarket-1", market_id=None)
-    honest = _envelope(source_event_type="book", market_id="market-1\x1f")
-    assert shifted.market_id != honest.market_id
+    Two defences now stand between a source and that collision, and both are
+    checked here. The separator can no longer reach an identifier at all —
+    security review found these fields stored verbatim, ESC and all, so they are
+    refused outright rather than neutralized, because neutralizing is lossy and
+    the value is inside the identity. And the encoding is length-prefixed, so
+    even legal values cannot shift a field boundary."""
+    with pytest.raises(ValidationError):
+        _envelope(source_event_type="book\x1fmarket-1", market_id=None)
+    with pytest.raises(ValidationError):
+        _envelope(source_event_type="book", market_id="market-1\x1f")
+
+    shifted = _envelope(source_event_type="bookmarket-1", market_id=None)
+    honest = _envelope(source_event_type="book", market_id="market-1")
     assert shifted.observation_id != honest.observation_id
 
 
@@ -631,14 +656,20 @@ def test_the_stored_identity_can_be_recomputed_from_the_stored_record() -> None:
     assert recompute_observation_id(restored) == envelope.observation_id
 
 
-def test_two_envelopes_storing_identical_text_share_an_identity() -> None:
-    """The bounding suffix truncates both of these to the same stored string, so
-    the ids must agree; while identity was derived pre-sanitization they did
-    not, and the store could not be audited against its own contents."""
+def test_truncated_text_stays_distinguishable_and_recomputable() -> None:
+    """Two payloads differing only past the truncation cap must not collapse.
+
+    Security review reproduced exactly that: truncation is a lossy projection,
+    identity is derived from the truncated value, so two different raw payloads
+    shared one observation_id while their raw hashes differed — an idempotent
+    store keeps one and the other's raw payload loses its observation, under
+    source control. The bounding suffix now carries a digest of the full text,
+    which restores injectivity without giving up recomputability."""
     a = _envelope(event_time=None, event_time_raw="x" * 600 + "A")
     b = _envelope(event_time=None, event_time_raw="x" * 600 + "B")
-    assert a.event_time_raw == b.event_time_raw
-    assert a.observation_id == b.observation_id
+    assert a.event_time_raw != b.event_time_raw
+    assert a.observation_id != b.observation_id
+    assert recompute_observation_id(a) == a.observation_id
 
 
 # --- clock skew quality flag --------------------------------------------------------
@@ -683,3 +714,65 @@ def test_provenance_allows_a_null_http_status_for_a_non_http_transport() -> None
     adapter to invent a value inside the contract whose job is provenance."""
     websocket = _provenance(source="clob_market_ws", http_status=None, endpoint="wss://example/ws")
     assert websocket.http_status is None
+
+
+# --- security review regressions ----------------------------------------------------
+
+
+def test_a_hostile_identifier_is_refused_from_an_accepted_observation() -> None:
+    """Security review found `market_id`, `condition_id`, `token_id`,
+    `source_sequence` and `source_hash` stored verbatim: ESC, OSC 52, RLO and
+    newlines all survived, while `detail` beside them was sanitized. This is the
+    M1 finding recurring — `compiler/audit.py` states in its own comment that
+    `market_id` is validated for presence, not content, and that rendering it raw
+    put a working clipboard write in the report title."""
+    for field in ("market_id", "condition_id", "token_id", "source_sequence", "source_hash"):
+        with pytest.raises(ValidationError):
+            _envelope(**{field: "m\x1b]52;c;AAAA\x07"})
+        with pytest.raises(ValidationError):
+            _envelope(**{field: "m‮noitcerid"})
+
+
+def test_an_unbounded_identifier_is_refused() -> None:
+    """A 20,000,000-character `market_id` was accepted on a record whose `detail`
+    was capped at 4,043 — the bound the module claimed applied to one field
+    beside five that had none. A condition id is 66 characters; a uint256 token
+    id is 78."""
+    with pytest.raises(ValidationError):
+        _envelope(market_id="x" * (MAX_IDENTIFIER_LENGTH + 1))
+    assert _envelope(market_id="x" * MAX_IDENTIFIER_LENGTH).market_id is not None
+
+
+def test_the_rejection_ledger_bounds_a_hostile_identifier_instead_of_refusing_it() -> None:
+    """The opposite choice from the envelope's, deliberately. This record exists
+    to hold input ARGOS could not validate, so refusing here would mean the
+    rejection could not be written and the input would vanish with no ledger
+    entry — the silent drop invariant 14 exists to prevent."""
+    rejection = _rejection(market_id="m\x1b]52;c;AAAA\x07" + "x" * 10_000)
+    assert rejection.market_id is not None
+    assert "\x1b" not in rejection.market_id
+    assert len(rejection.market_id) <= MAX_IDENTIFIER_LENGTH + 100
+    assert recompute_rejection_id(rejection) == rejection.rejection_id
+
+
+def test_an_oversized_payload_is_refused_inside_the_taxonomy() -> None:
+    """Security review measured a 31.8 MiB payload — legal under the source
+    client's own 32 MiB response cap — costing 2.84 s of CPU and 750 MiB of RSS
+    to build one envelope, and showed the `Pacer` deadline cannot bound it
+    because a cancel scope cannot interrupt synchronous CPU work. This is the M1
+    gzip-bomb class relocated downstream of the byte cap that fixed it."""
+    huge = _Payload(label="x" * (MAX_PAYLOAD_CANONICAL_BYTES + 1))
+    with pytest.raises(ContractViolationError):
+        _envelope(payload=huge)
+
+
+def test_a_pathologically_nested_payload_fails_inside_the_taxonomy() -> None:
+    """pydantic raises a bare `ValueError` past nesting depth 254 and freeze/thaw
+    raise `RecursionError`; both are trivially reachable from hostile JSON and
+    both escaped the taxonomy, so a capture loop would die on one instead of
+    counting it and writing a ledger entry."""
+    nested: Any = {"leaf": 1}
+    for _ in range(600):
+        nested = {"n": nested}
+    with pytest.raises(ContractViolationError):
+        _envelope(payload=_Nested(tree=nested))

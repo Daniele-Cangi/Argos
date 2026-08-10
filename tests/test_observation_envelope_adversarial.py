@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, ClassVar
 
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 from pydantic import Field, ValidationError
@@ -172,18 +173,28 @@ def test_market_id_and_condition_id_boundary_injection_does_not_collide() -> Non
     pairs -- "a"/"b\x1fc" versus "a\x1fb"/"c" -- must not share an
     observation_id. See the module note above: this exact pair collided
     under the pre-rewrite `"\x1f".join` encoding."""
-    first = _envelope(market_id="a", condition_id="b\x1fc", token_id="d")
-    second = _envelope(market_id="a\x1fb", condition_id="c", token_id="d")
-    assert first.market_id != second.market_id or first.condition_id != second.condition_id
+    with pytest.raises(ValidationError):
+        _envelope(market_id="a", condition_id="b\x1fc", token_id="d")
+    with pytest.raises(ValidationError):
+        _envelope(market_id="a\x1fb", condition_id="c", token_id="d")
+
+    # And the encoding still separates the two when the ids are legal, which is
+    # the property the refusal must not be allowed to hide.
+    first = _envelope(market_id="a", condition_id="bc", token_id="d")
+    second = _envelope(market_id="ab", condition_id="c", token_id="d")
     assert first.observation_id != second.observation_id
 
 
 def test_condition_id_and_token_id_boundary_injection_does_not_collide() -> None:
     """Same attack, one field boundary to the right: condition_id="x",
     token_id="y\x1fz" versus condition_id="x\x1fy", token_id="z"."""
-    first = _envelope(condition_id="x", token_id="y\x1fz")
-    second = _envelope(condition_id="x\x1fy", token_id="z")
-    assert first.condition_id != second.condition_id or first.token_id != second.token_id
+    with pytest.raises(ValidationError):
+        _envelope(condition_id="x", token_id="y\x1fz")
+    with pytest.raises(ValidationError):
+        _envelope(condition_id="x\x1fy", token_id="z")
+
+    first = _envelope(condition_id="x", token_id="yz")
+    second = _envelope(condition_id="xy", token_id="z")
     assert first.observation_id != second.observation_id
 
 
@@ -196,9 +207,14 @@ def test_rejection_ledger_field_separator_injection_does_not_collide() -> None:
     assert first.rejection_id != second.rejection_id
 
 
+_IDENTIFIER_ALPHABET = st.characters(
+    min_codepoint=0x20, max_codepoint=0x7E, blacklist_characters="\x7f"
+)
+
+
 @given(
-    left=st.text(min_size=0, max_size=8),
-    right=st.text(min_size=0, max_size=8),
+    left=st.text(alphabet=_IDENTIFIER_ALPHABET, min_size=0, max_size=8),
+    right=st.text(alphabet=_IDENTIFIER_ALPHABET, min_size=0, max_size=8),
 )
 def test_digest_length_prefix_encoding_resists_fake_length_prefixes(left: str, right: str) -> None:
     """Attack the *current* injective encoding directly, not just the two
@@ -422,11 +438,11 @@ def test_rejection_detail_neutralizes_zero_width_and_unicode_tag_characters() ->
 
 
 def test_source_event_type_neutralizes_zero_width_characters_too() -> None:
-    """Same gap, on the other sanitized field: `source_event_type` goes
-    through the identical `neutralize_and_bound` call, so it inherits the
-    same blind spot."""
-    envelope = _envelope(source_event_type=f"book{chr(0x200B)}hidden")
-    assert chr(0x200B) not in envelope.source_event_type
+    """`source_event_type` is a machine label, so a zero-width character in it
+    is refused outright rather than neutralized: neutralization is lossy and this
+    field is inside the observation identity."""
+    with pytest.raises(ValidationError):
+        _envelope(source_event_type=f"book{chr(0x200B)}hidden")
 
 
 # --- 8. Rejection detail length bound: exact boundary and truncation stability ----
@@ -459,7 +475,7 @@ def test_rejection_detail_length_bound_is_exact_at_the_boundary() -> None:
     assert truncated.detail.startswith("x" * MAX_DETAIL_LENGTH + "...")
     # Bounded by the field cap plus a small, fixed suffix overhead -- not by
     # the length of the input, which is the actual guarantee being made.
-    assert len(truncated.detail) <= MAX_DETAIL_LENGTH + 60
+    assert len(truncated.detail) <= MAX_DETAIL_LENGTH + 100
 
 
 @given(
@@ -480,7 +496,7 @@ def test_truncation_of_control_heavy_text_never_reintroduces_a_control_character
     replacement in some pathological case.
     """
     rejection = _rejection(detail=detail)
-    assert len(rejection.detail) <= MAX_DETAIL_LENGTH + 60  # bounded, not unbounded
+    assert len(rejection.detail) <= MAX_DETAIL_LENGTH + 100  # bounded, not unbounded
     body = rejection.detail.rsplit("... (truncated,", 1)[0]
     for character in body:
         if character in "\n\t":

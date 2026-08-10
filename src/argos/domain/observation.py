@@ -36,7 +36,7 @@ from pydantic import Field, field_serializer, field_validator, model_validator
 
 from argos.clock import ensure_utc
 from argos.domain.provenance import SHA256_LENGTH, SourceProvenanceV1
-from argos.domain.text import neutralize_and_bound
+from argos.domain.text import is_clean_identifier, neutralize_and_bound
 from argos.domain.versioning import SCHEMA_VERSION_KEY, VersionedModel, freeze, thaw
 from argos.errors import ContractViolationError, RejectionReason, SchemaVersionError
 
@@ -45,6 +45,23 @@ from argos.errors import ContractViolationError, RejectionReason, SchemaVersionE
 MAX_DETAIL_LENGTH = 4_000
 MAX_EVENT_TIME_RAW_LENGTH = 500
 MAX_SOURCE_EVENT_TYPE_LENGTH = 200
+MAX_IDENTIFIER_LENGTH = 256
+"""Cap on every machine identifier a source supplies. Security review accepted a
+20,000,000-character ``market_id`` on a rejection record whose ``detail`` was
+capped at 4,043 — the bound the module claimed applied to one field beside five
+that had none. A condition id is 66 characters and a uint256 token id is 78."""
+
+MAX_PAYLOAD_CANONICAL_BYTES = 4 * 1024 * 1024
+"""Cap on the canonical serialization of a normalized payload.
+
+Security review measured a 31.8 MiB payload — legal under the source client's
+own 32 MiB response cap — costing 2.84 s of CPU and 750 MiB of RSS to build one
+envelope, because building traverses the payload four times. The ``Pacer``
+deadline cannot bound it: ``move_on_after`` is a cancel scope and cannot
+interrupt synchronous CPU work, measured at 1.03 s elapsed against a 0.50 s
+deadline with ``cancelled_caught`` false. This is the M1 gzip-bomb class
+relocated downstream of the byte cap that fixed it, so the bound has to exist
+here too."""
 
 DEFAULT_CLOCK_SKEW_TOLERANCE = timedelta(seconds=2)
 """How far a source's event time may lead the moment ARGOS received it before the
@@ -175,10 +192,51 @@ class ObservationEnvelopeV1(VersionedModel):
     parser_version: str = Field(min_length=1)
     capture_run_id: str = Field(min_length=1)
 
-    @field_validator("source_event_type")
+    @field_validator(
+        "source_event_type",
+        "market_id",
+        "condition_id",
+        "token_id",
+        "source_sequence",
+        "source_hash",
+        "raw_payload_location",
+        "parser_version",
+        "capture_run_id",
+    )
     @classmethod
-    def _sanitize_source_event_type(cls, value: str) -> str:
-        return neutralize_and_bound(value, MAX_SOURCE_EVENT_TYPE_LENGTH)
+    def _validate_identifier(cls, value: str | None) -> str | None:
+        """Refuse a hostile or unbounded identifier instead of neutralizing it.
+
+        These are machine identifiers, not prose. Security review found them
+        stored verbatim — ESC, OSC 52, RLO and newlines all survived in
+        ``market_id`` while ``detail`` beside it was correctly sanitized — and
+        unbounded, and this is the M1 finding recurring: ``compiler/audit.py``
+        says in its own comment that ``market_id`` is "validated for presence,
+        not for content" and that rendering it raw put a working clipboard write
+        in the report's title.
+
+        Refusal rather than neutralization is deliberate. Neutralizing is lossy,
+        and these fields are inside the observation identity, so two different
+        hostile ids would collapse to one stored value and take two genuinely
+        different observations with them. An accepted observation must have clean
+        identifiers; a payload that does not have them belongs in the rejection
+        ledger, which is built to hold exactly that.
+        """
+        if value is None:
+            return None
+        if len(value) > MAX_IDENTIFIER_LENGTH:
+            raise ValueError(
+                f"identifier exceeds {MAX_IDENTIFIER_LENGTH} characters "
+                f"({len(value)} supplied); refused rather than truncated because "
+                "the value is part of the observation identity"
+            )
+        if not is_clean_identifier(value):
+            raise ValueError(
+                "identifier contains a display-control character; refused rather "
+                "than neutralized because neutralization is lossy and this value "
+                "is part of the observation identity"
+            )
+        return value
 
     @field_validator("event_time_raw")
     @classmethod
@@ -287,12 +345,22 @@ class RejectedObservationV1(VersionedModel):
     def _sanitize_detail(cls, value: str) -> str:
         return neutralize_and_bound(value, MAX_DETAIL_LENGTH)
 
-    @field_validator("source_event_type")
+    @field_validator("source_event_type", "market_id", "condition_id", "token_id")
     @classmethod
-    def _sanitize_source_event_type(cls, value: str | None) -> str | None:
+    def _sanitize_identifier(cls, value: str | None) -> str | None:
+        """Neutralize and bound, rather than refuse.
+
+        The opposite choice from the envelope's, and deliberately so. This record
+        exists to hold input ARGOS could not validate, so refusing a hostile
+        identifier here would mean the rejection itself could not be written —
+        the input would vanish with no ledger entry, which is the silent drop
+        core invariant 14 exists to prevent. Bounding matters independently:
+        security review accepted a 20,000,000-character ``market_id`` on a record
+        whose ``detail`` was capped at 4,043.
+        """
         if value is None:
             return None
-        return neutralize_and_bound(value, MAX_SOURCE_EVENT_TYPE_LENGTH)
+        return neutralize_and_bound(value, MAX_IDENTIFIER_LENGTH)
 
     @field_validator("received_time", "rejected_at")
     @classmethod
@@ -363,6 +431,14 @@ def build_observation_envelope(
 
     payload_schema_version = type(payload).schema_version
     canonical_payload = _canonical_payload(payload)
+    canonical_json = _canonical_json(canonical_payload)
+    if len(canonical_json.encode()) > MAX_PAYLOAD_CANONICAL_BYTES:
+        raise ContractViolationError(
+            "normalized payload exceeds the canonical size cap",
+            payload_schema_version=payload_schema_version,
+            canonical_bytes=len(canonical_json.encode()),
+            cap=MAX_PAYLOAD_CANONICAL_BYTES,
+        )
 
     flags: tuple[ObservationQualityFlag, ...] = ()
     if event_time is not None and ensure_utc(event_time) - ensure_utc(received_time) > (
@@ -377,7 +453,7 @@ def build_observation_envelope(
         condition_id=condition_id,
         token_id=token_id,
         payload_schema_version=payload_schema_version,
-        payload=canonical_payload,
+        payload_canonical_json=canonical_json,
         event_time_status=status,
         event_time=event_time,
         event_time_raw=(
@@ -439,10 +515,10 @@ def build_rejected_observation(
     rejection_id = _rejection_identity(
         reason=reason,
         source=source,
-        source_event_type=source_event_type,
-        market_id=market_id,
-        condition_id=condition_id,
-        token_id=token_id,
+        source_event_type=_bound_identifier(source_event_type),
+        market_id=_bound_identifier(market_id),
+        condition_id=_bound_identifier(condition_id),
+        token_id=_bound_identifier(token_id),
         raw_payload_sha256=provenance.raw_sha256,
     )
     return RejectedObservationV1(
@@ -489,7 +565,7 @@ def _observation_identity(
     condition_id: str | None,
     token_id: str | None,
     payload_schema_version: str,
-    payload: Mapping[str, Any],
+    payload_canonical_json: str,
     event_time_status: EventTimeStatus,
     event_time: datetime | None,
     event_time_raw: str | None,
@@ -566,7 +642,7 @@ def _observation_identity(
         _event_time_marker(event_time_status, event_time, event_time_raw),
         source_sequence,
         source_hash,
-        _canonical_json(thaw(payload)),
+        payload_canonical_json,
     )
     return f"observation-{_digest(material)[:32]}"
 
@@ -617,7 +693,7 @@ def recompute_observation_id(envelope: ObservationEnvelopeV1) -> str:
         condition_id=envelope.condition_id,
         token_id=envelope.token_id,
         payload_schema_version=envelope.payload_schema_version,
-        payload=envelope.payload,
+        payload_canonical_json=_canonical_json(thaw(envelope.payload)),
         event_time_status=envelope.event_time_status,
         event_time=envelope.event_time,
         event_time_raw=envelope.event_time_raw,
@@ -632,9 +708,44 @@ def _canonical_payload(payload: VersionedModel) -> dict[str, Any]:
     The version travels in the envelope's own ``payload_schema_version`` field;
     duplicating it inside the payload would create two copies that can disagree.
     """
-    record = payload.to_record()
+    try:
+        record = payload.to_record()
+    except (TypeError, ValueError, RecursionError) as error:
+        # pydantic raises a bare ValueError("Circular reference detected") past
+        # nesting depth 254, and freeze/thaw raise RecursionError. Both are
+        # trivially reachable from hostile JSON and both escaped the taxonomy, so
+        # a capture loop would die on one instead of counting it.
+        raise ContractViolationError(
+            "normalized payload could not be serialized canonically",
+            payload_schema_version=type(payload).schema_version,
+            error_type=type(error).__name__,
+        ) from error
     record.pop(SCHEMA_VERSION_KEY, None)
     return record
+
+
+def _bound_identifier(value: str | None) -> str | None:
+    """Apply the same neutralization the ledger record stores, so the identity is
+    recomputable from the stored value rather than from the builder's argument."""
+    return None if value is None else neutralize_and_bound(value, MAX_IDENTIFIER_LENGTH)
+
+
+def recompute_rejection_id(rejection: RejectedObservationV1) -> str:
+    """Re-derive ``rejection_id`` from the record's own stored fields.
+
+    The observation identity has had this since review; the ledger — the record
+    built from data ARGOS could *not* validate — had no equivalent, which is the
+    wrong way round for the two.
+    """
+    return _rejection_identity(
+        reason=rejection.reason,
+        source=rejection.source,
+        source_event_type=rejection.source_event_type,
+        market_id=rejection.market_id,
+        condition_id=rejection.condition_id,
+        token_id=rejection.token_id,
+        raw_payload_sha256=rejection.raw_payload_sha256,
+    )
 
 
 def _rejection_identity(

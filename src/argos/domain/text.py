@@ -21,37 +21,73 @@ is the drift the M1 security review exists because of.
 
 from __future__ import annotations
 
+import hashlib
 import unicodedata
 
 REPLACEMENT = "\N{REPLACEMENT CHARACTER}"
 
 
 def is_display_control(character: str) -> bool:
-    """Return whether a character can control a display rather than describe text."""
+    """Return whether a character can control a display rather than describe text.
+
+    **What this does not do.** It does not close the covert channel through
+    stored text, and no version of it can. Security review demonstrated a
+    31-byte instruction encoded into variation selectors (U+FE00-FE0F,
+    U+E0100-E01EF) surviving into a rendered audit with a zero-glyph visible
+    difference — a higher-bandwidth channel than the tag block, and the one that
+    became prominent precisely because tag-block filtering became common. ZWJ and
+    ZWNJ carry the same channel at one bit per codepoint.
+
+    Those are deliberately not filtered: variation selectors are load-bearing for
+    CJK ideographic variants and for emoji presentation, and ZWJ/ZWNJ are
+    load-bearing in Indic and Perso-Arabic scripts. Filtering them would corrupt
+    legitimate market text to close a channel a motivated encoder routes around
+    through the sixty-odd remaining format characters, or through the Hangul
+    filler characters, which are invisible but category ``Lo`` and so are not
+    even reachable by a category sweep.
+
+    The line drawn here is therefore narrow and deliberate: neutralize what can
+    **forge or reorder what a human reads** (controls, C1, bidi overrides and
+    marks, interlinear annotation) and the few invisibles with no legitimate use
+    in this domain (the deprecated tag block, ZWSP, BOM). Hiding content inside
+    stored text is not defended against here; it is a detection problem for the
+    layer that consumes the text, and it must be treated as unsolved by anything
+    reading these records. Recorded in ``docs/BACKLOG.md`` rather than papered
+    over with a claim this function cannot support.
+    """
     if character in "\n\t":
         return False
     codepoint = ord(character)
     if unicodedata.category(character) == "Cc" or 0x7F <= codepoint <= 0x9F:
         return True
-    # LRE/RLE/PDF/LRO/RLO, LRI/RLI/FSI/PDI, and the LRM/RLM marks.
+    # LRE/RLE/PDF/LRO/RLO, LRI/RLI/FSI/PDI, and the LRM/RLM/ALM marks. U+061C ALM
+    # was missing from an earlier draft while the docstring claimed the mark set:
+    # one member of a class the code said it covered, found by security review.
     if (
-        codepoint in {0x200E, 0x200F}
+        codepoint in {0x200E, 0x200F, 0x061C}
         or 0x202A <= codepoint <= 0x202E
         or (0x2066 <= codepoint <= 0x2069)
     ):
         return True
-    # Invisible characters that hide content inside stored text rather than
-    # forging what is displayed. The Unicode tag block is the "ASCII smuggling"
-    # channel: a reviewer sees nothing, an automated reader downstream extracts
-    # the hidden string. It is deprecated for its original language-tagging
-    # purpose and has no legitimate place in a market question or a source's
-    # error text. ZERO WIDTH SPACE and the byte-order mark are invisible for the
-    # same purpose and can also split a word without a reader noticing.
+    # Invisible characters used to hide content inside stored text. The Unicode
+    # tag block is one "ASCII smuggling" channel: a reviewer sees nothing, an
+    # automated reader downstream extracts the hidden string. It is deprecated
+    # for its original language-tagging purpose and has no legitimate place in a
+    # market question. ZERO WIDTH SPACE and the byte-order mark are invisible for
+    # the same purpose and can split a word without a reader noticing.
     #
-    # ZWJ (U+200D) and ZWNJ (U+200C) are deliberately NOT included: they are
-    # load-bearing in Indic and Perso-Arabic scripts and in emoji sequences, and
-    # cannot reorder or hide surrounding text. Neutralizing every Cf character
-    # would corrupt legitimate text to close a channel these two do not open.
+    # This does NOT close the covert channel, and the honest statement of what
+    # remains open is in this function's docstring. Blanket-filtering every
+    # invisible codepoint would corrupt legitimate text for a gain that a
+    # motivated encoder simply routes around.
+    # U+FFF9-FFFB interlinear annotation is display *forgery*, not merely
+    # smuggling, and belongs with the bidi set above: a conforming renderer shows
+    # only the base text while a naive terminal shows base and annotation
+    # concatenated, so "Resolves \ufff9NO\ufffaYES\ufffb if X" reads as two
+    # different rules to two readers. Unicode states these are for internal
+    # processing and never for open interchange.
+    if 0xFFF9 <= codepoint <= 0xFFFB:
+        return True
     return 0xE0000 <= codepoint <= 0xE007F or codepoint in {0x200B, 0xFEFF}
 
 
@@ -68,6 +104,23 @@ def neutralize_untrusted_text(text: str) -> str:
     )
 
 
+def is_clean_identifier(value: str) -> bool:
+    """Return whether ``value`` is safe to store verbatim as a machine identifier.
+
+    Identifiers are not prose. A market id, a token id, or a source's own event
+    label carries no writing system and no legitimate reason to contain a
+    character that can move a cursor, reorder a line, or hide itself. Neutralizing
+    them the way prose is neutralized would be worse than refusing them: the
+    replacement is lossy, so two different hostile ids collapse to one stored
+    value and — because these fields are inside the observation identity — two
+    genuinely different observations collapse with them.
+
+    Refusing instead keeps the identity injective and sends the offending payload
+    where it belongs, to the rejection ledger with a reason.
+    """
+    return not any(is_display_control(character) for character in value)
+
+
 def neutralize_and_bound(text: str, max_length: int) -> str:
     """Neutralize ``text`` and bound its stored length.
 
@@ -79,4 +132,15 @@ def neutralize_and_bound(text: str, max_length: int) -> str:
     neutralized = neutralize_untrusted_text(text)
     if len(neutralized) <= max_length:
         return neutralized
-    return f"{neutralized[:max_length]}... (truncated, {len(neutralized)} characters in source)"
+    # The suffix carries a digest of the full neutralized text, not only its
+    # length. Truncation is a lossy projection, and an identity derived from the
+    # truncated value inherits that loss: security review reproduced two payloads
+    # differing only past the cap collapsing onto one observation_id while their
+    # raw hashes differed, so an idempotent store would keep one and lose the
+    # other's raw payload — source-controlled silent loss. The digest makes the
+    # stored value injective again for anything that hashes it.
+    digest = hashlib.sha256(neutralized.encode()).hexdigest()[:16]
+    return (
+        f"{neutralized[:max_length]}... "
+        f"(truncated, {len(neutralized)} characters in source, sha256:{digest})"
+    )
