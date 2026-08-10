@@ -28,19 +28,33 @@ received_time
 ingest_sequence
 source_sequence        optional
 source_hash            optional
-payload_type
-payload                 typed normalized payload
+quality_flags          defects detected while accepting; empty means checked and clean
+payload_schema_version names the VersionedModel describing payload
+payload                 normalized payload in canonical JSON form
 raw_payload_sha256
 raw_payload_location   optional
 parser_version
 capture_run_id
 ```
 
+Two amendments recorded against the original specification, both made when the
+contract was implemented:
+
+- `payload_type` is implemented as `payload_schema_version`. The source's own
+  message-kind label lives in `source_event_type`; a second ARGOS-facing name for
+  the same idea would only invite the two to disagree. The field that remains
+  names the schema, which is what a reader actually needs to dispatch on.
+- `payload` holds the payload's **canonical JSON form**, not live Python objects.
+  `to_record()` serializes in JSON mode, so a `Decimal` held live would reload as
+  a string: the replayed envelope would differ from the live one while carrying
+  the same `observation_id`. Typed access (`read_payload`) restores the declared
+  types. See ADR-0010.
+
 Validation:
 
 - `received_time` cannot be missing.
 - `ingest_sequence` is positive and unique per capture run.
-- `event_time > received_time` is allowed only within configured clock-skew tolerance and must emit a quality flag.
+- `event_time > received_time` is allowed only within configured clock-skew tolerance and must emit a quality flag. Implemented as `ObservationQualityFlag.EVENT_TIME_AHEAD_OF_RECEIPT` against `DEFAULT_CLOCK_SKEW_TOLERANCE`; the observation is still accepted, because a source clock running fast is a fact about the source, but an event-time window must be able to see that the timestamp was never corroborated.
 - Invalid source times do not silently fall back to current time; store a parse failure record.
 
 ## `MarketDefinitionV1`

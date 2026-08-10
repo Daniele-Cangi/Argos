@@ -119,6 +119,27 @@ class VersionedModel(BaseModel):
                 inherited=getattr(cls, SCHEMA_VERSION_KEY, None),
             )
 
+    def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
+        """Copy through validation, unlike pydantic's default.
+
+        pydantic documents ``model_copy`` as *not* re-validating, which quietly
+        defeats every guarantee this class exists to provide: a caller patching
+        one field with the ordinary public API gets a record whose other fields
+        were never checked and whose container fields were never frozen. An
+        adversarial test reproduced it — ``model_copy(update={"payload": d})``
+        left the envelope holding ``d`` by reference, and mutating ``d``
+        afterwards reached ``to_record()``, breaking core invariant 7 through a
+        call that looks entirely unremarkable in review.
+
+        Re-validating makes the copy as trustworthy as the original. The cost is
+        that a copy is no longer free; that is the correct trade for a record
+        type whose whole purpose is to be believed later.
+        """
+        merged: dict[str, Any] = {**dict(self), **(dict(update) if update else {})}
+        if deep:
+            merged = copy.deepcopy(merged)
+        return type(self).model_validate(merged)
+
     def to_record(self) -> dict[str, Any]:
         """Serialize to a storable mapping that carries its own schema version."""
         record = self.model_dump(mode="json")

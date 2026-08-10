@@ -35,7 +35,14 @@ class SourceProvenanceV1(VersionedModel):
     ``"../elsewhere"`` or an absolute path would place a write outside the archive."""
 
     endpoint: str = Field(min_length=1)
-    http_status: int = Field(ge=100, le=599)
+
+    http_status: int | None = Field(default=None, ge=100, le=599)
+    """Null for a non-HTTP transport. The public market WebSocket carries no
+    per-frame HTTP status, and requiring one would force its adapter to invent a
+    value — ``101``, or worse ``200`` — inside the one contract whose entire job
+    is to say where data actually came from. An invented status is exactly the
+    silent substitution ``.claude/rules/data-integrity.md`` forbids."""
+
     retrieved_at: datetime
     raw_sha256: str = Field(min_length=SHA256_LENGTH, max_length=SHA256_LENGTH)
     byte_length: int = Field(ge=0)

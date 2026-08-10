@@ -1,12 +1,17 @@
 # ARGOS status
 
-Last updated: 2026-08-07
+Last updated: 2026-08-10
 
 ## Current state
 
 - Current milestone: **M2 — CLOB capture — in progress**. M0 and M1 closed. The
-  pacing-versus-timekeeping ADR that gated M2 (ADR-0009) is resolved and merged;
-  no M2 source adapter has been written yet.
+  pacing-versus-timekeeping ADR that gated M2 (ADR-0009) is resolved and merged.
+  A first M2 vertical slice has landed: the canonical `ObservationEnvelopeV1` /
+  `RejectedObservationV1` contracts and their identity derivation (ADR-0010),
+  plus a public CLOB REST research note. **No CLOB adapter, no WebSocket
+  adapter, no event store, and no capture CLI exist yet** — this slice is the
+  contract the store and adapters will be built against, not the adapters
+  themselves.
 - Autonomous target: **complete M0-M4**
 - Owner gate: **required after M4**
 - Execution capability: **prohibited and absent**
@@ -14,8 +19,146 @@ Last updated: 2026-08-07
 
 ## Current objective
 
-Build the CLOB snapshot adapter and the event store, using `Pacer` (not
-`Clock`) for retry backoff, per ADR-0009.
+Build the CLOB REST snapshot adapter and the idempotent event store, using
+`Pacer` (not `Clock`) for retry backoff per ADR-0009, and `ObservationEnvelopeV1`
+/ `RejectedObservationV1` (ADR-0010) as the boundary contract the adapter writes
+to and the store reads from. The store must additionally decide the open
+delivery-record question ADR-0010 left unresolved (see below) before it writes
+a row.
+
+## M2 slice: observation identity and rejection ledger (ADR-0010)
+
+Slice: the canonical `ObservationEnvelopeV1` + `RejectedObservationV1`
+contracts (`src/argos/domain/observation.py`), serving two M2 exit criteria —
+"duplicate source event does not create a second accepted observation" and
+"invalid messages enter a rejection ledger with reason and raw hash" — plus a
+public CLOB REST research slice (`docs/research/m2-clob-rest-book.md`,
+committed as `da08d1d`) that fed the identity design with measurements against
+the real endpoint rather than assumption.
+
+Quality gate: PASS — ruff, ruff format, mypy strict on 32 source files,
+**710 tests** (up from 594 at the pre-M2 slice).
+
+The architecture review returned **BLOCK**. Every finding was reproduced
+before acting on it; all five blockers are fixed and re-verified:
+
+- **B1** — identity material was joined on `\x1f`, so a source-controlled
+  separator could shift a field boundary and collide two different
+  observations. Fixed with a length-prefixed injective encoding
+  (`_digest` in `src/argos/domain/observation.py`). Independent adversarial
+  testing found the same class of collision on the `market_id`/`condition_id`
+  and `condition_id`/`token_id` boundaries and in the rejection ledger; all are
+  covered by regression tests in `tests/test_observation_envelope_adversarial.py`.
+- **B5** — the envelope held live Python objects, so `to_record()` dumped in
+  JSON mode and `Decimal('0.5')` reloaded as `'0.5'`: the replayed envelope
+  differed from the live one while carrying the same `observation_id` — core
+  invariant 5 broken, and M3's identical-hash criterion runs through this
+  object. Fixed by storing the canonical JSON form and restoring types via
+  `read_payload`.
+- **B4** — any mapping could previously be labelled with any
+  `payload_schema_version`; the mismatch would have surfaced only when
+  `read_payload` ran during replay, against a capture that cannot be re-taken.
+  Fixed by having `build_observation_envelope` take the typed `VersionedModel`
+  rather than a mapping plus a version string.
+- **B2** — `SourceProvenanceV1.http_status` was mandatory, which would have
+  forced the WebSocket adapter (a same-milestone deliverable) to invent an
+  HTTP status inside the provenance contract. Now nullable.
+- **B3** — `docs/04_DATA_CONTRACTS.md` specified a clock-skew tolerance and
+  quality flag that did not exist in code — the M1 "specified contract
+  silently dropped" pattern repeating. Implemented as
+  `ObservationQualityFlag.EVENT_TIME_AHEAD_OF_RECEIPT`; the doc and the code
+  now agree.
+
+Also fixed from the same reviews:
+
+- **N8** — the sanitizer had been duplicated into the domain on a justification
+  that was false (`compiler/audit.py` already imports from `argos.domain`),
+  and its docstring claimed a parity test that did not exist. Now a shared
+  `argos.domain.text` module used by both `compiler.audit` and
+  `domain.observation`.
+- Adversarial testing found that Unicode tag characters (U+E0000-U+E007F) and
+  U+200B/U+FEFF are Unicode category `Cf`, not `Cc`, so they survived the
+  original control-character sanitizer into stored records — an invisible-text
+  smuggling channel. Now neutralized in `argos.domain.text`; ZWJ/ZWNJ are
+  deliberately kept because they are load-bearing in Indic and Perso-Arabic
+  scripts and cannot reorder or hide surrounding text.
+- Adversarial testing reproduced that pydantic's `model_copy(update=...)` does
+  **not** re-validate, so a bare mutable dict could land in a stored payload
+  and a later external mutation would reach `to_record()`. Fixed structurally
+  on `VersionedModel.model_copy`, which now copies through validation.
+- **N1** — `source_sequence="absent"` could forge the identity of
+  `source_sequence=None`; fixed by the same length-prefixed encoding as B1.
+- **N2** — identity is derived only from validated field values, and
+  `recompute_observation_id` makes it auditable rather than trust-only.
+- **N6** — envelope `source` is now cross-checked against `provenance.source`
+  at construction, so an envelope cannot attribute itself to a different
+  source than the bytes it points at.
+
+Research findings recorded as project reality (from real recorded public
+payloads against `clob.polymarket.com`, not from documentation or assumption
+— see `docs/research/m2-clob-rest-book.md` for the fixtures and the
+three-poll timing experiment):
+
+- the CLOB book response has no sequence number, only a millisecond
+  `timestamp` and a content `hash`;
+- `timestamp` tracks the book's last change, not the response time — verified
+  by polling one token three times, five seconds apart;
+- both `bids` and `asks` end at top of book (ascending / descending
+  respectively), the reverse of the naive `[0]` reading;
+- 404 is ambiguous across a closed market, an unknown token, and a
+  syntactically valid token that never had a book.
+
+## M2 exit criteria
+
+Tracking `docs/07_MILESTONES.md`. Two criteria have contract-level evidence
+from this slice; the rest have no adapter, store, or capture loop yet to
+produce evidence against, and are listed as open rather than implied closed.
+
+| Criterion | Status | Evidence |
+|---|---|---|
+| Duplicate source event does not create a second accepted observation | **Contract-level evidence only** | `_observation_identity` collides an identical redelivery onto one `observation_id` (`tests/test_observation_envelope.py::test_identity_is_stable_across_redelivery`) and does so on the real recorded CLOB payload, not only a constructed one (`docs/research/m2-clob-rest-book.md`, "Consequence for `ObservationEnvelopeV1`"). **Not yet closed**: no event store exists to perform the idempotent insert itself — the identity a store would key on is proven stable, the store is not built |
+| Zero-size level update is represented as removal | Open | Not yet built. The REST research doc found zero-size levels were **never observed** in a snapshot (UNVERIFIED for REST) and is, on current evidence, a property of the WebSocket delta stream, which has not been researched or built |
+| Reconnect does not reset ingest sequence or silently lose manifest state | Open | No WebSocket adapter and no capture manifest exist yet |
+| Invalid messages enter a rejection ledger with reason and raw hash | **Contract-level evidence only** | `RejectedObservationV1` carries `reason: RejectionReason`, `detail`, and `raw_payload_sha256`; `build_rejected_observation` derives a deterministic `rejection_id` so redelivery of the same invalid bytes for the same reason collapses rather than growing the ledger unbounded (`tests/test_observation_envelope.py::test_rejection_identity_is_stable_across_redelivery`). **Not yet closed**: nothing writes to a ledger yet — there is no store and no adapter producing rejections from real input |
+| Book snapshot plus deltas reconstruct a tested projection | Open | No projection, no adapter |
+| No authenticated/user channel or trading code exists | Holds | Unchanged from M0-M1; this slice added no network code at all — only domain contracts and a research note built from public unauthenticated GET requests (`docs/research/m2-clob-rest-book.md`, header) |
+| An interrupted capture closes or marks its manifest incomplete | Open | No capture loop or manifest exists yet |
+
+## Known limitations from the M2 observation-identity slice
+
+Recorded here rather than discovered late by the store or adapter slices that
+build on this one. Full reasoning in `docs/adr/0010-observation-identity.md`
+and `docs/BACKLOG.md`.
+
+- No payload model yet normalizes `Decimal` scale, and `Decimal("0.430")` and
+  `Decimal("0.43")` serialize to different canonical text and therefore mint
+  different `observation_id`s — reproduced directly
+  (`tests/test_observation_envelope_adversarial.py::test_decimal_trailing_zero_precision_changes_identity`)
+  and confirmed live: the CLOB endpoint really does report the same price at
+  two precisions across `/book` (`"0.430"`) and `/last-trade-price`
+  (`"0.43"`).
+- `ObservationEnvelopeV1` has no `supersedes_observation_id`. Identity depends
+  on the normalized payload and deliberately excludes `parser_version`, so
+  reprocessing the same raw bytes under a corrected parser mints a new,
+  unlinked identity. ADR-0004 requires superseding records as the correction
+  mechanism; this field does not exist yet.
+- The store's delivery-record shape is undecided. Identity excludes
+  `capture_run_id` and `ingest_sequence` by design (both would make a
+  duplicate unable to collide), which means a collapsed duplicate currently
+  has nowhere to record its own arrival, and `RejectedObservationV1` cannot
+  point at an accepted twin it duplicates. `docs/02_ARCHITECTURE.md` requires
+  duplicate inserts to be idempotent **and observable** — this slice defines
+  identity, not the delivery record, and the store slice must decide it before
+  writing a row.
+- No `payload_schema_version` -> model registry exists. `read_payload` takes an
+  explicit `model` argument today; M3 dispatch across multiple payload types
+  will need something less ad hoc.
+- `read_payload` hard-matches exactly one `payload_schema_version` rather than
+  accepting a set via `ensure_supported_version`, so no reader can yet accept
+  more than one payload version.
+- The research doc's UNVERIFIED list (rate limits, the `/books` batch
+  endpoint, response headers, zero-size REST levels, halted-market behaviour)
+  is unresolved. None of it should be assumed by the capture loop.
 
 ## Pre-M2 slice: pacing separated from timekeeping (ADR-0009)
 

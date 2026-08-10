@@ -8,7 +8,6 @@ tokens map. It never scores the market's likelihood of anything.
 
 from __future__ import annotations
 
-import unicodedata
 from datetime import datetime
 from typing import ClassVar, Final
 
@@ -18,6 +17,7 @@ from argos.clock import ensure_utc
 from argos.compiler.contract import CompiledMarketContractV1
 from argos.domain.market import MarketDefinitionV1
 from argos.domain.selection import ExclusionReason, MarketSelectionPolicy, select_markets
+from argos.domain.text import neutralize_untrusted_text
 from argos.domain.versioning import VersionedModel
 
 AUDIT_VERSION = "market-audit/1"
@@ -189,41 +189,6 @@ def _number(value: object) -> str:
     return "not declared" if value is None else str(value)
 
 
-def _sanitize(text: str) -> str:
-    """Neutralize display-controlling characters in third-party text.
-
-    The market question and description are written by whoever created the market.
-    Rendered raw they can clear the reviewer's terminal, rewrite its title, or
-    write to the clipboard via OSC 52 — so the reviewer would be reading an
-    artifact the source controls. Bidirectional overrides are the quieter version
-    of the same attack: they visually reorder text without changing it, so a
-    clause can be made to read as its own opposite.
-
-    Tabs and newlines survive. Everything neutralized is replaced with a visible
-    marker rather than dropped, because a disappearing character is its own kind
-    of forgery. Zero-width joiners are left alone: they are load-bearing in
-    several writing systems and cannot reorder anything.
-    """
-    return "".join(
-        "\N{REPLACEMENT CHARACTER}" if _is_display_control(character) else character
-        for character in text
-    )
-
-
-def _is_display_control(character: str) -> bool:
-    if character in "\n\t":
-        return False
-    codepoint = ord(character)
-    if unicodedata.category(character) == "Cc" or 0x7F <= codepoint <= 0x9F:
-        return True
-    # LRE/RLE/PDF/LRO/RLO, LRI/RLI/FSI/PDI, and the LRM/RLM marks.
-    return (
-        codepoint in {0x200E, 0x200F}
-        or 0x202A <= codepoint <= 0x202E
-        or (0x2066 <= codepoint <= 0x2069)
-    )
-
-
 def _blockquote(text: str) -> str:
     """Quote every line, so multi-line source text cannot escape its own section.
 
@@ -236,7 +201,7 @@ def _blockquote(text: str) -> str:
     to see all of it. Length is a readability cost; a missing clause is a wrong
     decision.
     """
-    prepared = _sanitize(text)
+    prepared = neutralize_untrusted_text(text)
     return "\n".join(f"> {line}" if line else ">" for line in prepared.splitlines() or [""])
 
 
@@ -247,7 +212,7 @@ def _inline(text: str) -> str:
     that runs to thousands of characters is a defect to notice, not evidence to
     read in full, and the marker states the true length.
     """
-    collapsed = " ".join(_sanitize(text).split())
+    collapsed = " ".join(neutralize_untrusted_text(text).split())
     if len(collapsed) <= MAX_RENDERED_TEXT:
         return collapsed
     return f"{collapsed[:MAX_RENDERED_TEXT]}… (truncated, {len(collapsed)} characters in source)"

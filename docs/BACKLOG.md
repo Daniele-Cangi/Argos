@@ -170,14 +170,66 @@ milestone named, because later code would inherit the defect.
       truncated the value before `data_dir` in review, but it is one more place a
       filesystem path could reach stderr.
 
-## Later — M2
+## Now — M2
 
+- [x] `ObservationEnvelopeV1` / `RejectedObservationV1` canonical contracts and
+      deterministic identity derivation (ADR-0010).
+- [x] Public CLOB REST order-book research note, from recorded live payloads
+      (`docs/research/m2-clob-rest-book.md`).
 - [ ] CLOB snapshot adapter.
 - [ ] WebSocket lifecycle and subscriptions.
-- [ ] Canonical market-data payloads.
-- [ ] Event store.
+- [ ] Canonical market-data payloads (order book, price change, etc. — typed
+      `VersionedModel`s that `build_observation_envelope` takes as `payload`).
+- [ ] Event store, including the delivery-record shape decision below.
 - [ ] Capture manifest and health metrics.
 - [ ] Capture CLI and integration fixture.
+
+### Carried from the M2 observation-identity slice (ADR-0010)
+
+- [ ] **Before the first payload model lands** — normalize `Decimal` scale
+      inside the payload model, not just at the boundary. `Decimal("0.430")`
+      and `Decimal("0.43")` currently serialize to different canonical text and
+      mint different `observation_id`s
+      (`tests/test_observation_envelope_adversarial.py::test_decimal_trailing_zero_precision_changes_identity`).
+      The CLOB endpoint really reports the same price at two precisions across
+      `/book` and `/last-trade-price` (`docs/research/m2-clob-rest-book.md`,
+      "Decimal hygiene"), so this is a live hazard on the very first payload
+      type, not a theoretical one.
+- [ ] **Before reprocessing under a corrected parser is possible** — add
+      `supersedes_observation_id` to `ObservationEnvelopeV1`. Identity excludes
+      `parser_version` by design, so reprocessing the same raw bytes under a
+      fixed parser mints a new, unlinked identity today. ADR-0004 requires
+      superseding records as the correction mechanism; the field does not
+      exist yet.
+- [ ] **Before the store writes a row** — decide the delivery-record shape.
+      `observation_id` deliberately excludes `capture_run_id` and
+      `ingest_sequence` (both would make a duplicate unable to collide,
+      making the M2 duplicate-detection exit criterion unreachable), so a
+      collapsed duplicate currently has nowhere to record its own
+      `received_time`/`ingest_sequence`, and `RejectedObservationV1` cannot
+      point at the accepted twin it duplicates.
+      `docs/02_ARCHITECTURE.md` requires duplicate inserts to be idempotent
+      **and observable**; this is a storage-shape question the identity ADR
+      deliberately left open (ADR-0010, "Consequences").
+- [ ] **Before M3 dispatch** — no `payload_schema_version` -> model registry
+      exists. `read_payload` takes an explicit `model` argument; dispatch
+      across multiple payload types during replay will otherwise grow ad hoc.
+- [ ] `read_payload` hard-matches exactly one `payload_schema_version` instead
+      of accepting a set via `ensure_supported_version`; no reader can accept
+      more than one payload version yet.
+- [ ] **Before the capture loop is trusted** — close the research doc's
+      UNVERIFIED list: rate limits, the `/books` batch endpoint's existence and
+      shape, response headers (caching/rate-limit/`content-encoding`),
+      zero-size levels in a REST snapshot (never observed), and behaviour under
+      a paused/halted market as distinct from a closed one
+      (`docs/research/m2-clob-rest-book.md`, "UNVERIFIED").
+- [ ] The WebSocket research slice must answer: does the market channel supply
+      a sequence number or only `timestamp`/`hash`; does a delta carry the hash
+      of the book state it produces; does zero-size mean removal on the delta
+      stream (this is where the corresponding M2 exit criterion actually
+      lives, since it was never observed on REST)
+      (`docs/research/m2-clob-rest-book.md`, "Next questions for the WebSocket
+      research slice").
 
 ## Later — M3
 
