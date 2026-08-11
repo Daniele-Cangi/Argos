@@ -12,5 +12,6 @@
 | 0008 | Public Polymarket APIs first | Accepted |
 | 0009 | Pacing is separate from timekeeping | Accepted |
 | 0010 | What an observation is, and what its identity means | Accepted |
+| 0011 | The SQLite/WAL event store and the delivery record | Accepted |
 
 Create new ADRs by copying the structure used below. Never rewrite an accepted ADR to hide a changed decision; supersede it.
