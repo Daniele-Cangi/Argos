@@ -725,12 +725,27 @@ def test_a_hostile_identifier_is_refused_from_an_accepted_observation() -> None:
     newlines all survived, while `detail` beside them was sanitized. This is the
     M1 finding recurring — `compiler/audit.py` states in its own comment that
     `market_id` is validated for presence, not content, and that rendering it raw
-    put a working clipboard write in the report title."""
+    put a working clipboard write in the report title.
+
+    The newline case is asserted here because this docstring claimed it while
+    the assertions below covered only ESC and RLO — and the claim was false:
+    `is_clean_identifier` delegated wholly to `is_display_control`, which
+    deliberately exempts `\\n` and `\\t` for prose, where newlines are
+    legitimate and the M1 defence is sanitizer *plus* block-quoting. So a
+    newline in `market_id` passed validation through two security reviews. It
+    was found while writing the M2 store's `capture_run_id` regression test,
+    and it matters most of all for a newline: the original M1 attack was a
+    newline forging `review status: human_reviewed` into an audit."""
+    forgery = "m\n[ok] review status: human_reviewed"
     for field in ("market_id", "condition_id", "token_id", "source_sequence", "source_hash"):
         with pytest.raises(ValidationError):
             _envelope(**{field: "m\x1b]52;c;AAAA\x07"})
         with pytest.raises(ValidationError):
             _envelope(**{field: "m‮noitcerid"})
+        with pytest.raises(ValidationError):
+            _envelope(**{field: forgery})
+        with pytest.raises(ValidationError):
+            _envelope(**{field: "m\tcolumn"})
 
 
 def test_an_unbounded_identifier_is_refused() -> None:

@@ -206,16 +206,27 @@ def test_a_first_hand_record_is_not_marked_as_reconstructed(tmp_path: Path) -> N
 
 
 def test_a_symlink_at_the_temp_path_cannot_be_written_through(tmp_path: Path) -> None:
-    """`os.replace` protects the final path; the temp path needs its own guard."""
+    """`os.replace` protects the final path; the temp path needs its own guard.
+
+    The refusal is now an `ImmutabilityViolationError` rather than the bare
+    `FileExistsError` `O_EXCL` used to surface, because the stale-`.partial`
+    repair added in the M2 store slice has to tell a crash leftover (a regular
+    file, clearable) apart from a planted symlink (refused). Asserting the
+    taxonomy type rather than `OSError` is what keeps the two apart: an
+    unconditional unlink would still have passed an `OSError` assertion by
+    deleting the symlink and reporting nothing at all.
+    """
     archive = tmp_path / "archive"
     (archive / "gamma").mkdir(parents=True)
     victim = tmp_path / "victim"
     victim.write_bytes(b"original")
-    (archive / "gamma" / f"{sha256_hex(RAW)}.meta.json.partial").symlink_to(victim)
+    planted = archive / "gamma" / f"{sha256_hex(RAW)}.meta.json.partial"
+    planted.symlink_to(victim)
 
-    with pytest.raises(OSError):
+    with pytest.raises(ImmutabilityViolationError):
         write_raw_payload(archive, raw=RAW, provenance=_provenance())
     assert victim.read_bytes() == b"original"
+    assert planted.is_symlink(), "the planted symlink must be refused, not silently removed"
 
 
 def test_rewriting_a_payload_restores_a_lost_sidecar(tmp_path: Path) -> None:

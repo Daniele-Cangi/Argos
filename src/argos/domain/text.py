@@ -117,8 +117,20 @@ def is_clean_identifier(value: str) -> bool:
 
     Refusing instead keeps the identity injective and sends the offending payload
     where it belongs, to the rejection ledger with a reason.
+
+    **Newline and tab are refused here even though**
+    :func:`is_display_control` **deliberately exempts them.** That exemption is
+    correct for prose — a market description legitimately contains newlines, and
+    the M1 defence for prose is the sanitizer *plus* block-quoting — but it is
+    wrong for an identifier, and reusing it unchanged left this function's own
+    docstring claiming a property it did not have: a newline is precisely the
+    character that "moves a cursor" and forges a line, and the original M1 attack
+    was a newline in a market question forging a whole audit section, including
+    ``review status: human_reviewed``. Found while writing the store-boundary
+    regression test for ``capture_run_id``, after two independent reviews of the
+    identifier path had passed over it.
     """
-    return not any(is_display_control(character) for character in value)
+    return not any(character in "\n\t\r" or is_display_control(character) for character in value)
 
 
 def neutralize_and_bound(text: str, max_length: int) -> str:

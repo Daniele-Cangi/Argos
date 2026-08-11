@@ -116,9 +116,11 @@ milestone named, because later code would inherit the defect.
       becomes load-bearing the moment a second contract is persisted for the same
       market: ADR-0004 makes superseding records the correction mechanism, so the
       chain has to start forming when the store lands.
-- [ ] `_write_atomically` renames without an `fsync`, so a power loss can make the
+- [x] `_write_atomically` renames without an `fsync`, so a power loss can make the
       rename durable before the contents. Acceptable for an archive that disclaims
-      durability; the M2 event store cannot inherit it.
+      durability; the M2 event store cannot inherit it. Closed in the ADR-0011
+      event-store slice: `os.replace` and the new directory `fsync` are now
+      inside the write guard.
 - [ ] Duplicate market ids inside one page are accepted twice with no dedup counter;
       it belongs with the M2 idempotent store.
 - [ ] The Hypothesis market strategy generates only payloads the normalizer accepts,
@@ -130,8 +132,12 @@ milestone named, because later code would inherit the defect.
       larger than one page needs cursor handling and a documented stopping rule.
 - [ ] Persist `MarketDefinitionV1` and `QuarantinedMarketV1` records. They are
       currently computed and reported but only the raw payload is archived.
-- [ ] The raw archive in `argos.store` is deliberately minimal and is not the
+- [x] The raw archive in `argos.store` is deliberately minimal and is not the
       event store M2 requires; decide whether it survives or is absorbed.
+      Decided in ADR-0011 section 4: it survives. Raw bytes stay
+      content-addressed on disk; the event store references them by
+      `raw_payload_sha256`/`raw_payload_location` rather than absorbing them
+      into a row.
 - [ ] Discovery does not yet emit a run manifest linking sample to configuration.
 - [ ] **Constraint on the M2 capture-manifest design** — `RunManifest.input_provenance`
       is an unbounded tuple of `SourceProvenanceV1`, fine at M1 discovery scale (one
@@ -180,7 +186,10 @@ milestone named, because later code would inherit the defect.
 - [ ] WebSocket lifecycle and subscriptions.
 - [ ] Canonical market-data payloads (order book, price change, etc. — typed
       `VersionedModel`s that `build_observation_envelope` takes as `payload`).
-- [ ] Event store, including the delivery-record shape decision below.
+- [x] Event store, including the delivery-record shape decision below.
+      Closed by ADR-0011 (`docs/adr/0011-sqlite-event-store-and-delivery-record.md`,
+      `src/argos/store/event_store.py`). No adapter or capture loop writes
+      through it yet.
 - [ ] Capture manifest and health metrics.
 - [ ] Capture CLI and integration fixture.
 
@@ -201,7 +210,7 @@ milestone named, because later code would inherit the defect.
       fixed parser mints a new, unlinked identity today. ADR-0004 requires
       superseding records as the correction mechanism; the field does not
       exist yet.
-- [ ] **Before the store writes a row** — decide the delivery-record shape.
+- [x] **Before the store writes a row** — decide the delivery-record shape.
       `observation_id` deliberately excludes `capture_run_id` and
       `ingest_sequence` (both would make a duplicate unable to collide,
       making the M2 duplicate-detection exit criterion unreachable), so a
@@ -210,7 +219,10 @@ milestone named, because later code would inherit the defect.
       point at the accepted twin it duplicates.
       `docs/02_ARCHITECTURE.md` requires duplicate inserts to be idempotent
       **and observable**; this is a storage-shape question the identity ADR
-      deliberately left open (ADR-0010, "Consequences").
+      deliberately left open (ADR-0010, "Consequences"). Closed by ADR-0011
+      section 5: one `delivery` row per arrival, keyed `(capture_run_id,
+      ingest_sequence)`, carrying `observation_id`, `received_time`, and a
+      `disposition` of `accepted_new`/`duplicate`.
 - [ ] **Before M3 dispatch** — no `payload_schema_version` -> model registry
       exists. `read_payload` takes an explicit `model` argument; dispatch
       across multiple payload types during replay will otherwise grow ad hoc.
@@ -267,10 +279,13 @@ None is a blocker; all are recorded so they are chosen rather than forgotten.
       subclasses. Two classes both declaring `order_book_snapshot.v1` defeat
       `read_payload`'s version check — review built a `Trade` out of a book
       envelope with no error. A registry check in `__init_subclass__` closes it.
-- [ ] Neither `observation_id` nor `rejection_id` is enforced by a validator: a
+- [x] Neither `observation_id` nor `rejection_id` is enforced by a validator: a
       forged id round-trips through `from_record` while `recompute_*` disagrees.
       The recompute functions exist; nothing obliges a reader to call them. The
       store slice is the right place to make verification mandatory on read.
+      Closed by the ADR-0011 event store (section 8): `SQLiteEventStore` calls
+      `recompute_observation_id`/`recompute_rejection_id` on both write and
+      read.
 - [ ] `RejectedObservationV1.detail` retains newlines by design, and the M1
       defence was the sanitizer **plus** block-quoting — only the sanitizer
       carried across. No ledger renderer exists yet, so this is a claim-versus-
@@ -301,6 +316,75 @@ None is a blocker; all are recorded so they are chosen rather than forgotten.
       UA succeeded (UNVERIFIED as a general rule — two strings tried, not a
       study). Do not read "no auth header" as "no client identification
       expected".
+
+### Carried from the M2 event-store slice (ADR-0011)
+
+None is a blocker; security review returned PASS_WITH_FINDINGS and every
+finding it raised was fixed in the slice itself. These are new items found
+while building and reviewing the store, recorded so they are chosen rather
+than discovered late by an adapter or the capture CLI.
+
+- [ ] **L1** Duplicate arrivals silently drop `quality_flags`: the observation
+      row is written only on first arrival and `delivery` has no quality
+      column, so two arrivals of one observation that legitimately differ in
+      `quality_flags` (the flag derives from `received_time`, which identity
+      excludes) lose the later one. A counted defect discarded —
+      `.claude/rules/data-integrity.md`. Cheap fix (a column on `delivery`)
+      but it is a schema change and the schema is unversioned (see L4).
+- [ ] **L2** `open_sqlite_event_store` path handling is strictly weaker than
+      the raw archive beside it: no `resolve()`, no containment check, no
+      `O_NOFOLLOW` equivalent, no mode. Measured: a symlinked db path was
+      followed and the `-wal`/`-shm` side files were created beside the
+      symlink target, all at 0644, while the archive writes 0600 and checks
+      `is_relative_to(root)`. Requires local write access, hence LOW.
+- [ ] **L3** The store imposes no size bound of its own;
+      `MAX_PAYLOAD_CANONICAL_BYTES` lives only in `build_observation_envelope`,
+      and `from_record` accepts anything. Measured: a 32 MiB record wrote in
+      0.441 s at 210 MiB peak RSS and read back at 334 MiB. No exposure today
+      because the builder is the only production write path. Also
+      `source_frame_offset` is unvalidated (`-1` accepted; `2**63` raises a
+      bare `OverflowError`).
+- [ ] **L4** The database schema has no identity and no version:
+      `PRAGMA user_version` is never set or read, and
+      `CREATE TABLE IF NOT EXISTS` opens a differently-shaped pre-existing
+      file silently, failing at the first write mid-capture with a generic
+      message. A future migration will have no version to migrate from. Note
+      the engineering rule "Every public schema and persistent record is
+      versioned" is satisfied for records but not for the schema.
+- [ ] **L5** `write_raw_payload` does `mkdir(parents=True)` but
+      `_fsync_directory` syncs only `path.parent`, so for the first payload of
+      a new source the file is durable inside a directory whose own entry may
+      not be. Also `mkdir` mode is 0755 around files written 0600.
+- [ ] **L6** `SourceProvenanceV1.endpoint` redaction — already in the
+      backlog, but re-filed with the new blast radius: measured, a credential
+      in a query string is now greppable in the database file, once per
+      observation (~91k rows/day/token extrapolated) rather than once per run
+      manifest, and retention/compaction are explicitly out of scope.
+- [ ] **L7 — the most important one, and it must be filed before a renderer
+      exists.** Payload text is opaque to the store by design (ADR-0011
+      section 3), so it is unneutralized: `get_observation()` faithfully
+      returns live ESC, BEL, RLO, ZWSP and a U+E0041 tag character out of a
+      payload field. No exposure today because `OrderBookSnapshotV1` is all
+      `Decimal`. The first payload model with a free-text field reopens the
+      M1 OSC-52 rendering-forgery class at the store's read boundary, against
+      durably stored text. Two obligations: every future payload model with a
+      free-text field must neutralize it the way envelope identifiers and
+      ledger `detail` are; and any renderer over `iter_rejections`/
+      `get_observation` must block-quote as well as sanitize, because the
+      sanitizer is the only M1 defence that carried across (see the M2
+      security review findings above).
+- [ ] The denormalized filter columns on `observation`/`rejection` are never
+      cross-checked against `record` on read. Not exploitable today since no
+      method queries by them; becomes real the moment a query-by-`market_id`
+      method ships (plausibly M3).
+- [ ] Nothing detects a `delivery`/`observation` row naming a run that was
+      never opened — the Python referential check binds only callers going
+      through `SQLiteEventStore` and is never re-checked. Recommend a cheap
+      integrity-check query rather than trying to restore the foreign key.
+- [ ] A leftover artifact from the security review,
+      `~/.cache/argos-sec-probe/e.sqlite3`, could not be removed (the
+      permission system denied `rm`). It is outside the repository and
+      affects no commit, but note it as a manual cleanup item.
 
 ## Later — M3
 

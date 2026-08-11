@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import re
 from pathlib import Path
 
 import pytest
@@ -311,6 +312,96 @@ def test_settings_declare_no_credential_shaped_field() -> None:
         if token in name.lower()
     }
     assert not offending, f"Settings exposes credential-shaped fields: {sorted(offending)}"
+
+
+# --- ADR-0011: the event store is append-only, and SQL stays inside it -----------
+
+# Security review measured the first version of this set (UPDATE|DELETE|ALTER)
+# letting through every idiom that actually threatens an append-only store, and
+# demonstrated the exploit rather than describing it: `REPLACE INTO observation`
+# destroyed an immutable row on UNIQUE conflict while passing the check that
+# exists to prevent exactly that. `INSERT OR REPLACE` / `REPLACE INTO` is the
+# idiom a future adapter author is most likely to reach for to make a write
+# "idempotent" -- the very concept this store is built around -- so it is the
+# most probable way the guarantee gets lost, not the least. `DROP INDEX
+# capture_run_open_once` silently removes the "opened twice is impossible at the
+# schema level" property; `writable_schema`, `ATTACH`, and `VACUUM INTO` each
+# reach the same end by another route.
+_FORBIDDEN_SQL_TOKENS = re.compile(
+    r"\b(UPDATE|DELETE|ALTER|DROP|REPLACE|ATTACH|VACUUM|writable_schema)\b",
+    re.IGNORECASE,
+)
+
+
+def _docstring_node_ids(tree: ast.Module) -> set[int]:
+    """Identify string-constant nodes that are docstrings (module, class, or
+    function/async-function first statement) so the SQL-literal scan below
+    does not flag prose that *discusses* a forbidden SQL verb, only a string
+    that could actually be executed as one."""
+    ids: set[int] = set()
+    owners: list[ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef] = [tree]
+    owners.extend(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+    )
+    for owner in owners:
+        body = owner.body
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            ids.add(id(body[0].value))
+    return ids
+
+
+@pytest.mark.parametrize("path", _modules(SRC / "store"), ids=lambda p: p.name)
+def test_the_event_store_contains_no_mutating_sql_literal(path: Path) -> None:
+    """ADR-0011, Consequences: "Append-only is enforced mechanically, not by
+    convention." Docstrings are excluded so this module's own explanation of
+    the rule does not trip the rule.
+
+    Known and accepted limit: this scans string *literals*, so concatenation
+    (``"UPD" + "ATE"``) or any SQL built at runtime escapes it. It is a guard
+    against the plausible accident, not against a determined author of this
+    repository -- and the store's real append-only defence is the schema plus
+    the fact that no method exposes a mutating statement at all.
+    """
+    tree = _parse(path)
+    excluded = _docstring_node_ids(tree)
+    offending = [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and id(node) not in excluded
+        and _FORBIDDEN_SQL_TOKENS.search(node.value)
+    ]
+    assert not offending, f"{path.name} contains a mutating SQL literal: {offending}"
+
+
+_NO_SQLITE_TARGETS = (
+    SRC / "projections",
+    SRC / "replay",
+    SRC / "baselines",
+    SRC / "evaluation",
+    SRC / "cli.py",
+)
+
+
+def test_sqlite3_is_not_imported_outside_the_store() -> None:
+    """ADR-0011, Consequences: SQL stays inside argos.store, or the
+    EventStore port becomes decorative the moment a consuming package reaches
+    past it directly."""
+    offending: list[str] = []
+    for target in _NO_SQLITE_TARGETS:
+        paths = _modules(target) if target.is_dir() else [target]
+        for path in paths:
+            if "sqlite3" in _imported_roots(_parse(path)):
+                offending.append(str(path.relative_to(SRC)))
+    assert not offending, f"sqlite3 imported outside argos.store: {offending}"
 
 
 def test_every_default_endpoint_is_public_and_encrypted() -> None:

@@ -155,7 +155,29 @@ This is the shape ADR-0010 left open.
   `ObservationEnvelopeV1.ingest_sequence` has only `gt=0`.
 - **`rejection`** — one row per rejected arrival, drawn from the *same*
   `ingest_sequence` counter, plus a nullable `duplicate_of_observation_id`.
-- **`capture_run`** — the manifest row, with `ended_at NULL` meaning "not closed".
+- **`capture_run`** — the manifest, append-only, one row per lifecycle event.
+  Opening inserts a row with `ended_at` unset; closing inserts a *second* row
+  carrying `ended_at` and the completion status. "Not yet closed" is a derived
+  read — no closing row exists — rather than a column that two writes touch.
+
+  **Correction, 2026-08-11, during implementation.** As first written this ADR
+  said `capture_run` was a single row "with `ended_at NULL` meaning not closed",
+  which contradicted this same ADR's own consequence that no `UPDATE` may appear
+  in `argos.store`: recording a close by setting a column on an existing row *is*
+  a mutation, and it would have been the one mutable row in an append-only store.
+  The contradiction was found by the implementing agent and is corrected here
+  rather than quietly worked around in code. The resolution is the one this ADR
+  already applies to aggregate counters — derive the state, never overwrite it —
+  and it is also what ADR-0004 requires of every other record.
+
+  Two partial unique indexes (`WHERE ended_at IS NULL` and
+  `WHERE ended_at IS NOT NULL`) make "opened twice" and "closed twice"
+  impossible at the schema level. The cost, accepted knowingly: `capture_run_id`
+  is no longer unique in that table, so `delivery.capture_run_id` and
+  `observation.first_seen_capture_run_id` cannot be SQL foreign keys to it. "The
+  named run was opened and is still open" is therefore checked in Python inside
+  the same transaction as every insert. That is weaker than a database
+  constraint and is recorded as such.
 
 **One row per arrival, not a counter.** A counter discards `received_time` and
 `ingest_sequence` for every arrival after the first — precisely what core

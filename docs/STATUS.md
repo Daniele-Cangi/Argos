@@ -1,20 +1,22 @@
 # ARGOS status
 
-Last updated: 2026-08-10
+Last updated: 2026-08-11
 
 ## Current state
 
 - Current milestone: **M2 — CLOB capture — in progress**. M0 and M1 closed. The
   pacing-versus-timekeeping ADR that gated M2 (ADR-0009) is resolved and merged.
-  Four M2 vertical slices have landed: the canonical `ObservationEnvelopeV1` /
+  Five M2 vertical slices have landed: the canonical `ObservationEnvelopeV1` /
   `RejectedObservationV1` contracts and their identity derivation (ADR-0010);
   the first typed payload, `OrderBookSnapshotV1`; a security review of both
   contracts (verdict **PASS_WITH_FINDINGS**, no blocker, findings closed in
-  `1fb057c`); and a public CLOB WebSocket market-channel research note built
-  from live capture, not documentation alone. **No CLOB adapter, no WebSocket
-  adapter, no event store, and no capture CLI exist yet** — these slices are
-  the contract and the evidence the store and adapters will be built against,
-  not the adapters themselves.
+  `1fb057c`); a public CLOB WebSocket market-channel research note built from
+  live capture, not documentation alone; and the idempotent, append-only
+  SQLite event store and delivery record specified by ADR-0011, committed as
+  `25c6f05`. **No CLOB adapter, no WebSocket adapter, and no capture CLI exist
+  yet** — the store enforces idempotent insert, the rejection ledger, and
+  interrupted-run detection at the schema level, but nothing feeds it real
+  traffic yet.
 - Autonomous target: **complete M0-M4**
 - Owner gate: **required after M4**
 - Execution capability: **prohibited and absent**
@@ -22,12 +24,168 @@ Last updated: 2026-08-10
 
 ## Current objective
 
-Build the CLOB REST snapshot adapter and the idempotent event store, using
-`Pacer` (not `Clock`) for retry backoff per ADR-0009, and `ObservationEnvelopeV1`
-/ `RejectedObservationV1` (ADR-0010) as the boundary contract the adapter writes
-to and the store reads from. The store must additionally decide the open
-delivery-record question ADR-0010 left unresolved (see below) before it writes
-a row.
+Build the CLOB REST snapshot adapter, using `Pacer` (not `Clock`) for retry
+backoff per ADR-0009, `ObservationEnvelopeV1` / `RejectedObservationV1`
+(ADR-0010) as the boundary contract it produces, and the SQLite `EventStore`
+(ADR-0011) as the boundary it writes to. The event store itself is built and
+reviewed (`src/argos/store/event_store.py`); no adapter or capture loop calls
+it yet, so the store's schema-level guarantees have no real traffic behind
+them.
+
+## M2 slice: idempotent SQLite event store and delivery record (ADR-0011)
+
+Committed as `25c6f05`. Specified by ADR-0011
+(`docs/adr/0011-sqlite-event-store-and-delivery-record.md`), which closes two
+decisions this slice inherited as open: the SQLite/WAL-vs-append-log
+comparison `docs/12_TECH_STACK.md` required, and the delivery-record shape
+ADR-0010 explicitly left for "the store slice" to decide before it writes a
+row. New: `src/argos/store/event_store.py` (`EventStore` protocol,
+`SQLiteEventStore`, `open_sqlite_event_store`,
+`Disposition`/`CompletionStatus`,
+`DeliveryRecord`/`RejectionRecord`/`CaptureRunRecord`/`CaptureRunCounts`),
+`tests/test_event_store.py`, `tests/test_event_store_adversarial.py`. Changed:
+`src/argos/store/raw_archive.py`, `src/argos/store/__init__.py`,
+`src/argos/domain/text.py`, `tests/test_boundaries.py`,
+`tests/test_observation_envelope.py`, `tests/test_raw_archive.py`.
+
+Quality gate: PASS — ruff, ruff format, mypy strict on 33 source files,
+**841 tests** (up from 779 at the observation-identity slice).
+
+**Engine decision, and the honest part of it.** Volume was measured from
+artifacts already in the repository — 1.05 accepted observations/second/token
+over the 36.1 s live WebSocket capture; 4,362 B per full envelope record, of
+which 1,274 B is overhead independent of payload, so the fixed overhead is
+roughly 6x the payload itself for a `price_change` delta; 345 B of embedded
+provenance per record, ~31 MB/day/token duplicated at the measured rate — but
+**volume did not decide the engine**: both candidates clear the ~1-2/s
+requirement by roughly four orders of magnitude (~11.9k events/s measured at
+`synchronous=FULL`, no batching). Atomicity decided it instead: "idempotent
+and observable" (`docs/02_ARCHITECTURE.md`) is a two-write operation — detect
+the duplicate, record its arrival — that must land together or not at all.
+SQLite does that in one transaction; an append log needs a journal to close
+the crash window between two appends, which is re-implementing SQLite worse.
+`WITHOUT ROWID` was rejected on a measurement reproduced independently for
+this ADR: **4,681 B/row against 1,456 B/row**, because a >1 KB record spills
+to overflow pages inside an index B-tree. Parquet is rejected outright for
+M2 — new large dependency, columnar and wrong for row-at-a-time append, no
+unique key at all — reconsiderable only as an M4 export format.
+
+The volume evidence is recorded as thin by ADR-0011 itself, and STATUS
+repeats that rather than softening it: n = 1 token, 36 seconds, one
+connection, no reconnect, an upper-tail market during a live match, no
+quiet-market sample, and REST volume not measured at all (no polling cadence
+chosen yet). ADR-0011 treats a future capture contradicting the
+extrapolation by an order of magnitude as a reason to revisit retention and
+compaction, not the engine choice, because volume was not what decided it.
+
+**A contradiction in ADR-0011 itself, found and corrected during
+implementation.** Section 5 as first written described `capture_run` as one
+row with `ended_at NULL` meaning "not closed", while the same ADR's own
+Consequences forbid any `UPDATE` inside `argos.store` — closing a run by
+setting a column on an existing row is itself a mutation. The ADR now records
+this as a dated Correction (2026-08-11) rather than a silent fix:
+`capture_run` is append-only, closing inserts a second row, "open" is a
+derived read, and two partial unique indexes make double-open and
+double-close impossible at the schema level. The cost, recorded rather than
+hidden: `capture_run_id` is no longer unique in that table, so
+`delivery.capture_run_id` cannot be a SQL foreign key to it, and "the named
+run was opened and is still open" is a Python check inside the transaction —
+genuinely weaker than a database constraint. Security review assessed this
+specific weakening as **weaker, not exploitable**: `BEGIN IMMEDIATE`
+serializes writers, and a measured 3-process race against it produced a
+consistent store.
+
+**Two M2 exit criteria now have store-level evidence** (see the updated M2
+exit-criteria table below), while remaining explicit that no adapter or
+capture loop feeds them yet: `append_observation` inserts zero second
+observation rows and exactly one `delivery` row with `disposition="duplicate"`
+for a redelivery, both writes in one `BEGIN IMMEDIATE` transaction;
+`append_rejection`/`iter_rejections` persist the rejection ledger, keyed
+`(capture_run_id, ingest_sequence)` rather than on `rejection_id` alone. "An
+interrupted capture closes or marks its manifest incomplete" now has its
+**store half** only: `capture_run` is append-only and a run with no closing
+row is a queryable signal via `iter_open_capture_runs`. No capture loop
+exists, so none of the three is marked closed.
+
+**Review verdicts.** Independent testing added 25 adversarial tests: real
+multi-connection races (duplicate insert, close-vs-close, append-vs-close,
+delivery-vs-rejection sequence contention) each produced exactly one winner;
+a simulated crash mid-transaction left no partial row in either direction,
+including the duplicate path; append-only held behaviourally; three
+real-fixture-derived malformed entries sharing one `rejection_id` all
+survived; a byte-identical round trip held including a `PRESENT` event_time
+the existing suite had never exercised. Security review returned
+**PASS_WITH_FINDINGS, no blocker**: no SQL injection (every statement is a
+module constant; a `DROP TABLE` payload round-tripped as a value), foreign
+keys genuinely on, atomicity holds, `synchronous=FULL` really syncs (17
+`fdatasync` calls measured on ext4, **0 on tmpfs** — recorded because it means
+the durability guarantee is filesystem-dependent), no wall clock, lazy
+iterators, no execution/wallet/credential/authenticated surface, and no new
+dependency.
+
+**Findings fixed in this slice**, all with regression tests:
+
+- `BEGIN IMMEDIATE` sat outside `_transaction`'s own `try` — found
+  independently by *both* reviews and reproduced before the fix. The
+  statement most likely to fail during a real capture ("database is locked"
+  against a concurrent writer; "Cannot operate on a closed database") escaped
+  as a bare `sqlite3.OperationalError`. Now inside the try, with the
+  underlying sqlite message preserved in the error's `context`.
+- `capture_run_id` bypassed the identifier contract that
+  `ObservationEnvelopeV1._validate_identifier` already enforces for the same
+  field name elsewhere — OSC 52 and RLO survived into
+  `iter_open_capture_runs`, the exact "interrupted capture" report a future
+  renderer prints, and 20,000,000 characters were accepted in 0.168 s. The M2
+  security-review HIGH finding relocated to a new boundary; now refused via
+  `_validate_capture_run_id`.
+- Six read-path corruption shapes (`json.JSONDecodeError`, `ValueError`,
+  `TypeError`) escaped the taxonomy the module documented as `StorageError` —
+  the M1 `read_raw_payload` finding reopened in the same package. A
+  `_decoding` context manager now converts any decode failure to
+  `StorageError`.
+- The append-only boundary check under-covered badly: the forbidden-token set
+  was `UPDATE|DELETE|ALTER`, and `REPLACE INTO`, `INSERT OR REPLACE`, `DROP
+  INDEX`, `PRAGMA writable_schema`, `ATTACH`, and `VACUUM` all passed it.
+  Security review demonstrated `REPLACE INTO observation` actually destroying
+  an immutable row — and `INSERT OR REPLACE` is the idiom a future author
+  most plausibly reaches for to make a write "idempotent", the very concept
+  this store is built on. The token set is extended; the test now documents
+  that the check is literal-only, not a general guarantee.
+- The WAL durability claim was prose, not a property: `PRAGMA
+  journal_mode=WAL` discards its result, and SQLite returns the mode actually
+  in effect rather than erroring — verified that `:memory:` silently reports
+  `memory`. ADR-0011 hangs the interrupted-capture criterion on WAL recovery,
+  so all three pragmas are now read back and a mismatch raises `StorageError`.
+- `raw_archive._write_atomically`'s `os.replace` and its new directory
+  `fsync` ran outside the guard: the failure escaped as a bare `OSError`
+  *after* the rename it exists to make durable had already happened, so the
+  call reported failure while the file was on disk. Both are now inside the
+  guard, and the error message states that distinction explicitly.
+- A stale `.partial` file left by a real process kill permanently wedged that
+  hash (a bare `FileExistsError`, no self-healing) and defeated the
+  documented sidecar-repair path. A stale *regular* file is now cleared and
+  the write proceeds.
+
+**Two things worth recording as process facts, not just outcomes.** The
+first fix for the stale-`.partial` finding above introduced a security
+regression: an unconditional unlink would have silently downgraded the M1
+symlink guard from "refuse" to "delete and proceed", because
+`O_CREAT|O_EXCL` reports a planted symlink as the same `FileExistsError` as a
+stale regular file. The pre-existing symlink regression test caught it
+immediately; the final version clears only a regular file and refuses
+anything else with `ImmutabilityViolationError`. Separately, a finding
+neither review caught, found while writing a regression test:
+`is_clean_identifier` delegated wholly to `is_display_control`, which
+deliberately exempts `\n`/`\t` (correct for prose, where the M1 defence is
+sanitizer *plus* block-quoting) — so **a newline passed identifier
+validation on `market_id`, `condition_id`, `token_id`, `source_sequence`,
+`source_hash`, `capture_run_id` and siblings through two security reviews**,
+and a newline is the original M1 attack that forged
+`review status: human_reviewed` into an audit. `is_clean_identifier` now
+refuses `\n`/`\t`/`\r` independently of `is_display_control`. The existing
+test's docstring had claimed newlines were refused while asserting only ESC
+and RLO — a claim outrunning its assertion, a pattern that recurs often
+enough in this repository to name here rather than treat as a one-off.
 
 ## M2 slice: observation identity and rejection ledger (ADR-0010)
 
@@ -242,19 +400,23 @@ systematic) is unresolved and must not be assumed by the capture loop.
 
 ## M2 exit criteria
 
-Tracking `docs/07_MILESTONES.md`. Two criteria have contract-level evidence
-from this slice; the rest have no adapter, store, or capture loop yet to
-produce evidence against, and are listed as open rather than implied closed.
+Tracking `docs/07_MILESTONES.md`. Two criteria now have store-level evidence
+from the ADR-0011 event-store slice, one criterion has store-only partial
+evidence, and the rest have no adapter or capture loop yet to produce
+evidence against and are listed as open rather than implied closed. No CLOB
+adapter, no WebSocket adapter, and no capture CLI exist yet — the store
+enforces these properties at the schema level; nothing feeds it real traffic
+yet.
 
 | Criterion | Status | Evidence |
 |---|---|---|
-| Duplicate source event does not create a second accepted observation | **Contract-level evidence only** | `_observation_identity` collides an identical redelivery onto one `observation_id` (`tests/test_observation_envelope.py::test_identity_is_stable_across_redelivery`) and does so on the real recorded CLOB payload, not only a constructed one (`docs/research/m2-clob-rest-book.md`, "Consequence for `ObservationEnvelopeV1`"). **Not yet closed**: no event store exists to perform the idempotent insert itself — the identity a store would key on is proven stable, the store is not built |
-| Zero-size level update is represented as removal | Open | Not yet built. `OrderBookSnapshotV1` implements the REST-snapshot side of the convention (a zero-size level is dropped and recorded as an anomaly), and the WebSocket research note now confirms the delta-stream convention directly on live traffic, including a batch of three removals in one update (`docs/research/m2-clob-websocket.md`, "Priority question 3"). **Not yet closed**: no `price_change` payload model, WebSocket adapter, or store exists to apply this to a real delta stream |
+| Duplicate source event does not create a second accepted observation | **Store-level evidence; no adapter feeds it yet** | `_observation_identity` collides an identical redelivery onto one `observation_id`, on the real recorded CLOB payload as well as a constructed one (`docs/research/m2-clob-rest-book.md`, "Consequence for `ObservationEnvelopeV1`"). `SQLiteEventStore.append_observation` now enforces it: a redelivery inserts zero second `observation` rows and exactly one `delivery` row with `disposition="duplicate"`, both writes inside one `BEGIN IMMEDIATE` transaction (`tests/test_event_store.py`, `tests/test_event_store_adversarial.py`, including real multi-connection race tests). **Not yet closed**: no CLOB or WebSocket adapter and no capture loop write through this store against real traffic |
+| Zero-size level update is represented as removal | Open | Not yet built. `OrderBookSnapshotV1` implements the REST-snapshot side of the convention (a zero-size level is dropped and recorded as an anomaly), and the WebSocket research note now confirms the delta-stream convention directly on live traffic, including a batch of three removals in one update (`docs/research/m2-clob-websocket.md`, "Priority question 3"). **Not yet closed**: no `price_change` payload model, WebSocket adapter, or capture loop exists to apply this to a real delta stream |
 | Reconnect does not reset ingest sequence or silently lose manifest state | Open | No WebSocket adapter and no capture manifest exist yet |
-| Invalid messages enter a rejection ledger with reason and raw hash | **Contract-level evidence only** | `RejectedObservationV1` carries `reason: RejectionReason`, `detail`, and `raw_payload_sha256`; `build_rejected_observation` derives a deterministic `rejection_id` so redelivery of the same invalid bytes for the same reason collapses rather than growing the ledger unbounded (`tests/test_observation_envelope.py::test_rejection_identity_is_stable_across_redelivery`). The security review closed in `1fb057c` bounds and neutralizes hostile identifiers on this record instead of letting them grow it unbounded (see "M2 security review" above). **Not yet closed**: nothing writes to a ledger yet — there is no store and no adapter producing rejections from real input |
+| Invalid messages enter a rejection ledger with reason and raw hash | **Store-level evidence; no adapter feeds it yet** | `RejectedObservationV1` carries `reason: RejectionReason`, `detail`, and `raw_payload_sha256`; `build_rejected_observation` derives a deterministic `rejection_id` so redelivery of the same invalid bytes for the same reason collapses rather than growing the ledger unbounded. `SQLiteEventStore.append_rejection`/`iter_rejections` now persist it, keyed `(capture_run_id, ingest_sequence)` rather than on `rejection_id` alone, so two genuinely different malformed entries in one frame that happen to share one `rejection_id` (ADR-0011 section 7) both survive instead of one silently overwriting the other. **Not yet closed**: nothing writes to it from real input — no CLOB or WebSocket adapter produces rejections yet |
 | Book snapshot plus deltas reconstruct a tested projection | Open | No projection, no adapter |
-| No authenticated/user channel or trading code exists | Holds | Unchanged from M0-M1; this slice added no network code at all — only domain contracts and a research note built from public unauthenticated GET requests (`docs/research/m2-clob-rest-book.md`, header) |
-| An interrupted capture closes or marks its manifest incomplete | Open | No capture loop or manifest exists yet |
+| No authenticated/user channel or trading code exists | Holds | Unchanged from M0-M1; this slice added no network code at all — only domain contracts, a research note, and (in the event-store slice) a storage adapter built against a local SQLite file, not a network source |
+| An interrupted capture closes or marks its manifest incomplete | **Store half only** | `capture_run` is append-only — opening inserts a row, closing inserts a second row, and "not yet closed" is a derived read via `iter_open_capture_runs`, with two partial unique indexes making double-open/double-close impossible at the schema level (ADR-0011 section 5, including its dated Correction for why the table is append-only rather than update-in-place). **Not yet closed**: no capture loop or manifest writer exists to open or close a real run |
 
 ## Known limitations from the M2 observation-identity slice
 
@@ -279,14 +441,15 @@ and `docs/BACKLOG.md`.
   reprocessing the same raw bytes under a corrected parser mints a new,
   unlinked identity. ADR-0004 requires superseding records as the correction
   mechanism; this field does not exist yet.
-- The store's delivery-record shape is undecided. Identity excludes
+- **Closed by the ADR-0011 event-store slice.** The store's delivery-record
+  shape was undecided at this slice's close: identity excludes
   `capture_run_id` and `ingest_sequence` by design (both would make a
-  duplicate unable to collide), which means a collapsed duplicate currently
-  has nowhere to record its own arrival, and `RejectedObservationV1` cannot
-  point at an accepted twin it duplicates. `docs/02_ARCHITECTURE.md` requires
-  duplicate inserts to be idempotent **and observable** — this slice defines
-  identity, not the delivery record, and the store slice must decide it before
-  writing a row.
+  duplicate unable to collide), which meant a collapsed duplicate had nowhere
+  to record its own arrival, and `RejectedObservationV1` could not point at
+  an accepted twin it duplicates. ADR-0011 decided it: one `delivery` row per
+  arrival, keyed `(capture_run_id, ingest_sequence)`, carrying a
+  `disposition` of `accepted_new` or `duplicate` (see "M2 slice: idempotent
+  SQLite event store" above).
 - No `payload_schema_version` -> model registry exists. `read_payload` takes an
   explicit `model` argument today; M3 dispatch across multiple payload types
   will need something less ad hoc.
@@ -304,12 +467,69 @@ and `docs/BACKLOG.md`.
 - The security review closed in `1fb057c` left several findings deliberately
   unfixed with their own reasoning — the variation-selector/ZWJ covert
   channel, `SourceProvenanceV1.http_status`'s missing transport discriminator,
-  unenforced `schema_version`/`observation_id`/`rejection_id` uniqueness, and
-  `SourceProvenanceV1.endpoint`'s redaction gap. Full list in "M2 security
-  review" above and `docs/BACKLOG.md`.
+  unenforced `schema_version` uniqueness, and `SourceProvenanceV1.endpoint`'s
+  redaction gap (now with a larger blast radius at the store — see below).
+  **Partially closed:** `observation_id`/`rejection_id` verification is no
+  longer trust-only. `SQLiteEventStore` calls `recompute_observation_id`/
+  `recompute_rejection_id` on both write and read (ADR-0011 section 8). Full
+  list in "M2 security review" above and `docs/BACKLOG.md`.
 
 Quality gate: PASS — ruff, ruff format, mypy strict on 32 source files,
 **779 tests** (up from 710 at the observation-identity slice).
+
+## Known limitations from the M2 event-store slice
+
+Recorded here rather than discovered late by the adapter or capture-loop
+slices that build on this one. Full reasoning in
+`docs/adr/0011-sqlite-event-store-and-delivery-record.md` and
+`docs/BACKLOG.md`.
+
+- Duplicate arrivals silently drop `quality_flags`: the observation row is
+  written only on first arrival and `delivery` has no quality column, so two
+  arrivals of one observation that legitimately differ in `quality_flags`
+  (the flag derives from `received_time`, which identity excludes) lose the
+  later one — a counted defect discarded, against
+  `.claude/rules/data-integrity.md`.
+- `open_sqlite_event_store`'s path handling is strictly weaker than the raw
+  archive beside it: no `resolve()`, no containment check, no `O_NOFOLLOW`
+  equivalent, no mode. Measured: a symlinked db path was followed and the
+  `-wal`/`-shm` side files were created beside the symlink target, all at
+  0644, while the archive writes 0600 and checks `is_relative_to(root)`.
+  Requires local write access.
+- The store imposes no size bound of its own; `MAX_PAYLOAD_CANONICAL_BYTES`
+  lives only in `build_observation_envelope`, and `from_record` accepts
+  anything. Measured: a 32 MiB record wrote in 0.441 s at 210 MiB peak RSS
+  and read back at 334 MiB. No exposure today because the builder is the
+  only production write path. `source_frame_offset` is also unvalidated
+  (`-1` accepted; `2**63` raises a bare `OverflowError`).
+- The database schema has no identity and no version: `PRAGMA user_version`
+  is never set or read, and `CREATE TABLE IF NOT EXISTS` opens a
+  differently-shaped pre-existing file silently, failing at the first write
+  mid-capture with a generic message. The engineering rule "every public
+  schema and persistent record is versioned" is satisfied for records but
+  not for the schema itself.
+- `write_raw_payload` does `mkdir(parents=True)` but `_fsync_directory`
+  syncs only `path.parent`, so for the first payload of a new source the
+  file is durable inside a directory whose own entry may not be. Also
+  `mkdir` mode is 0755 around files written 0600.
+- `SourceProvenanceV1.endpoint` redaction is an existing gap; a credential in
+  a query string is now greppable in the database file, once per observation
+  (~91k rows/day/token extrapolated) rather than once per run manifest — a
+  larger blast radius than when the gap was first filed.
+- Payload text is opaque to the store by design (ADR-0011 section 3), so it
+  is unneutralized: `get_observation()` faithfully returns live ESC, BEL,
+  RLO, ZWSP, and Unicode tag characters out of a payload field. No exposure
+  today because `OrderBookSnapshotV1` is all `Decimal`; the first payload
+  model with a free-text field reopens the M1 OSC-52 rendering-forgery class
+  at the store's own read boundary, against durably stored text — filed as
+  the most important open item from this slice (`docs/BACKLOG.md`, L7).
+- The denormalized filter columns on `observation`/`rejection` are never
+  cross-checked against `record` on read. Not exploitable today since no
+  method queries by them; becomes real the moment a query-by-`market_id`
+  method ships.
+- Nothing detects a `delivery`/`observation` row naming a capture run that
+  was never opened. The Python referential check binds only callers going
+  through `SQLiteEventStore` and is never re-checked afterward.
 
 ## Pre-M2 slice: pacing separated from timekeeping (ADR-0009)
 
@@ -519,6 +739,9 @@ None.
 
 - Storage engine is undecided; the SQLite/WAL vs append-log comparison required by
   `docs/12_TECH_STACK.md` needs real M2 capture volumes and will land as an ADR.
+  (Historical, M0-era limitation. Resolved 2026-08-11 by ADR-0011 — SQLite/WAL,
+  on atomicity, not volume — see "M2 slice: idempotent SQLite event store"
+  above.)
 - The `sources`, `ingestion`, `store`, `projections`, `compiler`, `replay`,
   `baselines`, `resolution`, and `evaluation` packages are documented boundaries
   only; they contain no implementation yet.
