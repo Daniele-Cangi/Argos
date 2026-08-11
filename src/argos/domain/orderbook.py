@@ -523,8 +523,25 @@ def _normalize_decimal(value: Decimal) -> Decimal:
     back to a zero exponent whenever ``normalize()`` produced a positive one
     restores plain-integer text while keeping the trailing-zero stripping that
     ADR-0010 requires.
+
+    **Negative zero is collapsed onto positive zero.** ``Decimal("-0")``
+    survives ``normalize()`` as ``Decimal('-0')`` with exponent 0, so the
+    quantize branch above never fires, while ``Decimal('-0') == Decimal('0')``
+    is ``True`` — the value passes a ``ge=MIN_PRICE`` range check and then
+    renders as the distinct canonical text ``"-0"``. Because identity hashes
+    the rendered canonical payload rather than the ``Decimal`` value, one
+    economic price spelled two ways minted two ``observation_id``s: exactly
+    the failure ADR-0010 names as a constraint on every payload model, and
+    exactly what this module's own docstring claims not to allow
+    ("identical prices regardless of how the source spelled them"). Only the
+    two fields whose valid range includes the boundary 0 are reachable —
+    ``last_trade_price`` and a level's ``price``; ``tick_size`` and
+    ``min_order_size`` are ``gt=0``, which ``-0`` fails. Found by adversarial
+    testing, not by review of this function.
     """
     normalized = value.normalize()
+    if normalized.is_zero():
+        return Decimal(0)
     exponent = normalized.as_tuple().exponent
     if isinstance(exponent, int) and exponent > 0:
         normalized = normalized.quantize(Decimal(1))

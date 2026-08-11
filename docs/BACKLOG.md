@@ -182,7 +182,12 @@ milestone named, because later code would inherit the defect.
       deterministic identity derivation (ADR-0010).
 - [x] Public CLOB REST order-book research note, from recorded live payloads
       (`docs/research/m2-clob-rest-book.md`).
-- [ ] CLOB snapshot adapter.
+- [x] CLOB snapshot adapter. Closed: `src/argos/sources/clob.py`
+      (`ClobClient`) and `src/argos/ingestion/clob_book.py`
+      (`normalize_clob_book`) — a real recorded response now goes through
+      `ClobClient` → `normalize_clob_book` → `SQLiteEventStore` end to end.
+      `ingest_sequence` allocation, a capture manifest, and a capture CLI
+      remain open, listed separately below.
 - [ ] WebSocket lifecycle and subscriptions.
 - [ ] Canonical market-data payloads (order book, price change, etc. — typed
       `VersionedModel`s that `build_observation_envelope` takes as `payload`).
@@ -195,7 +200,7 @@ milestone named, because later code would inherit the defect.
 
 ### Carried from the M2 observation-identity slice (ADR-0010)
 
-- [ ] **Before the first payload model lands** — normalize `Decimal` scale
+- [x] **Before the first payload model lands** — normalize `Decimal` scale
       inside the payload model, not just at the boundary. `Decimal("0.430")`
       and `Decimal("0.43")` currently serialize to different canonical text and
       mint different `observation_id`s
@@ -203,7 +208,14 @@ milestone named, because later code would inherit the defect.
       The CLOB endpoint really reports the same price at two precisions across
       `/book` and `/last-trade-price` (`docs/research/m2-clob-rest-book.md`,
       "Decimal hygiene"), so this is a live hazard on the very first payload
-      type, not a theoretical one.
+      type, not a theoretical one. Closed by `OrderBookSnapshotV1._normalize_decimal`.
+      **Not fully closed as a general guarantee**: the same function had a
+      second, independent instance of this class — negative zero
+      (`Decimal("-0")`) rendering as `"-0"` rather than `"0"` — found by
+      adversarial testing during the CLOB REST adapter slice and fixed there.
+      Two independent instances in one function make this a pattern to guard
+      against on every future payload model (see the CLOB REST adapter slice
+      backlog item below), not a closed incident.
 - [ ] **Before reprocessing under a corrected parser is possible** — add
       `supersedes_observation_id` to `ObservationEnvelopeV1`. Identity excludes
       `parser_version` by design, so reprocessing the same raw bytes under a
@@ -385,6 +397,52 @@ than discovered late by an adapter or the capture CLI.
       `~/.cache/argos-sec-probe/e.sqlite3`, could not be removed (the
       permission system denied `rm`). It is outside the repository and
       affects no commit, but note it as a manual cleanup item.
+
+### Carried from the M2 CLOB REST adapter slice
+
+None is a blocker; security review returned PASS_WITH_FINDINGS and every
+finding it raised was fixed in the slice itself (see `docs/STATUS.md`, "M2
+slice: public CLOB REST order-book adapter and normalization"). These are new
+items found while building and adversarially testing the adapter, recorded so
+they are chosen rather than discovered late by the WebSocket adapter or the
+capture-loop slice.
+
+- [ ] **C1** A 3xx response with a JSON body is accepted as a successful
+      observation — `clob.py` treats every status below 400 as success. A 302
+      carrying `{"market":"pwn"}` was accepted with
+      `provenance.http_status=302`. The redirect is not followed and the host
+      never changes (`follow_redirects=False`), so the body can only come
+      from the host already contacted, and provenance records the 302
+      honestly — auditable after the fact. Not a regression introduced here:
+      `gamma.py` behaves identically.
+- [ ] **C2** Cross-adapter backoff correlation: `ClobClient` and
+      `GammaClient` at the shared default `source_jitter_seed=0` produce
+      byte-identical backoff sequences, as do two `ClobClient` instances. The
+      thundering-herd item already in the backlog (pre-M2 security review) is
+      now confirmed cross-adapter as well as cross-market. Reproducibility
+      remains the right trade for a public unauthenticated endpoint; record
+      that the scope widened.
+- [ ] **C3** A substituted response is refused (the response `asset_id` is
+      cross-checked against the requested `token_id`) but labelled
+      `MALFORMED_PAYLOAD`, identical to a JSON parse failure, so an operator
+      cannot count "the source returned a different token's book" as a
+      distinct outcome. Separately, `condition_id` on an accepted envelope
+      comes only from the response with no cross-check against the M1 Gamma
+      metadata, so ARGOS durably stores a token-to-condition binding the
+      source alone asserts.
+- [ ] **C4** `SourceProvenanceV1.endpoint` — already in the backlog (L6 in
+      the event-store slice above), but this adapter introduces no new leak
+      channel: the only query parameter is a `[0-9]{1,120}`-validated token
+      id. The already-backlogged redaction gap now materializes once per CLOB
+      observation as well as once per Gamma page — more urgent because it
+      recurs on a second source, not qualitatively worse.
+- [ ] Blind spots left by adversarial testing, not yet closed by a test:
+      `market`/`asset_id` explicitly `null` in the response is hand-traced
+      through the code but has no regression test; a non-string `hash` type
+      is read-verified only. The sharpest one — **every future payload model
+      must reuse `OrderBookSnapshotV1._normalize_decimal` rather than
+      reimplement decimal normalization** — with the `price_change`
+      WebSocket delta model as the concrete next place this can reappear.
 
 ## Later — M3
 

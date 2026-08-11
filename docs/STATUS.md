@@ -6,17 +6,22 @@ Last updated: 2026-08-11
 
 - Current milestone: **M2 — CLOB capture — in progress**. M0 and M1 closed. The
   pacing-versus-timekeeping ADR that gated M2 (ADR-0009) is resolved and merged.
-  Five M2 vertical slices have landed: the canonical `ObservationEnvelopeV1` /
+  Six M2 vertical slices have landed: the canonical `ObservationEnvelopeV1` /
   `RejectedObservationV1` contracts and their identity derivation (ADR-0010);
   the first typed payload, `OrderBookSnapshotV1`; a security review of both
   contracts (verdict **PASS_WITH_FINDINGS**, no blocker, findings closed in
   `1fb057c`); a public CLOB WebSocket market-channel research note built from
-  live capture, not documentation alone; and the idempotent, append-only
-  SQLite event store and delivery record specified by ADR-0011, committed as
-  `25c6f05`. **No CLOB adapter, no WebSocket adapter, and no capture CLI exist
-  yet** — the store enforces idempotent insert, the rejection ledger, and
-  interrupted-run detection at the schema level, but nothing feeds it real
-  traffic yet.
+  live capture, not documentation alone; the idempotent, append-only SQLite
+  event store and delivery record specified by ADR-0011; and the public CLOB
+  REST order-book adapter and its normalization step
+  (`src/argos/sources/clob.py`, `src/argos/ingestion/clob_book.py`) — the
+  first slice that is a genuinely complete vertical: real recorded bytes go
+  in one end and a deduplicated, identity-stable observation lands in
+  `SQLiteEventStore` at the other. **No WebSocket adapter, no capture
+  manifest, no capture CLI, and no `price_change` payload model exist yet** —
+  this slice closes the REST-adapter gap the store slice left open; the
+  WebSocket side of ingestion and the loop that would run either adapter
+  against live traffic continuously are still unbuilt.
 - Autonomous target: **complete M0-M4**
 - Owner gate: **required after M4**
 - Execution capability: **prohibited and absent**
@@ -24,13 +29,139 @@ Last updated: 2026-08-11
 
 ## Current objective
 
-Build the CLOB REST snapshot adapter, using `Pacer` (not `Clock`) for retry
-backoff per ADR-0009, `ObservationEnvelopeV1` / `RejectedObservationV1`
-(ADR-0010) as the boundary contract it produces, and the SQLite `EventStore`
-(ADR-0011) as the boundary it writes to. The event store itself is built and
-reviewed (`src/argos/store/event_store.py`); no adapter or capture loop calls
-it yet, so the store's schema-level guarantees have no real traffic behind
-them.
+Build the WebSocket market-channel adapter and the `price_change` delta
+payload model, using the same `Pacer`/`Clock` separation (ADR-0009) and
+`ObservationEnvelopeV1`/`RejectedObservationV1` contracts (ADR-0010) the REST
+adapter slice just proved end-to-end against `SQLiteEventStore`. Per the
+adversarial-testing blind spot this slice recorded, the `price_change` model
+must reuse `OrderBookSnapshotV1._normalize_decimal` rather than reimplement
+decimal normalization — this is now the second independent place the
+negative-zero/trailing-zero class was found, which makes it a pattern to
+guard against on the next payload model, not a closed incident. `ingest_sequence`
+allocation, a capture manifest, and a capture CLI remain undecided and
+unbuilt; the WebSocket research note's finding that one frame can carry
+entries for an unsubscribed sibling token is why sequence allocation was
+deliberately left for that later slice rather than added here.
+
+## M2 slice: public CLOB REST order-book adapter and normalization
+
+The public CLOB REST order-book snapshot adapter and its normalization step —
+the first complete vertical slice of M2: real recorded bytes go in one end
+and a deduplicated, identity-stable observation lands in durable storage at
+the other. New: `src/argos/sources/clob.py` (`ClobClient.get_book`,
+`ClobHealth`, `ClobBookNotFoundError`, `ClobBookBadRequestError`),
+`src/argos/ingestion/clob_book.py` (`normalize_clob_book`,
+`MAX_NORMALIZABLE_BYTES`), `tests/test_clob_client.py`,
+`tests/test_clob_book_ingestion.py`, `tests/test_clob_adapter_adversarial.py`,
+`tests/fixtures/clob/` (a byte-identical copy of the recorded real capture,
+with provenance sidecar). Changed: `src/argos/domain/orderbook.py`,
+`src/argos/sources/__init__.py`, `src/argos/ingestion/__init__.py`.
+
+Quality gate: PASS — ruff, ruff format, mypy strict, **951 tests** (up from
+886 when the adapter first landed within this slice, 841 before the slice).
+
+**Scope deliberately excluded, and why.** `ingest_sequence` is a
+caller-supplied parameter to `normalize_clob_book`, not allocated by it —
+`normalize_clob_book` is a pure, synchronous normalization step, not the
+capture loop. No capture loop, sequence allocator, scheduler, manifest
+writer, or CLI exists in this slice. The WebSocket research found a frame can
+carry entries for an *unsubscribed* sibling token, so assigning sequence
+numbers before subscription filtering would make `ingest_sequence` depend on
+connection topology, and M3 replay determinism would inherit that dependency.
+Allocation is left as a decision the capture-loop slice must make
+deliberately rather than inherit by accident.
+
+**What actually moves on the M2 exit criteria.** "Duplicate source event does
+not create a second accepted observation" now has **end-to-end evidence, not
+just store-level evidence**: a real recorded response fed through
+`ClobClient` → `normalize_clob_book` → `SQLiteEventStore` produces one
+observation row and two delivery rows (`accepted=1, duplicate=1`) for a
+redelivery. There is still no capture loop running against live traffic, so
+this is described precisely rather than declared closed outright — see the
+updated exit-criteria table below. "Invalid messages enter a rejection ledger
+with reason and raw hash" moves the same way: a malformed real-shaped body
+now produces a `RejectedObservationV1` written to the ledger through the
+adapter path, not only through a hand-built envelope. Everything else in the
+exit-criteria table stays open: no WebSocket adapter, no capture manifest, no
+capture CLI, no projection.
+
+**Security review: PASS_WITH_FINDINGS, no blocker.** The central question was
+whether the new adapter inherits the two M1 HIGH fixes (the gzip-bomb
+resource-exhaustion shape and the retry-deadline-bypasses-injected-clock
+shape) as real properties or only as copied code shape. Re-measured with the
+original instruments, the answer is real properties:
+
+- Gzip bomb: 1.2 GiB decompressed from a 1,223,023-byte body is refused,
+  `byte_length_so_far=67414112`, in 0.186 s at 174.7 MiB peak RSS —
+  indistinguishable from `gamma.py`'s own 0.184 s / 174.8 MiB. The
+  `content-length` pre-check refuses before a single byte is streamed; a
+  *lying* small `content-length` with a 40 MiB body is still caught
+  incrementally.
+- Slow drip against a real `RealPacer`: the deadline held at 1.00 s (1
+  attempt) and 23.00 s (3 attempts), not just the zero-retry path proven at
+  M1 close, and fired *inside* a real backoff sleep with
+  `cancelled_inside_backoff=True` — the pre-M2 pacing correction is inherited
+  as a real property, not only copied shape.
+- Jitter: the adapter-owned seeded RNG is immune to `random.seed()` on the
+  module global (verified by seeding it to 12345 and 999 between runs) and
+  bounded — across 200 seeds × 10 attempt numbers the maximum was exactly
+  `MAX_BACKOFF_SECONDS`, so jitter cannot outrun the deadline budget at any
+  legal configuration.
+- Token id: all 18 tried hostile ids (`../../admin`, `123%2f..%2fadmin`,
+  `https://evil.example/x`, CR-LF injection, 121 digits, a trailing newline,
+  Arabic-Indic/fullwidth/mathematical digit spellings, ZWSP-separated digits)
+  are refused with **zero requests sent**. `fullmatch` on `[0-9]{1,120}`
+  blocks the trailing-newline bypass a bare `re.match` would allow; the id
+  lands in a query parameter, not the URL path.
+- The execution boundary is confirmed absent; no new dependencies; the only
+  headers sent are `accept` and `user-agent`; the one log call carries
+  path/attempts/status only, never a payload or a URL.
+
+**Findings fixed in this slice**, all with regression tests:
+
+| Severity | Finding | Fix |
+|---|---|---|
+| HIGH | Unbounded CPU and RSS in `normalize_clob_book`, in the gap between the client's 32 MiB response cap and the envelope's 4 MiB canonical-payload cap. Measured, all sized to pass the client cap: a 31 MiB `timestamp` cost 21.18 s CPU and was **accepted**; a 31 MiB `market` on a rejected payload cost 32.37 s and 571 MiB RSS; 900,000 book levels peaked at 1,266 MiB. Cause: `neutralize_and_bound` bounds the stored value but neutralizes the whole input first, and both the accepted and rejected paths run it twice. A `Pacer` cannot bound it — a cancel scope cannot interrupt synchronous CPU work, measured at 14.21 s elapsed against a 0.50 s deadline with `cancelled_caught` false. The same class the earlier M2 security review closed at `build_observation_envelope`, relocated one layer upstream | `MAX_NORMALIZABLE_BYTES` checked before any text is read, returning a rejection rather than raising (`src/argos/ingestion/clob_book.py`). Reproduced at 8 MiB: **5.48 s → 0.02 s**, and the result changed from an accepted observation to a counted rejection |
+| MEDIUM | `normalize_clob_book` raised on two attacker-reachable inputs, contradicting its own docstring and producing no ledger entry: a 257-character `hash`, or one containing a newline, reached `_validate_identifier` *outside* the module's `try` and propagated a raw pydantic `ValidationError`. Reproduced on a 3.7 KB payload — no resource cost needed | Validated inside `_extract_source_hash`; the 256-character boundary is exact and pinned by a regression test |
+| MEDIUM | The M1 HIGH properties held but nothing pinned them against a future edit to `clob.py` | Added deadline-fires-during-backoff, slow-drip, redirect-never-followed, and seeded-RNG-independence tests |
+
+**Adversarial testing found one defect, now fixed: negative zero split one
+economic price into two identities.** `_normalize_decimal` never
+special-cased the sign of zero: `Decimal("-0")` survives `normalize()` with
+exponent 0, so the quantize branch never fired, and it rendered as canonical
+text `"-0"`. Since identity hashes rendered canonical text rather than the
+`Decimal` value, the same price spelled two ways minted two `observation_id`s.
+Reachable because `Decimal('-0') >= Decimal('0')` is `True`, so it passes the
+`ge=MIN_PRICE` validator on exactly the two fields whose range includes the
+boundary — `last_trade_price` and a level's `price`; `tick_size`/
+`min_order_size` are `gt=0` and immune. Fixed by collapsing any zero onto
+positive zero in `_normalize_decimal` (`src/argos/domain/orderbook.py`); the
+fix is general, not a patch for the literal spelling — `-0`, `-0.0`, `-0E+5`,
+`-0.00000`, and `0E+3` all render `"0"`. **This is the second independent
+instance of the ADR-0010 decimal-normalization class**, after the
+trailing-zero case `OrderBookSnapshotV1` already closed — a pattern, not an
+isolated incident.
+
+**What held up under adversarial attack, worth recording as a negative
+result.** A fully *scrambled* wire order still re-derives correct
+`best_bid`/`best_ask` — the code genuinely does not trust wire order.
+Determinism survived duplicate JSON keys, whitespace and key-order
+differences, exponent notation, and leading-zero/plus-sign spellings, while a
+genuinely different book still mints a different id. Every malformed shape
+returns a rejection rather than raising, including a hostile ESC sequence in
+`market`, which is neutralized in the stored `condition_id`. A 404 is raised
+*before* any payload reaches the normalizer, proven structurally. On an
+A → B → A′ revert, three distinct observations are minted, verified by
+reading `_observation_identity`'s call site: the distinction is driven by
+`event_time` advancing, not by incidental raw-byte differences —
+`raw_payload_sha256` plays no role in identity at all.
+
+**Process fact worth recording.** The adversarial-testing agent run on this
+slice ended without delivering a report. The test file it had written was run
+directly rather than treating the silence as "no findings found"; 1 of 54
+tests was failing, and investigating it by hand turned up the negative-zero
+defect above. A green suite plus a silent agent is exactly where a real
+defect can slip through unrecorded.
 
 ## M2 slice: idempotent SQLite event store and delivery record (ADR-0011)
 
@@ -400,22 +531,23 @@ systematic) is unresolved and must not be assumed by the capture loop.
 
 ## M2 exit criteria
 
-Tracking `docs/07_MILESTONES.md`. Two criteria now have store-level evidence
-from the ADR-0011 event-store slice, one criterion has store-only partial
-evidence, and the rest have no adapter or capture loop yet to produce
-evidence against and are listed as open rather than implied closed. No CLOB
-adapter, no WebSocket adapter, and no capture CLI exist yet — the store
-enforces these properties at the schema level; nothing feeds it real traffic
-yet.
+Tracking `docs/07_MILESTONES.md`. Two criteria now have **end-to-end**
+evidence from the CLOB REST adapter slice (a real recorded response through
+`ClobClient` → `normalize_clob_book` → `SQLiteEventStore`), not merely
+store-level evidence; one criterion has store-only partial evidence; the rest
+have no adapter or capture loop yet to produce evidence against and are
+listed as open rather than implied closed. No WebSocket adapter, no capture
+manifest, and no capture CLI exist yet — nothing runs either adapter
+continuously against live traffic yet.
 
 | Criterion | Status | Evidence |
 |---|---|---|
-| Duplicate source event does not create a second accepted observation | **Store-level evidence; no adapter feeds it yet** | `_observation_identity` collides an identical redelivery onto one `observation_id`, on the real recorded CLOB payload as well as a constructed one (`docs/research/m2-clob-rest-book.md`, "Consequence for `ObservationEnvelopeV1`"). `SQLiteEventStore.append_observation` now enforces it: a redelivery inserts zero second `observation` rows and exactly one `delivery` row with `disposition="duplicate"`, both writes inside one `BEGIN IMMEDIATE` transaction (`tests/test_event_store.py`, `tests/test_event_store_adversarial.py`, including real multi-connection race tests). **Not yet closed**: no CLOB or WebSocket adapter and no capture loop write through this store against real traffic |
-| Zero-size level update is represented as removal | Open | Not yet built. `OrderBookSnapshotV1` implements the REST-snapshot side of the convention (a zero-size level is dropped and recorded as an anomaly), and the WebSocket research note now confirms the delta-stream convention directly on live traffic, including a batch of three removals in one update (`docs/research/m2-clob-websocket.md`, "Priority question 3"). **Not yet closed**: no `price_change` payload model, WebSocket adapter, or capture loop exists to apply this to a real delta stream |
+| Duplicate source event does not create a second accepted observation | **End-to-end evidence; no capture loop runs it against live traffic yet** | `_observation_identity` collides an identical redelivery onto one `observation_id`, on the real recorded CLOB payload as well as a constructed one (`docs/research/m2-clob-rest-book.md`, "Consequence for `ObservationEnvelopeV1`"). `SQLiteEventStore.append_observation` enforces it at the store: a redelivery inserts zero second `observation` rows and exactly one `delivery` row with `disposition="duplicate"`, both writes inside one `BEGIN IMMEDIATE` transaction (`tests/test_event_store.py`, `tests/test_event_store_adversarial.py`, including real multi-connection race tests). The CLOB REST adapter slice closes the remaining gap end to end: a real recorded response fed through `ClobClient` → `normalize_clob_book` → `SQLiteEventStore` produces one observation row and two delivery rows (`accepted=1, duplicate=1`) for a redelivery. **Not yet closed**: no capture loop runs either adapter continuously against live traffic |
+| Zero-size level update is represented as removal | Open | Not yet built. `OrderBookSnapshotV1` implements the REST-snapshot side of the convention (a zero-size level is dropped and recorded as an anomaly), and the WebSocket research note confirms the delta-stream convention directly on live traffic, including a batch of three removals in one update (`docs/research/m2-clob-websocket.md`, "Priority question 3"). **Not yet closed**: no `price_change` payload model, WebSocket adapter, or capture loop exists to apply this to a real delta stream |
 | Reconnect does not reset ingest sequence or silently lose manifest state | Open | No WebSocket adapter and no capture manifest exist yet |
-| Invalid messages enter a rejection ledger with reason and raw hash | **Store-level evidence; no adapter feeds it yet** | `RejectedObservationV1` carries `reason: RejectionReason`, `detail`, and `raw_payload_sha256`; `build_rejected_observation` derives a deterministic `rejection_id` so redelivery of the same invalid bytes for the same reason collapses rather than growing the ledger unbounded. `SQLiteEventStore.append_rejection`/`iter_rejections` now persist it, keyed `(capture_run_id, ingest_sequence)` rather than on `rejection_id` alone, so two genuinely different malformed entries in one frame that happen to share one `rejection_id` (ADR-0011 section 7) both survive instead of one silently overwriting the other. **Not yet closed**: nothing writes to it from real input — no CLOB or WebSocket adapter produces rejections yet |
-| Book snapshot plus deltas reconstruct a tested projection | Open | No projection, no adapter |
-| No authenticated/user channel or trading code exists | Holds | Unchanged from M0-M1; this slice added no network code at all — only domain contracts, a research note, and (in the event-store slice) a storage adapter built against a local SQLite file, not a network source |
+| Invalid messages enter a rejection ledger with reason and raw hash | **End-to-end evidence; no capture loop runs it against live traffic yet** | `RejectedObservationV1` carries `reason: RejectionReason`, `detail`, and `raw_payload_sha256`; `build_rejected_observation` derives a deterministic `rejection_id` so redelivery of the same invalid bytes for the same reason collapses rather than growing the ledger unbounded. `SQLiteEventStore.append_rejection`/`iter_rejections` persist it, keyed `(capture_run_id, ingest_sequence)` rather than on `rejection_id` alone, so two genuinely different malformed entries in one frame that happen to share one `rejection_id` (ADR-0011 section 7) both survive instead of one silently overwriting the other. The CLOB REST adapter slice closes the remaining gap end to end: a malformed real-shaped body fed through `normalize_clob_book` produces a `RejectedObservationV1` written to the ledger (`tests/test_clob_book_ingestion.py`). **Not yet closed**: no capture loop runs either adapter continuously against live traffic |
+| Book snapshot plus deltas reconstruct a tested projection | Open | No projection, no `price_change` payload model, no WebSocket adapter |
+| No authenticated/user channel or trading code exists | Holds | Unchanged from M0-M1; the CLOB REST adapter is read-only by construction — it sends no credentials and exposes only the public `GET /book` endpoint (`src/argos/sources/clob.py` module docstring, ADR-0007) |
 | An interrupted capture closes or marks its manifest incomplete | **Store half only** | `capture_run` is append-only — opening inserts a row, closing inserts a second row, and "not yet closed" is a derived read via `iter_open_capture_runs`, with two partial unique indexes making double-open/double-close impossible at the schema level (ADR-0011 section 5, including its dated Correction for why the table is append-only rather than update-in-place). **Not yet closed**: no capture loop or manifest writer exists to open or close a real run |
 
 ## Known limitations from the M2 observation-identity slice
@@ -530,6 +662,48 @@ slices that build on this one. Full reasoning in
 - Nothing detects a `delivery`/`observation` row naming a capture run that
   was never opened. The Python referential check binds only callers going
   through `SQLiteEventStore` and is never re-checked afterward.
+
+## Known limitations from the M2 CLOB REST adapter slice
+
+Recorded here rather than discovered late by the WebSocket adapter or
+capture-loop slices that build on this one. Full list, with severity and
+trigger, in `docs/BACKLOG.md`.
+
+- A 3xx response with a JSON body is accepted as a successful observation:
+  `clob.py` treats every status below 400 as success, and a measured 302
+  carrying `{"market":"pwn"}` was accepted with `provenance.http_status=302`.
+  The redirect is never followed and the host never changes
+  (`follow_redirects=False`), so the body can only come from the host already
+  contacted, and provenance records the 302 honestly — auditable after the
+  fact, and not a regression: `gamma.py` behaves identically.
+- Cross-adapter backoff correlation: `ClobClient` and `GammaClient` at the
+  shared default `source_jitter_seed=0` produce byte-identical backoff
+  sequences, as do two `ClobClient` instances. The thundering-herd item
+  already in the backlog from the pre-M2 security review is now confirmed
+  cross-adapter as well as cross-market. Reproducibility remains the right
+  trade for a public unauthenticated endpoint; the scope of the existing item
+  widened rather than a new risk appearing.
+- A substituted response (the source's `asset_id` disagreeing with the
+  requested token) is refused, but labelled `MALFORMED_PAYLOAD` — identical
+  to a JSON parse failure — so an operator cannot count "the source returned
+  a different token's book" as a distinct outcome. Separately,
+  `condition_id` on an accepted envelope comes only from the response with no
+  cross-check against the M1 Gamma metadata, so ARGOS durably stores a
+  token-to-condition binding the source alone asserts.
+- `SourceProvenanceV1.endpoint`'s already-backlogged redaction gap now
+  materializes once per CLOB observation as well as once per Gamma page. This
+  adapter introduces no *new* leak channel — the only query parameter is a
+  `[0-9]{1,120}`-validated token id — but the gap is more urgent than before
+  simply because it now recurs on a second, higher-volume source.
+- Blind spots left by adversarial testing, not yet closed by a test: `market`/
+  `asset_id` explicitly `null` in the response is hand-traced through the code
+  but has no regression test; a non-string `hash` type is read-verified only,
+  not exercised by a test. The sharpest one: **every future payload model
+  must reuse `OrderBookSnapshotV1._normalize_decimal` rather than reimplement
+  decimal normalization** — see the negative-zero finding above, now the
+  second independent instance of the ADR-0010 decimal class. The
+  `price_change` WebSocket delta model is the concrete next place this can
+  reappear.
 
 ## Pre-M2 slice: pacing separated from timekeeping (ADR-0009)
 

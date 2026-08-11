@@ -1,0 +1,11 @@
+{
+  "byte_length": 7174,
+  "note": "Verbatim public CLOB order-book snapshot for one token, reused unmodified from docs/research/fixtures/clob-book-yes-2026-08-10T181007Z.json (docs/research/m2-clob-rest-book.md). Both bids-ascending and asks-descending are present, so a naive bids[0]/asks[0] read gets the worst price on each side, not the best.",
+  "parser_version": "clob-book-normalizer/1",
+  "payload_kind": "clob.book",
+  "raw_sha256": "510f03e4e185d09542b4bb52887bfdbb2929fede45875c73600053ed368a4495",
+  "redaction": "none — the endpoint is public and unauthenticated, and no request carried credentials",
+  "retrieved_at": "2026-08-10T18:10:07Z",
+  "source": "clob_rest",
+  "source_endpoint": "https://clob.polymarket.com/book?token_id=63842529068710005716169325380315470359047749786610778647370693404952498013178"
+}
