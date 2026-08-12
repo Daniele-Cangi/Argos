@@ -16,7 +16,7 @@ Every decision below is measured against
    ``observation_id``. The real endpoint returns the same price at two text
    precisions (``"0.430"`` from ``/book``, ``"0.43"`` from ``/last-trade-price``),
    so every ``Decimal`` field is normalized on the way in (see
-   :func:`_normalize_decimal`) — trailing zeros are stripped, and a normalized
+   :func:`normalize_decimal`) — trailing zeros are stripped, and a normalized
    ``Decimal`` never renders in scientific notation, so ``str(value)`` is a
    deterministic canonical text for identical prices regardless of how the
    source spelled them.
@@ -69,9 +69,9 @@ know about the rejection ledger to be tested or reused.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from decimal import Decimal, InvalidOperation
+from decimal import Context, Decimal, InvalidOperation, localcontext
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Final
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -83,6 +83,38 @@ from argos.domain.versioning import VersionedModel
 # simply the range every price on this source is contractually confined to.
 MIN_PRICE = Decimal(0)
 MAX_PRICE = Decimal(1)
+
+MAX_SIGNIFICANT_DIGITS: Final = 34
+"""Most significant digits a wire price/size may carry and still be canonically
+representable. See :func:`normalize_decimal` for why this is a refusal rather
+than a wider decimal context. 34 is decimal128's coefficient width — far above
+the ~10 digits the real recorded fixtures use, and low enough that a canonical
+text stays short."""
+
+MAX_DECIMAL_EXPONENT: Final = 30
+"""Largest absolute adjusted exponent a wire price/size may carry. Bounds the
+length of the canonical text: without it, the 11 wire bytes ``"1E+1000000"``
+would render as a one-megabyte canonical integer."""
+
+_MAX_INT_BITS: Final = 4096
+"""Bit-length ceiling for an ``int`` handed to :func:`parse_wire_decimal`.
+
+Comfortably above any legal value — the budgets below cap accepted magnitudes
+far lower — and checked before the superlinear ``Decimal(int)`` conversion
+rather than after it. See :func:`parse_wire_decimal` for the measurement."""
+
+CANONICAL_DECIMAL_CONTEXT: Final = Context(prec=MAX_SIGNIFICANT_DIGITS + MAX_DECIMAL_EXPONENT + 1)
+"""The one decimal context every identity-bearing decimal operation in ARGOS
+runs inside.
+
+``normalize()``, ``quantize()`` and ``%`` all read ``decimal.getcontext()``,
+which is thread-local mutable global state — precisely the hidden global state
+CLAUDE.md prohibits, and a direct threat to ADR-0010 identity determinism and
+core invariant 5. Pinning it here makes the canonical form of a wire value a
+pure function of that value. The precision is deliberately wide enough that no
+value passing the two budgets above can round inside it, so the budgets, not
+the context, are what refuse an out-of-range value — and they do it with a
+reason, before any context-sensitive operation runs."""
 
 
 class BookSide(StrEnum):
@@ -129,7 +161,7 @@ class OrderBookAnomaly(BaseModel):
     @field_validator("price", mode="before")
     @classmethod
     def _parse_price(cls, value: Any) -> Any:
-        return value if value is None else _parse_decimal(value)
+        return value if value is None else parse_wire_decimal(value)
 
 
 class OrderBookLevel(BaseModel):
@@ -143,7 +175,7 @@ class OrderBookLevel(BaseModel):
     @field_validator("price", "size", mode="before")
     @classmethod
     def _parse(cls, value: Any) -> Decimal:
-        return _parse_decimal(value)
+        return parse_wire_decimal(value)
 
 
 class OrderBookSnapshotV1(VersionedModel):
@@ -213,7 +245,7 @@ class OrderBookSnapshotV1(VersionedModel):
     @field_validator("tick_size", "min_order_size", "last_trade_price", mode="before")
     @classmethod
     def _parse_scalar_decimal(cls, value: Any) -> Decimal:
-        return _parse_decimal(value)
+        return parse_wire_decimal(value)
 
     @field_validator("neg_risk", mode="before")
     @classmethod
@@ -320,7 +352,7 @@ def parse_order_book_snapshot(payload: Mapping[str, Any]) -> OrderBookSnapshotV1
     if not isinstance(raw_asks, list):
         raise ValueError(f"'asks' must be an array, got {type(raw_asks).__name__}")
 
-    tick_size = _parse_decimal(payload.get("tick_size"))
+    tick_size = parse_wire_decimal(payload.get("tick_size"))
     if tick_size <= 0:
         raise ValueError(f"tick_size must be positive, got {tick_size}")
 
@@ -386,11 +418,11 @@ def _build_level(
     if "price" not in entry or "size" not in entry:
         raise ValueError(f"{side.value} level is missing 'price' or 'size': {dict(entry)!r}")
 
-    price = _parse_decimal(entry["price"])
+    price = parse_wire_decimal(entry["price"])
     if not (MIN_PRICE <= price <= MAX_PRICE):
         raise ValueError(f"{side.value} level price {price} is outside the valid [0, 1] range")
 
-    size = _parse_decimal(entry["size"])
+    size = parse_wire_decimal(entry["size"])
     if size == 0:
         return None, OrderBookAnomaly(
             kind=OrderBookAnomalyKind.ZERO_SIZE_LEVEL_DROPPED,
@@ -481,16 +513,28 @@ def _anomaly_key(
 
 
 def _is_off_tick(price: Decimal, tick_size: Decimal) -> bool:
-    return price % tick_size != 0
+    # Inside the pinned context for the same reason :func:`normalize_decimal`
+    # is: ``%`` is a context-sensitive decimal operation, and the anomaly set it
+    # feeds is a *stored field* of ``OrderBookSnapshotV1``, so an ambient
+    # context could otherwise change the stored payload and therefore the
+    # ``observation_id`` for identical wire bytes.
+    with localcontext(CANONICAL_DECIMAL_CONTEXT):
+        return price % tick_size != 0
 
 
-def _parse_decimal(value: Any) -> Decimal:
+def parse_wire_decimal(value: Any) -> Decimal:
     """Parse a wire price/size into a scale-normalized, finite ``Decimal``.
 
     Refuses ``float`` and ``bool`` outright — see the module docstring, point
     2. ``str`` and ``int`` are parsed from their own text via ``Decimal()``
     directly, never via a ``float`` intermediate, so no binary rounding ever
     touches a price or size on this path.
+
+    Public and reused outside this module: ``docs/STATUS.md`` records that the
+    negative-zero and trailing-zero decimal-identity class (see
+    :func:`normalize_decimal` below) has already recurred twice independently
+    across two payload models. Every future payload model with a price/size
+    field must call this function rather than reimplement decimal parsing.
     """
     if isinstance(value, bool):
         raise ValueError(f"a boolean is not a valid decimal value, got {value!r}")
@@ -502,6 +546,23 @@ def _parse_decimal(value: Any) -> Decimal:
     if isinstance(value, Decimal):
         parsed = value
     elif isinstance(value, str | int):
+        if isinstance(value, int):
+            # Checked *before* ``Decimal(value)`` because converting a huge
+            # Python ``int`` to ``Decimal`` is superlinear: measured at 63.1 s
+            # of CPU for a 1,000,001-digit int, which no ``Pacer`` can bound
+            # (a cancel scope cannot interrupt synchronous CPU work). The
+            # magnitude budget in :func:`normalize_decimal` would have refused
+            # the value, but only *after* paying that cost — the same
+            # "the bound runs downstream of the work it is meant to bound"
+            # shape as the earlier ``neutralize_and_bound`` finding.
+            #
+            # ``bit_length`` is O(1) on CPython. Not currently reachable from
+            # this project's own JSON decoding, which is a good reason to keep
+            # the check cheap rather than a good reason to omit it: CPython's
+            # 4300-digit ``int_max_str_digits`` default is what blocks it
+            # today, and that is a third-party default this module does not
+            # own and must not silently depend on.
+            _refuse_oversized_int(value)
         try:
             parsed = Decimal(value)
         except InvalidOperation as error:
@@ -510,10 +571,20 @@ def _parse_decimal(value: Any) -> Decimal:
         raise ValueError(f"unsupported type for a decimal field: {type(value).__name__}")
     if not parsed.is_finite():
         raise ValueError(f"decimal value must be finite, got {value!r}")
-    return _normalize_decimal(parsed)
+    return normalize_decimal(parsed)
 
 
-def _normalize_decimal(value: Decimal) -> Decimal:
+def _refuse_oversized_int(value: int) -> None:
+    """Refuse an ``int`` too large to convert cheaply. See :func:`parse_wire_decimal`."""
+    bits = value.bit_length()
+    if bits > _MAX_INT_BITS:
+        raise ValueError(
+            f"integer decimal value spans {bits} bits, above the {_MAX_INT_BITS}-bit "
+            "budget; refused before conversion, which is superlinear in the operand size"
+        )
+
+
+def normalize_decimal(value: Decimal) -> Decimal:
     """Return ``value`` at minimal scale, never in scientific notation.
 
     ``Decimal("0.430").normalize()`` correctly collapses to ``Decimal("0.43")``,
@@ -538,11 +609,71 @@ def _normalize_decimal(value: Decimal) -> Decimal:
     ``last_trade_price`` and a level's ``price``; ``tick_size`` and
     ``min_order_size`` are ``gt=0``, which ``-0`` fails. Found by adversarial
     testing, not by review of this function.
+
+    **The magnitude budget, and why it is a refusal rather than a wider
+    context.** ``normalize()`` and ``quantize()`` are both *context-sensitive*
+    decimal operations, so this function's output used to depend on
+    ``decimal.getcontext()`` — thread-local mutable global state. Reproduced
+    directly: the wire price
+    ``"0.123456789012345678901234567890123"`` normalized to
+    ``0.1234567890123456789012345679`` under the default precision of 28,
+    to ``0.12346`` under an ambient ``prec=5``, and to its full text under
+    ``prec=50``. Three different canonical texts, therefore three different
+    ``observation_id``s, for one set of wire bytes. That is the hidden global
+    state CLAUDE.md prohibits outright, and it breaks core invariant 5: a
+    replay under a different ambient context would mint different identities
+    for identical input. Separately, ``quantize`` raised a bare
+    ``decimal.InvalidOperation`` — outside the ARGOS error taxonomy, and
+    therefore past ``argos.ingestion.clob_book``'s ``except ValueError`` —
+    for any value needing more integer digits than the ambient precision, so
+    a 214-byte body containing ``"tick_size": "1E+29"`` escaped
+    ``normalize_clob_book`` entirely and produced **no rejection ledger
+    entry**: the silent drop core invariant 14 exists to prevent.
+
+    Both are closed by pinning :data:`CANONICAL_DECIMAL_CONTEXT` explicitly
+    and refusing, as a counted ``ValueError``, any value outside an explicit
+    magnitude budget. The budget is checked *before* any context-sensitive
+    operation runs, so no accepted value ever depends on the trap firing.
+    Widening the context instead would be a fresh resource-exhaustion vector
+    rather than a fix: ``"1E+1000000"`` is 11 wire bytes that would render as
+    a one-megabyte canonical integer. The budget is far above anything this
+    source can legitimately produce — real observed sizes reach ~4.2e5 with
+    at most 10 significant digits, against a budget of
+    ``MAX_SIGNIFICANT_DIGITS`` digits — so no real value is refused; a
+    regression test pins that the real recorded fixtures still parse
+    unchanged.
     """
-    normalized = value.normalize()
-    if normalized.is_zero():
-        return Decimal(0)
-    exponent = normalized.as_tuple().exponent
-    if isinstance(exponent, int) and exponent > 0:
-        normalized = normalized.quantize(Decimal(1))
-    return normalized
+    digits = len(value.as_tuple().digits)
+    if digits > MAX_SIGNIFICANT_DIGITS:
+        raise ValueError(
+            f"decimal value carries {digits} significant digits, above the "
+            f"{MAX_SIGNIFICANT_DIGITS}-digit canonical budget; refused rather than "
+            "silently rounded to the ambient decimal precision"
+        )
+    adjusted = value.adjusted()
+    if adjusted > MAX_DECIMAL_EXPONENT:
+        # Deliberately one-sided. Only a *positive* exponent reaches the
+        # quantize branch below, which expands the value into plain integer
+        # text — that is the path where the 11 wire bytes ``"1E+1000000"``
+        # become a one-megabyte canonical string. A very negative exponent
+        # keeps its scientific rendering, which is short and exactly as
+        # deterministic. Bounding both sides symmetrically looked tidier and
+        # would have silently narrowed an already-shipped contract for no
+        # stated reason: the committed test
+        # ``test_very_high_precision_beyond_any_real_tick_size_does_not_crash_and_is_preserved``
+        # pins that a ``1E-50`` tick size is preserved, and it caught the
+        # symmetric version of this check.
+        raise ValueError(
+            f"decimal value has adjusted exponent {adjusted}, above the "
+            f"+{MAX_DECIMAL_EXPONENT} canonical budget; refused rather than rendered "
+            "as an unboundedly long canonical integer text"
+        )
+
+    with localcontext(CANONICAL_DECIMAL_CONTEXT):
+        normalized = value.normalize()
+        if normalized.is_zero():
+            return Decimal(0)
+        exponent = normalized.as_tuple().exponent
+        if isinstance(exponent, int) and exponent > 0:
+            normalized = normalized.quantize(Decimal(1))
+        return normalized

@@ -1,27 +1,28 @@
 # ARGOS status
 
-Last updated: 2026-08-11
+Last updated: 2026-08-12
 
 ## Current state
 
 - Current milestone: **M2 — CLOB capture — in progress**. M0 and M1 closed. The
   pacing-versus-timekeeping ADR that gated M2 (ADR-0009) is resolved and merged.
-  Six M2 vertical slices have landed: the canonical `ObservationEnvelopeV1` /
+  Seven M2 vertical slices have landed: the canonical `ObservationEnvelopeV1` /
   `RejectedObservationV1` contracts and their identity derivation (ADR-0010);
   the first typed payload, `OrderBookSnapshotV1`; a security review of both
   contracts (verdict **PASS_WITH_FINDINGS**, no blocker, findings closed in
   `1fb057c`); a public CLOB WebSocket market-channel research note built from
   live capture, not documentation alone; the idempotent, append-only SQLite
-  event store and delivery record specified by ADR-0011; and the public CLOB
+  event store and delivery record specified by ADR-0011; the public CLOB
   REST order-book adapter and its normalization step
   (`src/argos/sources/clob.py`, `src/argos/ingestion/clob_book.py`) — the
   first slice that is a genuinely complete vertical: real recorded bytes go
   in one end and a deduplicated, identity-stable observation lands in
-  `SQLiteEventStore` at the other. **No WebSocket adapter, no capture
-  manifest, no capture CLI, and no `price_change` payload model exist yet** —
-  this slice closes the REST-adapter gap the store slice left open; the
-  WebSocket side of ingestion and the loop that would run either adapter
-  against live traffic continuously are still unbuilt.
+  `SQLiteEventStore` at the other; and now the `price_change.v1` typed delta
+  payload (`src/argos/domain/pricechange.py`), the second and last payload
+  model M2 needs, built against the recorded live WebSocket capture.
+  **No WebSocket adapter, no capture manifest and no capture CLI exist yet** —
+  the transport side of ingestion, and the loop that would run either adapter
+  against live traffic continuously, are still unbuilt.
 - Autonomous target: **complete M0-M4**
 - Owner gate: **required after M4**
 - Execution capability: **prohibited and absent**
@@ -29,19 +30,157 @@ Last updated: 2026-08-11
 
 ## Current objective
 
-Build the WebSocket market-channel adapter and the `price_change` delta
-payload model, using the same `Pacer`/`Clock` separation (ADR-0009) and
+Build the WebSocket market-channel **adapter** — the transport half of
+ingestion — using the same `Pacer`/`Clock` separation (ADR-0009) and
 `ObservationEnvelopeV1`/`RejectedObservationV1` contracts (ADR-0010) the REST
-adapter slice just proved end-to-end against `SQLiteEventStore`. Per the
-adversarial-testing blind spot this slice recorded, the `price_change` model
-must reuse `OrderBookSnapshotV1._normalize_decimal` rather than reimplement
-decimal normalization — this is now the second independent place the
-negative-zero/trailing-zero class was found, which makes it a pattern to
-guard against on the next payload model, not a closed incident. `ingest_sequence`
-allocation, a capture manifest, and a capture CLI remain undecided and
-unbuilt; the WebSocket research note's finding that one frame can carry
-entries for an unsubscribed sibling token is why sequence allocation was
-deliberately left for that later slice rather than added here.
+adapter slice proved end-to-end against `SQLiteEventStore`. Both payload
+models M2 needs now exist, so this next slice is transport and ingestion only,
+not schema design.
+
+`docs/BACKLOG.md` carries four constraints this slice must close, each with the
+measurement that produced it rather than a reminder: a byte cap checked
+*before* parsing (measured: 900,000 `price_changes` entries cost 146.87 s CPU
+and 731.7 MiB, and no `Pacer` can bound synchronous CPU work); validating
+`entry_hash` inside the ingestion `try` rather than leaving the envelope to
+refuse it with no ledger entry; `ingest_sequence` allocation and cross-token
+fan-out, still deliberately undecided; and the deliberate refusal of a
+`(frame, token)` group carrying more than one distinct hash, a shape never
+observed live.
+
+## M2 slice: the `price_change.v1` typed delta payload
+
+The second and last typed payload M2 needs (`src/argos/domain/pricechange.py`,
+`PriceChangeV1`, `PriceLevelChangeV1`, `PriceLevelChangeKind`,
+`PriceChangeGroup`, `parse_price_change_group`), built and checked against the
+recorded live WebSocket capture — 34 real `price_change` frames for two tokens,
+not constructed examples alone. New: `tests/test_price_change.py`,
+`tests/test_price_change_adversarial.py`,
+`tests/fixtures/clob/ws_market_price_change.{raw,meta}.json`. Changed:
+`src/argos/domain/orderbook.py`, `src/argos/domain/__init__.py`,
+`tests/test_orderbook_snapshot.py`, `tests/test_clob_adapter_adversarial.py`.
+
+Quality gate: PASS — ruff, ruff format, mypy strict on 36 source files,
+**1,044 tests** (up from 951 at the REST adapter slice).
+
+**The exit criterion, closed structurally rather than by convention.** "Zero-size
+level update is represented as removal" is now a validated invariant, not a
+parsing habit: `kind is REMOVE` **if and only if** `size == 0`, enforced by a
+model validator on *every* construction path including replay and
+`from_record`. A record claiming `SET` at size 0, or `REMOVE` at nonzero size,
+is refused rather than silently re-derived — the same "recomputable, never
+drifting" discipline `_validate_anomalies_are_recomputable` already applies to
+book anomalies. The two real zero-size entries in the capture (`0.17 BUY` and
+`0.83 SELL`, on the two sibling tokens) are pinned as *observed*, not merely
+constructible.
+
+Deliberately **unlike** the REST snapshot path: there, a zero-size level is a
+counted `OrderBookAnomaly` (`ZERO_SIZE_LEVEL_DROPPED`), because a snapshot
+describing a resting order of size zero is malformed. On the delta stream, size
+`"0"` is the source's only vocabulary for removal, confirmed on live traffic
+rather than inferred from documentation. The two conventions differ on purpose
+and the difference is the point.
+
+**An identity hazard measured from the real bytes, stronger than the research
+note recorded.** The same `(timestamp, hash)` pair for the **same token**
+arrives across up to **three separate frames**, each carrying a *different*
+price level change — token `34691…637961`, timestamp `1786387666174`, hash
+`5ce704de…`: `0.49/636`, then `0.65/142.85`, then `0.48/17`. Since ADR-0010
+derives identity from the canonical payload, a payload carrying only the hash
+would have collapsed three genuine deltas onto one `observation_id` and
+**silently lost two**. Carrying the level changes in the payload is what keeps
+that closed, and a test built on the real frames pins it. Separately measured:
+none of the 58 distinct `(timestamp, hash)` pairs in the capture spans more
+than one `asset_id`, which is *why* grouping by token yields a well-defined
+per-token post-state hash.
+
+**A HIGH defect found by independent adversarial testing — and it was not
+confined to this slice.** `normalize_decimal` raised a bare
+`decimal.InvalidOperation` — an `ArithmeticError`, **not** a `ValueError` —
+from `quantize`, for any value needing more integer digits than the ambient
+precision, reachable with a plain 29-digit integer string. Being outside the
+ARGOS taxonomy, it flew past `argos.ingestion.clob_book`'s `except ValueError`:
+a **214-byte** body carrying `"tick_size": "1E+29"` escaped `normalize_clob_book`
+entirely and produced **no rejection ledger entry** — the silent drop core
+invariant 14 exists to prevent, on the *already-committed* REST adapter.
+
+Investigating it surfaced the deeper half. `normalize()`, `quantize()` and `%`
+all read `decimal.getcontext()`, which is thread-local **mutable global
+state**: the wire price `0.123456789012345678901234567890123` rendered as
+**three different canonical texts** — and therefore three different
+`observation_id`s — under ambient precisions 5 / 28 / 50. That is the hidden
+global state CLAUDE.md prohibits outright, and a direct break of core invariant
+5, since a replay under a different ambient context would not reproduce the
+live identity. Both are closed by pinning `CANONICAL_DECIMAL_CONTEXT` and
+refusing an explicit magnitude budget *before* any context-sensitive operation
+runs. Re-measured after the fix: identical rendering across 18 ambient contexts
+spanning precision, rounding mode and `Emin`/`Emax`, and across a worker thread
+with a hostile default context.
+
+Widening the context instead of refusing was considered and rejected as a fresh
+resource-exhaustion vector rather than a fix: `"1E+1000000"` is 11 wire bytes
+that would render as a one-megabyte canonical integer.
+
+| Severity | Finding | Fix |
+|---|---|---|
+| HIGH | `decimal.InvalidOperation` escaping the error taxonomy, reachable on the committed REST adapter with a 214-byte body, leaving no ledger entry | `CANONICAL_DECIMAL_CONTEXT` plus explicit budgets in `normalize_decimal`; re-measured, no input to `parse_wire_decimal`, `parse_order_book_snapshot` or `parse_price_change_group` now escapes as a non-`ValueError` |
+| HIGH | Canonical form — and therefore `observation_id` — depended on `decimal.getcontext()`, thread-local mutable global state | Same fix; verified independent across 18 ambient contexts and a second thread |
+| MEDIUM | A 1,000,001-digit `int` cost **63.12 s** of CPU, because the magnitude budget ran *downstream* of the superlinear `Decimal(int)` conversion it was meant to bound. Not reachable through this project's own JSON decoding today, but only because CPython's `int_max_str_digits` default blocks it — a third-party default this module does not own | `_refuse_oversized_int` checks `bit_length()` first; refusal now costs 0.21 s |
+| MEDIUM | An unrecognized **top-level** frame key was silently ignored while entry-level keys were refused — including a key spelled `sequence`, which this channel is confirmed to lack and whose arrival would have been discarded without trace | `EXPECTED_EVENT_KEYS` refuses it |
+| MEDIUM | An entry that is not an object, or carries no `asset_id`, was skipped silently — and since parsing runs once per token, it would have been dropped for *every* token, never counted | Refused; found during integration review, not by an agent |
+
+**A committed test was asserting something it never checked.** The old
+`test_very_high_precision_beyond_any_real_tick_size_does_not_crash_and_is_preserved`
+asserted only `str(...).startswith("0.4444")` — which a *truncated* value
+satisfies just as well as a preserved one. Measured: the 61-digit wire value was
+silently rounded to 28 digits and the stored value compared **unequal** to the
+source. ARGOS durably stored a price the source never sent, called it
+preserved, and passed its own adversarial test. Rewritten to assert refusal,
+plus a non-degenerate companion asserting exact preservation *within* budget.
+This is the "claim outrunning its assertion" pattern STATUS already names as
+recurring — third occurrence.
+
+**A committed test also caught a defect in the fix itself.** The exponent budget
+was first written symmetrically; only a *positive* exponent reaches the branch
+that expands a value into plain text, so the negative half silently narrowed an
+already-shipped contract, and
+`test_very_high_precision_beyond_any_real_tick_size_does_not_crash_and_is_preserved`
+failed on a `1E-50` tick size. The bound is now one-sided, with the reasoning
+recorded in the code.
+
+**What held up under attack, recorded as negative results.** No collision was
+found inside the `changes` tuple's canonical JSON — real JSON structure, rather
+than a custom separator, closes the ADR-0010 blocker-B1 class by construction.
+Scrambled wire order across all 34 real frames never changed a result. The
+negative-zero and trailing-zero collapses still hold identically for
+`OrderBookSnapshotV1` after the shared helper was rewritten, and every value in
+both real fixtures still parses and is preserved **exactly**. `price_change.v1`
+is **not** the first payload model with a free-text field: every string that
+reaches `to_record()` is a pattern-validated identifier, an enum, or a
+canonical decimal rendering — so the store-level OSC-52 exposure STATUS names
+as its most important open item is **not** opened by this slice.
+
+**Scope deliberately excluded, and why.** No WebSocket transport, no capture
+loop, no sequence allocator, no manifest. `parse_price_change_group` normalizes
+for **one** requested token per call, because a frame carries entries for the
+unsubscribed binary sibling and fan-out would force a sequence-allocation policy
+M3 replay determinism would inherit. A `(frame, token)` group carrying more than
+one distinct hash is refused outright — never observed in either live capture,
+and refusing an unobserved shape is preferred to inventing a grouping policy
+that would then have to be reproduced byte-for-byte forever. All four
+constraints are filed in `docs/BACKLOG.md` with their measurements.
+
+**Process facts, recorded rather than smoothed over.** Four consecutive
+subagent runs on this slice ended without delivering a report. In each case the
+work products were verified directly instead of treating silence as success —
+which is how the HIGH finding above was recovered: the adversarial agent had
+left **5 tests failing on purpose** to pin a real defect, exactly as instructed,
+and a silent completion would have looked identical to a clean run. A green
+suite plus a silent agent remains the most dangerous combination in this
+repository, now twice demonstrated. Separately, one security review was
+invalidated by my own coordination error: I edited `orderbook.py` while a
+read-only reviewer was measuring it. Read-only does not mean immune to
+concurrent edits, and the remaining security verification was completed
+directly rather than re-delegated.
 
 ## M2 slice: public CLOB REST order-book adapter and normalization
 
@@ -534,19 +673,20 @@ systematic) is unresolved and must not be assumed by the capture loop.
 Tracking `docs/07_MILESTONES.md`. Two criteria now have **end-to-end**
 evidence from the CLOB REST adapter slice (a real recorded response through
 `ClobClient` → `normalize_clob_book` → `SQLiteEventStore`), not merely
-store-level evidence; one criterion has store-only partial evidence; the rest
-have no adapter or capture loop yet to produce evidence against and are
-listed as open rather than implied closed. No WebSocket adapter, no capture
-manifest, and no capture CLI exist yet — nothing runs either adapter
-continuously against live traffic yet.
+store-level evidence; one has payload-level evidence on real recorded frames;
+one has store-only partial evidence; the rest have no adapter or capture loop
+yet to produce evidence against and are listed as open rather than implied
+closed. No WebSocket adapter, no capture manifest, and no capture CLI exist
+yet — nothing runs either adapter continuously against live traffic yet, and
+no criterion is marked closed on the strength of a payload model alone.
 
 | Criterion | Status | Evidence |
 |---|---|---|
 | Duplicate source event does not create a second accepted observation | **End-to-end evidence; no capture loop runs it against live traffic yet** | `_observation_identity` collides an identical redelivery onto one `observation_id`, on the real recorded CLOB payload as well as a constructed one (`docs/research/m2-clob-rest-book.md`, "Consequence for `ObservationEnvelopeV1`"). `SQLiteEventStore.append_observation` enforces it at the store: a redelivery inserts zero second `observation` rows and exactly one `delivery` row with `disposition="duplicate"`, both writes inside one `BEGIN IMMEDIATE` transaction (`tests/test_event_store.py`, `tests/test_event_store_adversarial.py`, including real multi-connection race tests). The CLOB REST adapter slice closes the remaining gap end to end: a real recorded response fed through `ClobClient` → `normalize_clob_book` → `SQLiteEventStore` produces one observation row and two delivery rows (`accepted=1, duplicate=1`) for a redelivery. **Not yet closed**: no capture loop runs either adapter continuously against live traffic |
-| Zero-size level update is represented as removal | Open | Not yet built. `OrderBookSnapshotV1` implements the REST-snapshot side of the convention (a zero-size level is dropped and recorded as an anomaly), and the WebSocket research note confirms the delta-stream convention directly on live traffic, including a batch of three removals in one update (`docs/research/m2-clob-websocket.md`, "Priority question 3"). **Not yet closed**: no `price_change` payload model, WebSocket adapter, or capture loop exists to apply this to a real delta stream |
+| Zero-size level update is represented as removal | **Payload evidence on real recorded frames; no transport runs it against live traffic yet** | Represented structurally, not by convention: `PriceLevelChangeKind.REMOVE` is validated to hold **if and only if** `size == 0`, on every construction path including replay and `from_record`, so a record cannot claim one and carry the other (`src/argos/domain/pricechange.py`). Applied to a real delta stream, not a constructed one: the two genuine zero-size entries in the recorded live capture (`0.17 BUY` and `0.83 SELL`, on the two sibling tokens) are parsed as removals and pinned as *observed* rather than merely constructible (`tests/test_price_change.py`, `tests/fixtures/clob/ws_market_price_change.raw.json`). `OrderBookSnapshotV1` separately implements the REST-snapshot side, where the same value is deliberately a counted anomaly rather than a removal. **Not yet closed**: no WebSocket adapter or capture loop receives a live frame — the payload model has been fed recorded frames, not a socket |
 | Reconnect does not reset ingest sequence or silently lose manifest state | Open | No WebSocket adapter and no capture manifest exist yet |
 | Invalid messages enter a rejection ledger with reason and raw hash | **End-to-end evidence; no capture loop runs it against live traffic yet** | `RejectedObservationV1` carries `reason: RejectionReason`, `detail`, and `raw_payload_sha256`; `build_rejected_observation` derives a deterministic `rejection_id` so redelivery of the same invalid bytes for the same reason collapses rather than growing the ledger unbounded. `SQLiteEventStore.append_rejection`/`iter_rejections` persist it, keyed `(capture_run_id, ingest_sequence)` rather than on `rejection_id` alone, so two genuinely different malformed entries in one frame that happen to share one `rejection_id` (ADR-0011 section 7) both survive instead of one silently overwriting the other. The CLOB REST adapter slice closes the remaining gap end to end: a malformed real-shaped body fed through `normalize_clob_book` produces a `RejectedObservationV1` written to the ledger (`tests/test_clob_book_ingestion.py`). **Not yet closed**: no capture loop runs either adapter continuously against live traffic |
-| Book snapshot plus deltas reconstruct a tested projection | Open | No projection, no `price_change` payload model, no WebSocket adapter |
+| Book snapshot plus deltas reconstruct a tested projection | Open | Both input payload models now exist — `OrderBookSnapshotV1` (snapshot) and `PriceChangeV1` (delta) — and the research note established that a delta's `hash` is the hash of the *resulting* book state and reconciles exactly with REST for the same state, which is what a projection would verify against. **Not yet closed**: no projection module and no WebSocket adapter exist |
 | No authenticated/user channel or trading code exists | Holds | Unchanged from M0-M1; the CLOB REST adapter is read-only by construction — it sends no credentials and exposes only the public `GET /book` endpoint (`src/argos/sources/clob.py` module docstring, ADR-0007) |
 | An interrupted capture closes or marks its manifest incomplete | **Store half only** | `capture_run` is append-only — opening inserts a row, closing inserts a second row, and "not yet closed" is a derived read via `iter_open_capture_runs`, with two partial unique indexes making double-open/double-close impossible at the schema level (ADR-0011 section 5, including its dated Correction for why the table is append-only rather than update-in-place). **Not yet closed**: no capture loop or manifest writer exists to open or close a real run |
 
@@ -698,12 +838,18 @@ trigger, in `docs/BACKLOG.md`.
 - Blind spots left by adversarial testing, not yet closed by a test: `market`/
   `asset_id` explicitly `null` in the response is hand-traced through the code
   but has no regression test; a non-string `hash` type is read-verified only,
-  not exercised by a test. The sharpest one: **every future payload model
-  must reuse `OrderBookSnapshotV1._normalize_decimal` rather than reimplement
-  decimal normalization** — see the negative-zero finding above, now the
-  second independent instance of the ADR-0010 decimal class. The
-  `price_change` WebSocket delta model is the concrete next place this can
-  reappear.
+  not exercised by a test. The sharpest one — **every future payload model
+  must reuse the shared decimal normalization rather than reimplement it** —
+  is **closed as a structural fact** by the `price_change.v1` slice: the
+  helpers are now public and shared (`parse_wire_decimal` /
+  `normalize_decimal`, `src/argos/domain/orderbook.py`) and `PriceChangeV1`
+  calls them rather than duplicating the logic, so the ADR-0010 decimal class
+  did not recur a third time. The reuse turned out to matter in the opposite
+  direction too: making one helper serve two schemas is what put enough
+  adversarial pressure on it to expose the taxonomy escape and the ambient
+  decimal-context dependence described in the `price_change.v1` slice above —
+  both of which were already reachable on this REST adapter and neither of
+  which two prior security reviews had found.
 
 ## Pre-M2 slice: pacing separated from timekeeping (ADR-0009)
 

@@ -189,8 +189,63 @@ milestone named, because later code would inherit the defect.
       `ingest_sequence` allocation, a capture manifest, and a capture CLI
       remain open, listed separately below.
 - [ ] WebSocket lifecycle and subscriptions.
-- [ ] Canonical market-data payloads (order book, price change, etc. — typed
+- [x] Canonical market-data payloads (order book, price change — typed
       `VersionedModel`s that `build_observation_envelope` takes as `payload`).
+      Closed for both message kinds M2 needs: `OrderBookSnapshotV1`
+      (`order_book_snapshot.v1`) and `PriceChangeV1` (`price_change.v1`,
+      `src/argos/domain/pricechange.py`). `tick_size_change` and
+      `last_trade_price` have no payload model and no observed live sample —
+      listed separately below rather than implied by this item.
+
+### Constraints the WebSocket ingestion slice must close, with measurements
+
+Each was measured on the `price_change.v1` slice and left deliberately unfixed
+there, because the boundary that must hold it does not exist yet. Recorded with
+numbers so the next slice inherits evidence rather than a reminder.
+
+- [ ] **A byte cap before parsing, the fourth instance of one class.**
+      `parse_price_change_group` bounds neither the `price_changes` array
+      length nor any field size, exactly as `parse_order_book_snapshot` does
+      not — the cap belongs at the ingestion boundary, where
+      `normalize_clob_book` already has `MAX_NORMALIZABLE_BYTES` checked
+      against `provenance.byte_length` *before any text is read*. Measured on
+      the parse path: **100,000 entries cost 16.15 s CPU / 81.2 MiB**;
+      **900,000 entries cost 146.87 s / 731.7 MiB**. No `Pacer` can bound
+      this — a cancel scope cannot interrupt synchronous CPU work. No exposure
+      today because nothing consumes the model, the same position
+      `OrderBookSnapshotV1` was in before `clob_book.py` existed. This is the
+      **fourth** boundary this class has appeared at (`build_observation_envelope`,
+      `normalize_clob_book`, the event store's missing size bound, now here):
+      treat it as a checklist item for every new boundary, not an incident.
+- [ ] **`entry_hash` must be validated inside the ingestion `try`.**
+      `PriceChangeGroup.entry_hash` is unbounded and unsanitized by design at
+      the domain layer. Measured: a newline, an OSC 52 sequence, a
+      257-character value, and a 20,000,000-character value all parse
+      successfully and are then **refused by
+      `ObservationEnvelopeV1._validate_identifier`** — so no hostile hash can
+      reach an accepted observation. But refusing *at the envelope* raises a
+      raw `ValidationError` with **no ledger entry**, which is precisely the
+      MEDIUM finding already closed once in
+      `argos.ingestion.clob_book._extract_source_hash` (length check plus
+      `is_clean_identifier`, inside the module's own `try`). The WebSocket
+      ingestion module must reproduce that check, not the gap. Third
+      appearance of this shape.
+- [ ] **Sequence allocation and cross-token fan-out.** One frame carries
+      entries for the unsubscribed binary sibling, and
+      `parse_price_change_group` normalizes for **one** requested token per
+      call, so a frame yields N records for N tokens. `ingest_sequence` is
+      still caller-supplied and unallocated. Whoever allocates it must decide
+      the order across tokens within one frame, and M3 replay determinism
+      inherits that decision.
+- [ ] **A `(frame, token)` group carrying more than one distinct `hash` is
+      refused outright.** Never observed in either live capture; refusing an
+      unobserved shape was preferred to inventing a grouping policy M3 would
+      have to reproduce forever. If a real capture ever produces this
+      rejection, revisit with the evidence in hand rather than pre-emptively.
+- [ ] No payload model or observed live sample exists for `tick_size_change`
+      or `last_trade_price`; neither arrived in ~85 s of combined capture, so
+      both remain documentation-only shapes
+      (`docs/research/m2-clob-websocket.md`).
 - [x] Event store, including the delivery-record shape decision below.
       Closed by ADR-0011 (`docs/adr/0011-sqlite-event-store-and-delivery-record.md`,
       `src/argos/store/event_store.py`). No adapter or capture loop writes

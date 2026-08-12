@@ -295,11 +295,46 @@ def test_infinite_and_nan_spellings_are_rejected_not_silently_admitted(hostile: 
     assert result.reason is RejectionReason.MALFORMED_PAYLOAD
 
 
-def test_very_high_precision_beyond_any_real_tick_size_does_not_crash_and_is_preserved() -> None:
+def test_very_high_precision_beyond_the_canonical_budget_is_refused_not_silently_rounded() -> None:
+    """Rewritten: this test used to make a claim it never checked.
+
+    Its previous name ended in ``and_is_preserved`` and its only assertion was
+    ``str(...).startswith("0.4444")`` — which a *truncated* value satisfies
+    just as well as a preserved one. Measured directly: the 61-significant-digit
+    wire value ``"0." + "4"*60 + "3"`` was silently rounded to 28 digits by
+    ``Decimal.normalize()`` under the ambient decimal precision, and the stored
+    value compared **unequal** to the source value. So ARGOS durably stored a
+    price the source never sent, called it preserved, and passed its own
+    adversarial test — the "claim outrunning its assertion" pattern
+    ``docs/STATUS.md`` names as recurring in this repository.
+
+    Worse, the rounding was a function of ``decimal.getcontext()``, thread-local
+    mutable global state, so the stored value and therefore the
+    ``observation_id`` depended on ambient configuration rather than on the wire
+    bytes alone.
+
+    ``normalize_decimal`` now refuses anything past ``MAX_SIGNIFICANT_DIGITS``
+    before any context-sensitive operation runs. A silently mutated price
+    becomes a counted rejection with a reason, per
+    ``.claude/rules/data-integrity.md``.
+    """
     result = _normalize(_load_payload(last_trade_price="0." + "4" * 60 + "3"))
+    assert isinstance(result, RejectedObservationV1)
+    assert result.reason is RejectionReason.MALFORMED_PAYLOAD
+    assert "significant digits" in result.detail
+
+
+def test_a_precision_within_the_canonical_budget_is_still_preserved_exactly() -> None:
+    """The guard above must not be degenerate: real precision still survives.
+
+    Asserts equality against the source ``Decimal``, which is what the previous
+    test's name promised and its assertion did not deliver.
+    """
+    source_text = "0." + "4" * 32 + "3"
+    result = _normalize(_load_payload(last_trade_price=source_text))
     assert isinstance(result, ObservationEnvelopeV1)
     snapshot = read_payload(result, OrderBookSnapshotV1)
-    assert str(snapshot.last_trade_price).startswith("0.4444")
+    assert snapshot.last_trade_price == Decimal(source_text)
 
 
 def test_negative_zero_mints_a_different_identity_than_positive_zero_for_the_same_price() -> None:

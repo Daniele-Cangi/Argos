@@ -290,11 +290,11 @@ def test_observation_identity_collapses_across_a_cosmetic_decimal_reformat() -> 
 def test_trailing_zeros_never_change_the_normalized_value_or_its_text(digits: str) -> None:
     base = Decimal("0.4")
     padded = Decimal("0.4" + "0" * len(digits))
-    from argos.domain.orderbook import _normalize_decimal
+    from argos.domain.orderbook import normalize_decimal
 
-    assert _normalize_decimal(base) == _normalize_decimal(padded)
-    assert str(_normalize_decimal(base)) == str(_normalize_decimal(padded))
-    assert "E" not in str(_normalize_decimal(padded))
+    assert normalize_decimal(base) == normalize_decimal(padded)
+    assert str(normalize_decimal(base)) == str(normalize_decimal(padded))
+    assert "E" not in str(normalize_decimal(padded))
 
 
 # --- no float ever enters ------------------------------------------------------------
