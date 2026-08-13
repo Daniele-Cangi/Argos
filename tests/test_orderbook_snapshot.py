@@ -25,12 +25,16 @@ from argos.domain.observation import (
     build_observation_envelope,
 )
 from argos.domain.orderbook import (
+    CANONICAL_DECIMAL_CONTEXT,
+    MAX_DECIMAL_EXPONENT,
+    MIN_DECIMAL_EXPONENT,
     BookSide,
     OrderBookAnomaly,
     OrderBookAnomalyKind,
     OrderBookLevel,
     OrderBookSnapshotV1,
     parse_order_book_snapshot,
+    parse_wire_decimal,
 )
 from argos.domain.provenance import SourceProvenanceV1, sha256_hex
 from argos.errors import SchemaVersionError
@@ -711,3 +715,69 @@ def test_repeated_parsing_is_deterministic_across_hypothesis_examples(_seed: int
     first = parse_order_book_snapshot(raw)
     second = parse_order_book_snapshot(_load_fixture())
     assert first.to_record() == second.to_record()
+
+
+# --- canonicalization must never silently change a finite non-zero value -------------
+#
+# Reported against a9b9802 and reproduced before fixing. The one-sided exponent
+# bound introduced with CANONICAL_DECIMAL_CONTEXT was argued on TEXT LENGTH:
+# only a positive exponent reaches the quantize branch that expands a value
+# into long plain text, so bounding the negative side looked like needless
+# narrowing of a shipped contract. The argument was about the wrong thing.
+# `Decimal.normalize()` runs inside a context with a finite Emin, so a
+# sufficiently small non-zero value UNDERFLOWS to zero: `1E-1000064` returned
+# `Decimal(0)` and rendered as the canonical text "0", numerically identical to
+# a genuine zero. A tiny non-zero price and a real zero therefore produced the
+# same identity-bearing payload -- a silent mutation of a price, the exact
+# class the pinned context was introduced to close, reintroduced one field
+# over by the fix for it.
+
+
+def test_a_tiny_non_zero_value_is_refused_rather_than_underflowing_to_zero() -> None:
+    with pytest.raises(ValueError, match="below the"):
+        parse_wire_decimal("1E-1000064")
+
+
+def test_a_tiny_non_zero_value_and_a_genuine_zero_cannot_share_one_identity() -> None:
+    """The property the refusal exists to protect, stated directly."""
+    zero_text = str(parse_wire_decimal("0"))
+    with pytest.raises(ValueError):
+        parse_wire_decimal("1E-1000064")
+    # And a small-but-accepted value stays distinguishable from zero.
+    assert str(parse_wire_decimal("1E-1000")) != zero_text
+
+
+def test_the_committed_tiny_tick_size_is_still_accepted_exactly() -> None:
+    """The guard must not be degenerate: 1E-50 was already a shipped contract."""
+    assert parse_wire_decimal("1E-50") == Decimal("1E-50")
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    ["0.43", "0.430", "500", "1E+29", "1E-50", "1E-1000", "0.123456789012345678901234567890123"],
+)
+def test_no_accepted_non_zero_value_changes_numerically_during_canonicalization(
+    spelling: str,
+) -> None:
+    assert parse_wire_decimal(spelling) == Decimal(spelling)
+
+
+@pytest.mark.parametrize("spelling", ["-0", "-0.0", "-0E+5", "-0.00000", "0E+3", "0E-100000"])
+def test_every_spelling_of_zero_still_canonicalizes_to_positive_zero(spelling: str) -> None:
+    """Including `0E-100000`, whose exponent is far outside the non-zero budget.
+
+    A zero carries no magnitude, so the exponent bounds -- which describe
+    non-zero magnitudes -- must not refuse it.
+    """
+    assert str(parse_wire_decimal(spelling)) == "0"
+
+
+def test_the_pinned_context_sets_its_exponent_range_explicitly() -> None:
+    """An unspecified `Context` field is filled from `decimal.DefaultContext`.
+
+    That is mutable process-global state, so leaving Emin/Emax to default only
+    moves the hidden-global-state dependency from read time to import time --
+    and Emin is exactly what the underflow above turned on.
+    """
+    assert CANONICAL_DECIMAL_CONTEXT.Emin < MIN_DECIMAL_EXPONENT
+    assert CANONICAL_DECIMAL_CONTEXT.Emax > MAX_DECIMAL_EXPONENT

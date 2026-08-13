@@ -912,3 +912,78 @@ def test_a_valid_sibling_entry_is_still_ignored_not_refused() -> None:
     group = parse_price_change_group(_event_at(1), asset_id=TOKEN_YES)
     assert group.payload.asset_id == TOKEN_YES
     assert all(change.side is BookSide.ASK for change in group.payload.changes)
+
+
+# --- a malformed hash must never escape as TypeError ---------------------------------
+#
+# Reported against a9b9802 and reproduced before fixing. The hash set was built
+# BEFORE any type check ran, and the "more than one distinct hash" error message
+# sorted that set. Both are hostile-input-reachable failures outside this
+# function's documented ValueError contract:
+#
+#   {"hash": []}                -> TypeError: unhashable type: 'list'
+#   [{"hash": "a"}, {"hash": 3}] -> TypeError: '<' not supported between str and int
+#
+# A TypeError flies past `argos.ingestion.clob_price_change`'s `except
+# ValueError`, so the frame would have left NO rejection-ledger entry at all --
+# the silent drop core invariant 14 forbids, and the same shape as the
+# `decimal.InvalidOperation` escape closed one module over.
+
+
+@pytest.mark.parametrize(
+    ("label", "hashes"),
+    [
+        ("unhashable list", [[]]),
+        ("unhashable dict", [{}]),
+        ("null", [None]),
+        ("numeric", [3]),
+        ("boolean", [True]),
+        ("empty string", [""]),
+        ("mixed str and int across two entries", ["a" * 40, 3]),
+        ("mixed str and list across two entries", ["a" * 40, []]),
+    ],
+)
+def test_a_malformed_hash_raises_valueerror_never_typeerror(label: str, hashes: list[Any]) -> None:
+    entries = [
+        {
+            "asset_id": TOKEN_YES,
+            "price": f"0.{40 + index}",
+            "size": "636",
+            "side": "SELL",
+            "hash": value,
+            "best_bid": "0.28",
+            "best_ask": "0.29",
+        }
+        for index, value in enumerate(hashes)
+    ]
+    try:
+        parse_price_change_group(_minimal_event(price_changes=entries), asset_id=TOKEN_YES)
+    except ValueError:
+        pass  # inside the taxonomy: a counted rejection downstream
+    except Exception as error:  # pragma: no cover - the regression this pins
+        raise AssertionError(
+            f"{label}: escaped as {type(error).__name__}, not ValueError"
+        ) from error
+    else:
+        raise AssertionError(f"{label}: was accepted rather than refused")
+
+
+def test_the_malformed_hash_message_does_not_render_a_hostile_value_in_full() -> None:
+    """Building the rejection detail must not become the exhaustion vector itself.
+
+    The recurring "the bound runs downstream of the work it is meant to bound"
+    shape: a 20,000,000-character value would otherwise be fully rendered into
+    an error message that is only bounded later.
+    """
+    entry = {
+        "asset_id": TOKEN_YES,
+        "price": "0.49",
+        "size": "636",
+        "side": "SELL",
+        "hash": ["x" * 20_000_000],
+        "best_bid": "0.28",
+        "best_ask": "0.29",
+    }
+    with pytest.raises(ValueError) as excinfo:
+        parse_price_change_group(_minimal_event(price_changes=[entry]), asset_id=TOKEN_YES)
+    assert len(str(excinfo.value)) < 500

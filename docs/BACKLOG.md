@@ -197,6 +197,33 @@ milestone named, because later code would inherit the defect.
       `last_trade_price` have no payload model and no observed live sample —
       listed separately below rather than implied by this item.
 
+### Closed by the pre-WebSocket hardening slice (2026-08-13)
+
+Both reported by the owner against `a9b9802` and reproduced before being acted
+on. Recorded here because each is a *recurrence pattern*, not a one-off.
+
+- [x] **Canonicalization could silently change a non-zero value to zero.**
+      `normalize_decimal` ran inside a context whose `Emin` was finite and
+      inherited from `decimal.DefaultContext`, so `1E-1000064` underflowed to
+      `Decimal(0)` and shared a genuine zero's canonical text and identity.
+      Introduced by the previous slice's own fix: the lower exponent bound was
+      removed on a **text-length** argument while the defect is **arithmetic**.
+      Closed by restoring `MIN_DECIMAL_EXPONENT`, setting `Emin`/`Emax`
+      explicitly, and adding a fail-closed equality postcondition that does not
+      depend on anyone reasoning correctly about `Emin`.
+      **Standing lesson for every future canonicalization change:** assert the
+      postcondition, do not derive it from the bounds.
+- [x] **A malformed `hash` escaped the taxonomy as `TypeError`.** The hash set
+      was built, and sorted for an error message, before any type check, so an
+      unhashable or mixed-type value bypassed `except ValueError` and left no
+      ledger row. Closed by validating each selected hash as a non-empty string
+      first, with a bounded `repr` in the message.
+      **Standing lesson:** this is the third distinct "escapes the ARGOS error
+      taxonomy, therefore no ledger entry" finding in M2, after
+      `read_raw_payload` at M1, `_extract_source_hash`, and
+      `decimal.InvalidOperation`. Any new parsing boundary should be probed for
+      it explicitly rather than waiting for it to be reported.
+
 ### Constraints the WebSocket ingestion slice must close, with measurements
 
 Each was measured on the `price_change.v1` slice and left deliberately unfixed

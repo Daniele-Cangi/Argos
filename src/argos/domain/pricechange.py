@@ -386,17 +386,35 @@ def parse_price_change_group(event: Mapping[str, Any], *, asset_id: str) -> Pric
         if extra_keys:
             raise ValueError(f"price_changes entry has unexpected fields: {sorted(extra_keys)}")
 
-    hashes = {entry.get("hash") for entry in selected}
+    # Every hash is type-checked *before* the set is built, and before it is
+    # sorted. Both of those operations are hostile-input-reachable failures
+    # that escape this function's documented `ValueError` contract entirely:
+    # an unhashable value (`{"hash": []}` or `{"hash": {}}`) raises
+    # `TypeError: unhashable type` from the set comprehension, and a frame
+    # mixing types (`"a"` beside `3`) raises `TypeError: '<' not supported`
+    # from `sorted` while building the *error message* for a different
+    # refusal. A `TypeError` is outside the ARGOS taxonomy, so it flies past
+    # `argos.ingestion.clob_price_change`'s `except ValueError` and leaves no
+    # rejection-ledger entry at all — the silent drop core invariant 14
+    # forbids, and the same shape as the `decimal.InvalidOperation` escape
+    # closed one module over. Both were reproduced before this check existed.
+    for entry in selected:
+        candidate = entry.get("hash")
+        if not isinstance(candidate, str) or not candidate:
+            raise ValueError(
+                f"'hash' must be a non-empty string, got {type(candidate).__name__} "
+                f"{_bounded_repr(candidate)}"
+            )
+
+    hashes = {entry["hash"] for entry in selected}
     if len(hashes) != 1:
         raise ValueError(
             f"price_changes entries for asset_id {asset_id!r} in one frame carry more than "
-            f"one distinct hash ({sorted(h for h in hashes if h is not None)!r}); never "
+            f"one distinct hash ({sorted(hashes)!r}); never "
             "observed in live capture (docs/research/m2-clob-websocket.md) — refusing rather "
             "than inventing a grouping policy that M3 replay would have to inherit"
         )
     entry_hash = next(iter(hashes))
-    if not isinstance(entry_hash, str) or not entry_hash:
-        raise ValueError(f"'hash' must be a non-empty string, got {entry_hash!r}")
 
     best_bids = {_parse_optional_top_of_book(entry.get("best_bid")) for entry in selected}
     best_asks = {_parse_optional_top_of_book(entry.get("best_ask")) for entry in selected}
@@ -444,6 +462,18 @@ def _build_change(entry: Mapping[str, Any]) -> PriceLevelChangeV1:
     side = _parse_side(entry["side"])
     kind = PriceLevelChangeKind.REMOVE if size == 0 else PriceLevelChangeKind.SET
     return PriceLevelChangeV1(side=side, price=price, size=size, kind=kind)
+
+
+def _bounded_repr(value: Any, *, limit: int = 120) -> str:
+    """A ``repr`` that cannot itself become the resource-exhaustion vector.
+
+    A rejection detail is neutralized and bounded downstream, but building the
+    string is not free: a 20,000,000-character value or a deeply nested
+    container would be fully rendered first, which is the recurring "the bound
+    runs downstream of the work it is meant to bound" shape.
+    """
+    rendered = repr(value)[: limit + 1]
+    return rendered if len(rendered) <= limit else rendered[:limit] + "..."
 
 
 def _parse_side(value: Any) -> BookSide:

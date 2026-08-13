@@ -92,9 +92,33 @@ the ~10 digits the real recorded fixtures use, and low enough that a canonical
 text stays short."""
 
 MAX_DECIMAL_EXPONENT: Final = 30
-"""Largest absolute adjusted exponent a wire price/size may carry. Bounds the
+"""Largest adjusted exponent a non-zero wire price/size may carry. Bounds the
 length of the canonical text: without it, the 11 wire bytes ``"1E+1000000"``
 would render as a one-megabyte canonical integer."""
+
+MIN_DECIMAL_EXPONENT: Final = -1000
+"""Smallest adjusted exponent a non-zero wire price/size may carry.
+
+This bound existed, was removed as unnecessary, and is restored here because
+removing it created a defect. The argument for removal was that only a
+*positive* exponent reaches the quantize branch that expands a value into long
+plain text, while a very negative exponent keeps a short scientific rendering
+that is just as deterministic. That reasoning was about *text length* and
+overlooked *arithmetic*: ``Decimal.normalize()`` runs inside
+:data:`CANONICAL_DECIMAL_CONTEXT`, whose ``Emin`` is finite, so a sufficiently
+small non-zero value **underflows to zero**. Reproduced:
+``parse_wire_decimal("1E-1000064")`` returned ``Decimal(0)`` and rendered as
+the canonical text ``"0"`` — numerically identical to a genuine zero, so a
+tiny non-zero price and a real zero produced the **same identity-bearing
+payload**. That is a silent mutation of a price, precisely the class the
+canonical context was introduced to close, reintroduced one field over.
+
+``-1000`` is far below anything this source can produce (the real tick size is
+``0.001``, adjusted exponent ``-3``) and comfortably preserves the committed
+``1E-50`` case. It is enforced together with an equality postcondition in
+:func:`normalize_decimal`, so the bound is a fast, legible refusal and the
+postcondition is the fail-closed backstop that does not depend on anyone
+having reasoned correctly about ``Emin``."""
 
 _MAX_INT_BITS: Final = 4096
 """Bit-length ceiling for an ``int`` handed to :func:`parse_wire_decimal`.
@@ -103,7 +127,15 @@ Comfortably above any legal value — the budgets below cap accepted magnitudes
 far lower — and checked before the superlinear ``Decimal(int)`` conversion
 rather than after it. See :func:`parse_wire_decimal` for the measurement."""
 
-CANONICAL_DECIMAL_CONTEXT: Final = Context(prec=MAX_SIGNIFICANT_DIGITS + MAX_DECIMAL_EXPONENT + 1)
+_CONTEXT_EXPONENT_MARGIN: Final = MAX_SIGNIFICANT_DIGITS + 100
+"""How far the pinned context's exponent range sits outside the accepted
+budget, so no value this module accepts can underflow or overflow inside it."""
+
+CANONICAL_DECIMAL_CONTEXT: Final = Context(
+    prec=MAX_SIGNIFICANT_DIGITS + MAX_DECIMAL_EXPONENT + 1,
+    Emin=MIN_DECIMAL_EXPONENT - _CONTEXT_EXPONENT_MARGIN,
+    Emax=MAX_DECIMAL_EXPONENT + _CONTEXT_EXPONENT_MARGIN,
+)
 """The one decimal context every identity-bearing decimal operation in ARGOS
 runs inside.
 
@@ -112,9 +144,17 @@ which is thread-local mutable global state — precisely the hidden global state
 CLAUDE.md prohibits, and a direct threat to ADR-0010 identity determinism and
 core invariant 5. Pinning it here makes the canonical form of a wire value a
 pure function of that value. The precision is deliberately wide enough that no
-value passing the two budgets above can round inside it, so the budgets, not
-the context, are what refuse an out-of-range value — and they do it with a
-reason, before any context-sensitive operation runs."""
+value passing the budgets above can round inside it, so the budgets, not the
+context, are what refuse an out-of-range value — and they do it with a reason,
+before any context-sensitive operation runs.
+
+``Emin``/``Emax`` are set **explicitly** rather than left to default. An
+unspecified ``Context`` field is filled from ``decimal.DefaultContext`` at
+construction time, which is itself mutable process-global state — the same
+class of dependency this context exists to remove, merely moved from read time
+to import time. They are also what makes the underflow described in
+:data:`MIN_DECIMAL_EXPONENT` structurally impossible for an accepted value,
+rather than merely unlikely."""
 
 
 class BookSide(StrEnum):
@@ -650,30 +690,49 @@ def normalize_decimal(value: Decimal) -> Decimal:
             f"{MAX_SIGNIFICANT_DIGITS}-digit canonical budget; refused rather than "
             "silently rounded to the ambient decimal precision"
         )
+    # Every spelling of zero collapses onto one canonical zero and is returned
+    # before the exponent bounds below, which describe *non-zero* magnitudes:
+    # ``Decimal("0E-100000")`` is still exactly zero, and refusing it for its
+    # exponent would refuse a value that carries no magnitude at all.
+    if value.is_zero():
+        return Decimal(0)
+
     adjusted = value.adjusted()
     if adjusted > MAX_DECIMAL_EXPONENT:
-        # Deliberately one-sided. Only a *positive* exponent reaches the
-        # quantize branch below, which expands the value into plain integer
-        # text — that is the path where the 11 wire bytes ``"1E+1000000"``
-        # become a one-megabyte canonical string. A very negative exponent
-        # keeps its scientific rendering, which is short and exactly as
-        # deterministic. Bounding both sides symmetrically looked tidier and
-        # would have silently narrowed an already-shipped contract for no
-        # stated reason: the committed test
-        # ``test_very_high_precision_beyond_any_real_tick_size_does_not_crash_and_is_preserved``
-        # pins that a ``1E-50`` tick size is preserved, and it caught the
-        # symmetric version of this check.
         raise ValueError(
             f"decimal value has adjusted exponent {adjusted}, above the "
             f"+{MAX_DECIMAL_EXPONENT} canonical budget; refused rather than rendered "
             "as an unboundedly long canonical integer text"
         )
+    if adjusted < MIN_DECIMAL_EXPONENT:
+        # See MIN_DECIMAL_EXPONENT: without this, a non-zero value this small
+        # underflows to zero inside the pinned context and becomes
+        # indistinguishable from a genuine zero.
+        raise ValueError(
+            f"decimal value has adjusted exponent {adjusted}, below the "
+            f"{MIN_DECIMAL_EXPONENT} canonical budget; refused rather than allowed to "
+            "underflow to zero and collide with a genuine zero's identity"
+        )
 
     with localcontext(CANONICAL_DECIMAL_CONTEXT):
         normalized = value.normalize()
-        if normalized.is_zero():
-            return Decimal(0)
         exponent = normalized.as_tuple().exponent
         if isinstance(exponent, int) and exponent > 0:
             normalized = normalized.quantize(Decimal(1))
-        return normalized
+
+    # Fail-closed postcondition. The bounds above are a fast, legible refusal;
+    # this is what guarantees the property they are only *believed* to imply —
+    # canonicalization must never silently change a finite non-zero numeric
+    # value. It does not depend on anyone having reasoned correctly about
+    # ``Emin``, ``prec``, or which branch expands which exponent, which is
+    # exactly how the underflow described in MIN_DECIMAL_EXPONENT survived
+    # review: the reasoning was about text length and the defect was
+    # arithmetic. Note ``Decimal("-0") == Decimal("0")`` is ``True``, so the
+    # deliberate negative-zero collapse above passes this check rather than
+    # being caught by it.
+    if normalized != value:
+        raise ValueError(
+            f"canonicalization changed the numeric value: {value} became {normalized}; "
+            "refused rather than silently storing a value the source never sent"
+        )
+    return normalized

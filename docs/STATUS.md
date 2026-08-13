@@ -47,6 +47,81 @@ fan-out, still deliberately undecided; and the deliberate refusal of a
 `(frame, token)` group carrying more than one distinct hash, a shape never
 observed live.
 
+## M2 slice: pre-WebSocket decimal and hash hardening
+
+Two defects reported by the owner against `a9b9802`, both **reproduced before
+being acted on**, both closed here in a small slice deliberately scoped to
+exclude any capture-loop, reconnect, projection or manifest work. Changed:
+`src/argos/domain/orderbook.py`, `src/argos/domain/pricechange.py`, and the
+three test modules that pin them.
+
+Quality gate: PASS — ruff, ruff format, mypy strict, **1,101 tests** (up from
+1,068).
+
+**1. A non-zero decimal could canonicalize to zero — and this one was mine.**
+`normalize_decimal` ran `Decimal.normalize()` inside `CANONICAL_DECIMAL_CONTEXT`,
+whose `Emin` was finite and inherited from `decimal.DefaultContext`. A
+sufficiently small non-zero value therefore **underflowed to zero**: measured,
+`parse_wire_decimal("1E-1000064")` returned `Decimal(0)` and rendered as the
+canonical text `"0"` — numerically and textually identical to a genuine zero, so
+a tiny non-zero price and a real zero produced the **same identity-bearing
+payload**.
+
+The provenance of this defect is worth recording precisely, because it is a
+lesson about the fix and not only about the bug. The previous slice *had* a
+symmetric exponent bound, and I removed the negative half deliberately, arguing
+that only a positive exponent reaches the branch that expands a value into long
+plain text while a very negative exponent keeps a short, equally deterministic
+scientific rendering. That argument was about **text length**. The defect is
+**arithmetic**. The reasoning was locally correct and answered the wrong
+question, and it shipped inside the very commit whose purpose was to stop
+decimal canonicalization from silently changing values.
+
+Closed three ways, deliberately overlapping:
+
+- `MIN_DECIMAL_EXPONENT = -1000` restores the lower bound — far below anything
+  this source can produce (real tick size `0.001`, adjusted exponent `-3`) and
+  comfortably preserving the already-committed `1E-50` case;
+- `CANONICAL_DECIMAL_CONTEXT` now sets `Emin`/`Emax` **explicitly** instead of
+  inheriting them from `decimal.DefaultContext`, which is itself mutable
+  process-global state — the same class of dependency the pinned context exists
+  to remove, merely relocated from read time to import time;
+- a **fail-closed postcondition** refuses any result that is not numerically
+  equal to its input. This is the part that matters most: the two bounds are a
+  fast, legible refusal, but the postcondition guarantees the property they are
+  only *believed* to imply, without depending on anyone having reasoned
+  correctly about `Emin`, `prec`, or which branch expands which exponent —
+  which is exactly how the underflow survived review the first time.
+
+Zeros return before the exponent bounds are applied, since a zero carries no
+magnitude: `0E-100000` is still exactly zero and must not be refused for its
+exponent, while every negative-zero spelling still collapses onto positive zero.
+
+**2. A malformed `hash` escaped as a bare `TypeError`.**
+`parse_price_change_group` built its hash set — and `sorted()` it while
+composing the error message for a *different* refusal — before type-checking
+any hash. Reproduced: `{"hash": []}` raises `TypeError: unhashable type: 'list'`,
+and a frame mixing `"a"` with `3` raises `TypeError: '<' not supported between
+instances of 'str' and 'int'`. A `TypeError` is outside the ARGOS taxonomy, so
+it flew past `clob_price_change`'s `except ValueError` and the frame left **no
+rejection-ledger entry at all** — the silent drop core invariant 14 forbids, and
+the same shape as the `decimal.InvalidOperation` escape closed one module over
+two slices ago. Every selected entry's hash is now validated as a non-empty
+string before the set is built, and the error message uses a bounded `repr` so
+that composing the rejection detail cannot itself become the exhaustion vector.
+
+Pinned at the boundary that actually owes the row: list, dict, null, numeric,
+boolean, empty-string and mixed-type hashes each produce a
+`RejectedObservationV1` that is really persisted to and read back from the
+ledger with its reason and raw hash, not merely a `ValueError` in the domain.
+
+**Acceptance criteria, all verified directly**: `1E-1000064` refused and never
+zero; `1E-50` still exact; negative-zero spellings still collapse to positive
+zero; no accepted finite non-zero value changes numerically; tiny non-zero and
+zero cannot share one canonical identity; every malformed hash type raises
+`ValueError`, never `TypeError`; and the WebSocket ingestion path records them
+as rejections.
+
 ## M2 slice: WebSocket `price_change` ingestion and normalization
 
 The ingestion-layer counterpart to `argos.domain.pricechange`, the same

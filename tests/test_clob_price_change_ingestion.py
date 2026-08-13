@@ -534,3 +534,76 @@ def test_the_shared_timestamp_hash_pair_across_three_real_frames_mints_three_obs
         assert counts.duplicate == 0
     finally:
         store.close()
+
+
+# --- a malformed hash reaches the ledger instead of escaping --------------------------
+#
+# Reported against a9b9802. `parse_price_change_group` built its hash set, and
+# sorted it for an error message, before type-checking any hash, so an
+# unhashable or mixed-type `hash` raised a bare `TypeError` -- outside the ARGOS
+# taxonomy and therefore past this module's `except ValueError`. The frame would
+# have left no rejection-ledger entry at all. Fixed in the domain; pinned here
+# at the boundary that actually owes the ledger row, because that is the
+# property that matters operationally.
+
+
+@pytest.mark.parametrize(
+    ("label", "hash_value"),
+    [
+        ("unhashable list", []),
+        ("unhashable dict", {}),
+        ("null", None),
+        ("numeric", 3),
+        ("empty string", ""),
+    ],
+)
+def test_a_malformed_hash_is_recorded_as_a_rejection_not_raised(
+    label: str, hash_value: Any
+) -> None:
+    event = _minimal_event()
+    event["price_changes"][0]["hash"] = hash_value
+
+    result = _normalize(event)
+
+    assert isinstance(result, RejectedObservationV1), f"{label}: got {type(result).__name__}"
+    assert result.reason is RejectionReason.MALFORMED_PAYLOAD
+    assert result.raw_payload_sha256
+    assert "hash" in result.detail
+
+
+def test_a_frame_mixing_hash_types_across_entries_is_recorded_as_a_rejection() -> None:
+    """The second escape: `sorted()` over a mixed-type set, while building the
+    error message for a *different* refusal (more than one distinct hash)."""
+    event = _minimal_event()
+    first = event["price_changes"][0]
+    second = dict(first)
+    second["price"] = "0.50"
+    second["hash"] = 3
+    event["price_changes"] = [first, second]
+
+    result = _normalize(event)
+
+    assert isinstance(result, RejectedObservationV1)
+    assert result.reason is RejectionReason.MALFORMED_PAYLOAD
+
+
+def test_a_malformed_hash_rejection_is_persisted_to_the_ledger() -> None:
+    """End to end: the row an operator would actually count is really written."""
+    event = _minimal_event()
+    event["price_changes"][0]["hash"] = []
+    result = _normalize(event)
+    assert isinstance(result, RejectedObservationV1)
+
+    store = open_sqlite_event_store(":memory:")
+    try:
+        store.open_capture_run(RUN, started_at=RECEIVED)
+        store.append_rejection(result, ingest_sequence=1)
+        rejections = list(store.iter_rejections(RUN))
+    finally:
+        store.close()
+
+    assert len(rejections) == 1
+    stored = rejections[0].rejection
+    assert stored.reason is RejectionReason.MALFORMED_PAYLOAD
+    assert stored.raw_payload_sha256 == result.raw_payload_sha256
+    assert "hash" in stored.detail
