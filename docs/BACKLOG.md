@@ -203,7 +203,13 @@ Each was measured on the `price_change.v1` slice and left deliberately unfixed
 there, because the boundary that must hold it does not exist yet. Recorded with
 numbers so the next slice inherits evidence rather than a reminder.
 
-- [ ] **A byte cap before parsing, the fourth instance of one class.**
+- [x] **A byte cap before parsing, the fourth instance of one class.** Closed by
+      `src/argos/ingestion/clob_price_change.py`, which checks
+      `provenance.byte_length` against the existing `MAX_NORMALIZABLE_BYTES`
+      before reading a single key out of the frame and returns a *rejection*
+      rather than raising. Verified independently of the slice's own tests: a
+      14,149,053-byte frame carrying 60,000 entries is refused in **0.0002 s**.
+      Original finding below, kept for the reasoning and the numbers.
       `parse_price_change_group` bounds neither the `price_changes` array
       length nor any field size, exactly as `parse_order_book_snapshot` does
       not — the cap belongs at the ingestion boundary, where
@@ -217,7 +223,10 @@ numbers so the next slice inherits evidence rather than a reminder.
       **fourth** boundary this class has appeared at (`build_observation_envelope`,
       `normalize_clob_book`, the event store's missing size bound, now here):
       treat it as a checklist item for every new boundary, not an incident.
-- [ ] **`entry_hash` must be validated inside the ingestion `try`.**
+- [x] **`entry_hash` must be validated inside the ingestion `try`.** Closed by
+      `clob_price_change._validate_entry_hash`, reproducing the check
+      `clob_book._extract_source_hash` already applies rather than the gap.
+      Original finding below, kept for the reasoning and the measurements.
       `PriceChangeGroup.entry_hash` is unbounded and unsanitized by design at
       the domain layer. Measured: a newline, an OSC 52 sequence, a
       257-character value, and a 20,000,000-character value all parse

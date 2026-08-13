@@ -123,6 +123,34 @@ EXPECTED_ENTRY_KEYS = frozenset(
 rather than silently accepted with the unknown field dropped."""
 
 
+class NoEntriesForToken(ValueError):
+    """The frame carried no ``price_changes`` entry for the requested token.
+
+    A distinct type rather than a plain ``ValueError`` with a recognisable
+    message, because this is the one outcome of
+    :func:`parse_price_change_group` that is **not** a malformation: the
+    research note established by direct observation that a frame legitimately
+    carries entries for an unsubscribed binary sibling token and may name
+    nothing for the token a given call was made on behalf of
+    (``docs/research/m2-clob-websocket.md``, "Priority question 4"). An
+    ingestion layer must be able to tell that apart from a genuine defect, or
+    it would write a rejection-ledger row for every healthy frame about a
+    sibling and drown the ledger's signal.
+
+    It subclasses ``ValueError`` so that a caller which does not care about
+    the distinction — every other consumer of this module — keeps working
+    unchanged with a single ``except ValueError``.
+
+    This type exists because the alternative was worse. The ingestion layer
+    originally recognised this case by comparing the exception's *message
+    text* against a literal copied from this module's source: safe in its
+    failure direction (a text change would produce a noisy false rejection
+    rather than a silent drop) but a coupling that rots invisibly. Raising a
+    named type moves the contract into the type system, where a rename breaks
+    the import instead of quietly changing behaviour.
+    """
+
+
 class PriceLevelChangeKind(StrEnum):
     """Whether a level change sets a resting size or removes the level entirely.
 
@@ -349,7 +377,9 @@ def parse_price_change_group(event: Mapping[str, Any], *, asset_id: str) -> Pric
 
     selected = [entry for entry in raw_changes if entry["asset_id"] == asset_id]
     if not selected:
-        raise ValueError(f"no price_changes entries found for asset_id {asset_id!r} in this frame")
+        raise NoEntriesForToken(
+            f"no price_changes entries found for asset_id {asset_id!r} in this frame"
+        )
 
     for entry in selected:
         extra_keys = set(entry.keys()) - EXPECTED_ENTRY_KEYS

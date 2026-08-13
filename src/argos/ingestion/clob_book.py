@@ -17,12 +17,14 @@ measured against ``docs/research/m2-clob-rest-book.md`` rather than assumed:
    three-poll timing experiment established that the wire `timestamp` tracks
    the book's *last change*, not the response instant, so it is a genuine
    source-assigned event time, not a response timestamp masquerading as one.
-   :func:`_parse_event_time` never raises and never falls back to a clock: a
-   present-and-parseable value becomes ``EventTimeStatus.PRESENT``, a present
-   value that will not parse becomes ``EventTimeStatus.UNPARSEABLE`` with the
-   source's own text preserved verbatim in ``event_time_raw`` (through the
-   envelope's own sanitizer), and an absent value becomes
-   ``EventTimeStatus.MISSING``.
+   :func:`argos.ingestion.wire.parse_event_time` never raises and never falls
+   back to a clock: a present-and-parseable value becomes
+   ``EventTimeStatus.PRESENT``, a present value that will not parse becomes
+   ``EventTimeStatus.UNPARSEABLE`` with the source's own text preserved
+   verbatim in ``event_time_raw`` (through the envelope's own sanitizer), and
+   an absent value becomes ``EventTimeStatus.MISSING``. Shared with
+   :mod:`argos.ingestion.clob_price_change`, whose WebSocket frames carry the
+   identical wire shape — see that module's docstring.
 2. **`hash` is optional, its type is not.** The research note never observed
    the field missing, but this module does not assume a source guarantee it
    never measured. A `/book` response with no `hash` key at all is accepted
@@ -44,9 +46,8 @@ M2 slice on purpose (see the task instructions this module was built from).
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any, Final
 
 from argos.domain.observation import (
@@ -63,6 +64,7 @@ from argos.domain.orderbook import parse_order_book_snapshot
 from argos.domain.provenance import SourceProvenanceV1
 from argos.domain.text import is_clean_identifier
 from argos.errors import RejectionReason
+from argos.ingestion.wire import parse_event_time
 
 MAX_NORMALIZABLE_BYTES: Final = MAX_PAYLOAD_CANONICAL_BYTES
 """Largest response this module will read text out of.
@@ -89,7 +91,12 @@ reader filtering by it. `ObservationEnvelopeV1.source` (`clob_rest` vs
 `clob_market_ws`) already disambiguates at the identity level; this label
 keeps it legible at a glance too."""
 
-_TIMESTAMP_MS_PATTERN: Final = re.compile(r"-?[0-9]+")
+# The millisecond wire timestamp parser (`_TIMESTAMP_MS_PATTERN` and the
+# function below) moved to `argos.ingestion.wire.parse_event_time`: the
+# WebSocket market-channel `price_change` frame carries the identical wire
+# shape (`docs/research/m2-clob-websocket.md`), and duplicating the parser
+# would have been a third instance of the decimal-normalization defect class
+# `docs/STATUS.md` already records twice — same class, different field.
 
 
 def normalize_clob_book(
@@ -179,7 +186,7 @@ def normalize_clob_book(
             capture_run_id=capture_run_id,
         )
 
-    event_time, event_time_raw = _parse_event_time(payload.get("timestamp"))
+    event_time, event_time_raw = parse_event_time(payload.get("timestamp"))
 
     return build_observation_envelope(
         source=ObservationSource.CLOB_REST,
@@ -245,41 +252,3 @@ def _extract_source_hash(payload: Mapping[str, Any]) -> str | None:
     if not is_clean_identifier(value):
         raise ValueError("'hash' contains a display-control character")
     return value
-
-
-def _parse_event_time(raw: Any) -> tuple[datetime | None, str | None]:
-    """Parse the wire `timestamp` (milliseconds-since-epoch, as a string).
-
-    Never raises and never substitutes the current time
-    (``.claude/rules/data-integrity.md``). Returns ``(event_time, None)`` when
-    parseable, ``(None, event_time_raw)`` when the source sent something that
-    did not parse, or ``(None, None)`` when nothing was sent at all —
-    matching exactly the three-way distinction
-    :func:`argos.domain.observation.build_observation_envelope` infers
-    ``event_time_status`` from.
-
-    An empty string is folded into "nothing sent" rather than "unparseable":
-    ``ObservationEnvelopeV1.event_time_raw`` requires at least one character
-    (it is part of the observation identity and a bare empty string carries
-    no diagnostic content to preserve), so there is no way to represent an
-    empty wire value as a *distinguishable* unparseable case, and treating it
-    as equivalent to "no timestamp offered" is the closest honest reading.
-    """
-    if raw is None:
-        return None, None
-    if not isinstance(raw, str):
-        # The research note's own evidence is that this field is always a
-        # string on this endpoint; a non-string value is a schema surprise
-        # worth preserving for diagnosis, not worth guessing a conversion for.
-        return None, repr(raw)
-    if raw == "":
-        return None, None
-    if not _TIMESTAMP_MS_PATTERN.fullmatch(raw):
-        return None, raw
-    try:
-        milliseconds = int(raw)
-        seconds, millis = divmod(milliseconds, 1000)
-        event_time = datetime.fromtimestamp(seconds, tz=UTC) + timedelta(milliseconds=millis)
-    except (ValueError, OverflowError, OSError):
-        return None, raw
-    return event_time, None

@@ -28,6 +28,7 @@ from argos.domain.orderbook import (
     parse_wire_decimal,
 )
 from argos.domain.pricechange import (
+    NoEntriesForToken,
     PriceChangeGroup,
     PriceChangeV1,
     PriceLevelChangeKind,
@@ -40,6 +41,7 @@ from argos.domain.versioning import VersionedModel, ensure_supported_version, fr
 __all__ = [
     "BookSide",
     "EventTimeStatus",
+    "NoEntriesForToken",
     "ObservationEnvelopeV1",
     "ObservationQualityFlag",
     "ObservationSource",

@@ -47,6 +47,80 @@ fan-out, still deliberately undecided; and the deliberate refusal of a
 `(frame, token)` group carrying more than one distinct hash, a shape never
 observed live.
 
+## M2 slice: WebSocket `price_change` ingestion and normalization
+
+The ingestion-layer counterpart to `argos.domain.pricechange`, the same
+relationship `clob_book.py` has to `argos.domain.orderbook`. New:
+`src/argos/ingestion/clob_price_change.py` (`normalize_clob_price_change`,
+`CLOB_WS_PRICE_CHANGE_EVENT_TYPE`), `src/argos/ingestion/wire.py`
+(`parse_event_time`, moved out of `clob_book.py` so both adapters share one
+millisecond-timestamp parser instead of duplicating it),
+`argos.domain.pricechange.NoEntriesForToken`,
+`tests/test_clob_price_change_ingestion.py`. Changed:
+`src/argos/ingestion/clob_book.py`, `src/argos/ingestion/__init__.py`,
+`src/argos/domain/__init__.py`.
+
+Quality gate: PASS — ruff, ruff format, mypy strict on 38 source files,
+**1,068 tests** (up from 1,044).
+
+**Still no transport.** This module takes one already-decoded frame. Opening
+the socket, subscribing, heartbeat, and reconnect are a separate slice, and it
+is the one that introduces a new dependency — kept out of this slice
+deliberately so the normalization contract could be settled first.
+
+**Both backlog constraints this slice owed are closed**, each verified
+independently of the slice's own tests:
+
+- The byte cap is checked against `provenance.byte_length` before a single key
+  is read out of the frame, returning a rejection rather than raising. A
+  14,149,053-byte frame carrying 60,000 entries is refused in **0.0002 s**,
+  against a parse path measured at 16.15 s for 100,000 entries.
+- `entry_hash` is validated inside the module's own `try` — length against
+  `MAX_IDENTIFIER_LENGTH` plus `is_clean_identifier` — reproducing the check
+  `clob_book._extract_source_hash` already applies rather than the gap. This
+  was the third appearance of that same shape.
+
+**A third outcome, and why it is not a rejection.** `normalize_clob_price_change`
+returns `ObservationEnvelopeV1 | RejectedObservationV1 | None`. `None` means
+the frame carried no entry for the requested token — normal traffic about the
+unsubscribed binary sibling, not a defect. Writing a ledger row for each would
+flood the rejection ledger with rows describing healthy traffic and destroy its
+signal value. It is a **counted non-event**: the capture loop must count it,
+and the docstring says so unmissably, because this function has no
+health-counter to write to.
+
+**A boundary contract tightened during integration review.** The ingestion
+layer originally recognised that case by comparing the exception's *message
+text* against a literal copied from the domain module's source. The failure
+direction was safe — a text change would produce a noisy false rejection rather
+than a silent drop — but the coupling rots invisibly, so it is now a named
+`NoEntriesForToken(ValueError)`, where a rename breaks the import instead of
+quietly changing behaviour. It subclasses `ValueError` so every other consumer
+keeps working with one `except ValueError`.
+
+**End-to-end evidence, verified directly rather than taken from the slice's own
+test names.** Real recorded frames through `normalize_clob_price_change` →
+`SQLiteEventStore`:
+
+- all 34 real `price_change` frames normalize into accepted envelopes;
+- both real zero-size entries reach an envelope payload as `REMOVE`
+  (`0.17` on the bid side for the YES token, `0.83` on the ask side for its
+  sibling) — the exit criterion now has evidence *through the store*, not only
+  at the payload;
+- redelivering an identical frame yields **one observation row and a
+  `duplicate` delivery** (`accepted_new=3, duplicate=1` across the run
+  measured);
+- the three real frames sharing one `(timestamp, hash)` for one token, each
+  carrying a different level change, mint **three distinct observation rows** —
+  the identity hazard proven at the store, not only in the payload's canonical
+  JSON.
+
+**No independent security review ran on this slice.** Recorded plainly rather
+than implied: the module is closely modelled on an already-reviewed sibling and
+was verified directly, but that is not the same as a review, and four
+consecutive subagent runs on the preceding slice terminated without delivering
+a report. Adversarial testing was commissioned separately.
+
 ## M2 slice: the `price_change.v1` typed delta payload
 
 The second and last typed payload M2 needs (`src/argos/domain/pricechange.py`,
@@ -683,9 +757,9 @@ no criterion is marked closed on the strength of a payload model alone.
 | Criterion | Status | Evidence |
 |---|---|---|
 | Duplicate source event does not create a second accepted observation | **End-to-end evidence; no capture loop runs it against live traffic yet** | `_observation_identity` collides an identical redelivery onto one `observation_id`, on the real recorded CLOB payload as well as a constructed one (`docs/research/m2-clob-rest-book.md`, "Consequence for `ObservationEnvelopeV1`"). `SQLiteEventStore.append_observation` enforces it at the store: a redelivery inserts zero second `observation` rows and exactly one `delivery` row with `disposition="duplicate"`, both writes inside one `BEGIN IMMEDIATE` transaction (`tests/test_event_store.py`, `tests/test_event_store_adversarial.py`, including real multi-connection race tests). The CLOB REST adapter slice closes the remaining gap end to end: a real recorded response fed through `ClobClient` → `normalize_clob_book` → `SQLiteEventStore` produces one observation row and two delivery rows (`accepted=1, duplicate=1`) for a redelivery. **Not yet closed**: no capture loop runs either adapter continuously against live traffic |
-| Zero-size level update is represented as removal | **Payload evidence on real recorded frames; no transport runs it against live traffic yet** | Represented structurally, not by convention: `PriceLevelChangeKind.REMOVE` is validated to hold **if and only if** `size == 0`, on every construction path including replay and `from_record`, so a record cannot claim one and carry the other (`src/argos/domain/pricechange.py`). Applied to a real delta stream, not a constructed one: the two genuine zero-size entries in the recorded live capture (`0.17 BUY` and `0.83 SELL`, on the two sibling tokens) are parsed as removals and pinned as *observed* rather than merely constructible (`tests/test_price_change.py`, `tests/fixtures/clob/ws_market_price_change.raw.json`). `OrderBookSnapshotV1` separately implements the REST-snapshot side, where the same value is deliberately a counted anomaly rather than a removal. **Not yet closed**: no WebSocket adapter or capture loop receives a live frame — the payload model has been fed recorded frames, not a socket |
+| Zero-size level update is represented as removal | **End-to-end evidence into the store; no transport receives a live frame yet** | Represented structurally, not by convention: `PriceLevelChangeKind.REMOVE` holds **if and only if** `size == 0`, validated on every construction path including replay and `from_record`, so a record cannot claim one and carry the other (`src/argos/domain/pricechange.py`). Both genuine zero-size entries in the recorded live capture now travel the full path — `normalize_clob_price_change` -> `build_observation_envelope` -> `SQLiteEventStore` — and land as `REMOVE` in a stored payload (`0.17` bid side, `0.83` ask side on the sibling), verified independently of the slice's own tests. `OrderBookSnapshotV1` separately implements the REST-snapshot side, where the same value is deliberately a counted anomaly rather than a removal. **Not yet closed**: no WebSocket transport exists, so the frames are replayed from a recorded capture rather than received from a socket |
 | Reconnect does not reset ingest sequence or silently lose manifest state | Open | No WebSocket adapter and no capture manifest exist yet |
-| Invalid messages enter a rejection ledger with reason and raw hash | **End-to-end evidence; no capture loop runs it against live traffic yet** | `RejectedObservationV1` carries `reason: RejectionReason`, `detail`, and `raw_payload_sha256`; `build_rejected_observation` derives a deterministic `rejection_id` so redelivery of the same invalid bytes for the same reason collapses rather than growing the ledger unbounded. `SQLiteEventStore.append_rejection`/`iter_rejections` persist it, keyed `(capture_run_id, ingest_sequence)` rather than on `rejection_id` alone, so two genuinely different malformed entries in one frame that happen to share one `rejection_id` (ADR-0011 section 7) both survive instead of one silently overwriting the other. The CLOB REST adapter slice closes the remaining gap end to end: a malformed real-shaped body fed through `normalize_clob_book` produces a `RejectedObservationV1` written to the ledger (`tests/test_clob_book_ingestion.py`). **Not yet closed**: no capture loop runs either adapter continuously against live traffic |
+| Invalid messages enter a rejection ledger with reason and raw hash | **End-to-end evidence; no capture loop runs it against live traffic yet** | `RejectedObservationV1` carries `reason: RejectionReason`, `detail`, and `raw_payload_sha256`; `build_rejected_observation` derives a deterministic `rejection_id` so redelivery of the same invalid bytes for the same reason collapses rather than growing the ledger unbounded. `SQLiteEventStore.append_rejection`/`iter_rejections` persist it, keyed `(capture_run_id, ingest_sequence)` rather than on `rejection_id` alone, so two genuinely different malformed entries in one frame that happen to share one `rejection_id` (ADR-0011 section 7) both survive instead of one silently overwriting the other. The CLOB REST adapter slice closes the remaining gap end to end: a malformed real-shaped body fed through `normalize_clob_book` produces a `RejectedObservationV1` written to the ledger (`tests/test_clob_book_ingestion.py`). The WebSocket source now has the same evidence on its own path: `normalize_clob_price_change` turns every `ValueError` the domain raises — plus its own `entry_hash` length and display-control checks, deliberately inside its own `try` — into a `RejectedObservationV1` rather than an escaping exception, so a malformed real-shaped frame reaches the ledger with a reason and the raw hash (`tests/test_clob_price_change_ingestion.py`). **Not yet closed**: no capture loop runs either adapter continuously against live traffic |
 | Book snapshot plus deltas reconstruct a tested projection | Open | Both input payload models now exist — `OrderBookSnapshotV1` (snapshot) and `PriceChangeV1` (delta) — and the research note established that a delta's `hash` is the hash of the *resulting* book state and reconciles exactly with REST for the same state, which is what a projection would verify against. **Not yet closed**: no projection module and no WebSocket adapter exist |
 | No authenticated/user channel or trading code exists | Holds | Unchanged from M0-M1; the CLOB REST adapter is read-only by construction — it sends no credentials and exposes only the public `GET /book` endpoint (`src/argos/sources/clob.py` module docstring, ADR-0007) |
 | An interrupted capture closes or marks its manifest incomplete | **Store half only** | `capture_run` is append-only — opening inserts a row, closing inserts a second row, and "not yet closed" is a derived read via `iter_open_capture_runs`, with two partial unique indexes making double-open/double-close impossible at the schema level (ADR-0011 section 5, including its dated Correction for why the table is append-only rather than update-in-place). **Not yet closed**: no capture loop or manifest writer exists to open or close a real run |
