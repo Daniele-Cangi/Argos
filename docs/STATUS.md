@@ -1065,8 +1065,17 @@ None.
 - The `sources`, `ingestion`, `store`, `projections`, `compiler`, `replay`,
   `baselines`, `resolution`, and `evaluation` packages are documented boundaries
   only; they contain no implementation yet.
-- CI has not yet run on the remote branch for this slice; the gate is verified
-  locally only, and the branch has not been pushed.
+- **CI has still never run on any ARGOS commit.** `m1-market-discovery` is now
+  pushed (10 commits, through the `price_change.v1` slice), but
+  `.github/workflows/ci.yml` triggers only on `pull_request` and on `push` to
+  `main`, so pushing a feature branch runs nothing — `gh run list` reports zero
+  workflow runs for the repository. Every quality gate recorded in this file is
+  therefore a **local** result on one machine, at one Python version (3.13,
+  against a 3.12 floor), and has never been reproduced on a clean checkout by
+  an independent runner. Opening a pull request is what would trigger it; that
+  is an owner-visible action and has not been taken. Recorded here as an
+  evidence gap rather than a task, because "the gate passes" currently means
+  less than it appears to.
 - Container immutability on `VersionedModel` is opt-in per field, not structural.
   `RunManifest` opts in; a future subclass with a bare `dict` field would not.
 - Branch coverage is unmeasured — `pytest-cov` is not installed and the thresholds
