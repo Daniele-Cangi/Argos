@@ -47,6 +47,85 @@ fan-out, still deliberately undecided; and the deliberate refusal of a
 `(frame, token)` group carrying more than one distinct hash, a shape never
 observed live.
 
+## M2 slice: the capture loop, and three decisions deferred four times
+
+`src/argos/ingestion/capture.py` (`run_capture`, `FrameSource`,
+`CaptureHealth`) plus `tests/test_capture_loop.py`. This is where the three
+decisions deliberately deferred since the REST adapter slice were finally
+made. No CLI.
+
+Quality gate: PASS — ruff, ruff format, mypy strict on 40 source files,
+**1,199 tests** (up from 1,182).
+
+**Decision 1 — `ingest_sequence` is allocated per *record produced*, not per
+candidate.** A "peek, then commit" allocator: a sequence is consumed only in
+the branch that actually writes an observation or a rejection. A `None` from
+the normalizer ("this frame was not about this token") is counted and burns
+nothing. The alternative — reserve unconditionally, skip writing — was
+rejected because it would carve permanent gaps into the ledger for every
+unsubscribed-sibling frame, which the research shows is routine traffic on
+this source, not an edge case.
+
+**Decision 2 — fan-out iterates the *configured* token set, sorted, never the
+frame's own membership.** This is the load-bearing one for M3. A frame carries
+entries for the unsubscribed binary sibling, so iterating "tokens present in
+this frame" would make sequence numbers a function of what the server happened
+to bundle, and replay determinism would inherit that dependence on connection
+topology. Verified directly: the same frames produce identical sequences with
+and without the sibling subscribed.
+
+**Decision 3 — there is no new manifest concept.** `RunManifest`
+(`run_manifest.v2`) plus the store's append-only `capture_run` rows already are
+the manifest. `run_capture` writes no `SourceProvenanceV1` of its own; every
+one it touches is already embedded inside a stored envelope or rejection. This
+honours the pre-M2 constraint that an M2 capture manifest must **not** embed
+one provenance record per ingested event — by construction, not by added logic.
+
+**Verified independently of the slice's own tests**, driving the real recorded
+capture through a hand-written source:
+
+- 34 real frames, both tokens subscribed → 68 accepted observations; one token
+  → 34. Fan-out is exactly the configured set.
+- Sequences span **both** ledgers with **no gaps and no reuse**: exactly
+  1..38 across deliveries and rejections combined.
+- Two identical runs produce identical sequences and identical health counters.
+- Re-opening the same `capture_run_id` is refused with `StorageError`, so a
+  restarted loop cannot silently restart the sequence and collide — the
+  "reconnect does not reset ingest sequence" property is structural, not a
+  check that could be forgotten.
+- A redelivered burst produces duplicates counted and zero extra observation
+  rows.
+- The four `book` events in the capture are counted as
+  `UNKNOWN_EVENT_TYPE` rejections rather than dropped: no payload model is
+  wired for them here, and invariant 14 wants that visible rather than
+  convenient.
+
+**A backlog item I wrote was wrong, and the agent was asked to challenge it
+rather than satisfy it.** `docs/BACKLOG.md` said this slice must close the
+transport's "oversized frame is counted but produces no rejection-ledger row"
+gap. It cannot be closed as written, and the reasoning is now recorded rather
+than the item quietly dropped: `WebsocketsConnector` passes the same
+`MAX_FRAME_BYTES` to `websockets.connect` that `_classify` later checks, and
+the library enforces `max_size` during frame reassembly — it raises out of
+`recv()` before an oversized payload is ever assembled into a Python string. No
+bytes, and therefore no `raw_payload_sha256`, ever reach ARGOS.
+`RejectedObservationV1.raw_payload_sha256` is required, so writing a row would
+mean **inventing a hash for content ARGOS never received** — fabricated
+evidence, against core invariant 7. The counter is the honest maximum. A
+consequence worth naming: with the shipped connector, `_classify`'s own size
+check is unreachable, and it is defence-in-depth only for an injected connector
+with a larger or unenforced `max_size`.
+
+**A known limitation the implementing agent raised unprompted, now measured
+rather than assumed.** `run_capture` calls the store's synchronous SQLite
+methods directly from async code, with no thread offload, so each write blocks
+the event loop — including the transport's independent heartbeat task.
+Measured on a real ext4 database: median **0.23 ms** per
+`append_observation`, maximum **0.49 ms**, which is 0.005% of the 10-second
+heartbeat interval. Real as a class, not material at this scale; filed with the
+number so a future slice that batches, or runs on a slower device, has the
+baseline rather than an opinion.
+
 ## M2 slice: public market WebSocket transport, and two adversarial findings
 
 Two pieces landed together: the transport adapter
@@ -925,11 +1004,11 @@ no criterion is marked closed on the strength of a payload model alone.
 |---|---|---|
 | Duplicate source event does not create a second accepted observation | **End-to-end evidence; no capture loop runs it against live traffic yet** | `_observation_identity` collides an identical redelivery onto one `observation_id`, on the real recorded CLOB payload as well as a constructed one (`docs/research/m2-clob-rest-book.md`, "Consequence for `ObservationEnvelopeV1`"). `SQLiteEventStore.append_observation` enforces it at the store: a redelivery inserts zero second `observation` rows and exactly one `delivery` row with `disposition="duplicate"`, both writes inside one `BEGIN IMMEDIATE` transaction (`tests/test_event_store.py`, `tests/test_event_store_adversarial.py`, including real multi-connection race tests). The CLOB REST adapter slice closes the remaining gap end to end: a real recorded response fed through `ClobClient` → `normalize_clob_book` → `SQLiteEventStore` produces one observation row and two delivery rows (`accepted=1, duplicate=1`) for a redelivery. **Not yet closed**: no capture loop runs either adapter continuously against live traffic |
 | Zero-size level update is represented as removal | **End-to-end evidence into the store; no transport receives a live frame yet** | Represented structurally, not by convention: `PriceLevelChangeKind.REMOVE` holds **if and only if** `size == 0`, validated on every construction path including replay and `from_record`, so a record cannot claim one and carry the other (`src/argos/domain/pricechange.py`). Both genuine zero-size entries in the recorded live capture now travel the full path — `normalize_clob_price_change` -> `build_observation_envelope` -> `SQLiteEventStore` — and land as `REMOVE` in a stored payload (`0.17` bid side, `0.83` ask side on the sibling), verified independently of the slice's own tests. `OrderBookSnapshotV1` separately implements the REST-snapshot side, where the same value is deliberately a counted anomaly rather than a removal. **Not yet closed**: no WebSocket transport exists, so the frames are replayed from a recorded capture rather than received from a socket |
-| Reconnect does not reset ingest sequence or silently lose manifest state | Open | No WebSocket adapter and no capture manifest exist yet |
+| Reconnect does not reset ingest sequence or silently lose manifest state | **Closed structurally; never exercised against a live socket** | `run_capture` owns the counter for the whole run, so a reconnect inside the transport is transparent to it — the transport keeps yielding from one async generator. Restarting the loop cannot silently restart the sequence either: re-opening the same `capture_run_id` is refused with `StorageError` by the store's partial unique index, so the property is structural rather than a check that could be forgotten. Verified independently of the slice's own tests, on the real recorded capture: sequences span both the delivery and rejection ledgers with no gaps and no reuse (exactly 1..38), and are identical across two runs. Manifest state cannot be lost silently: `capture_run` is append-only and a run with no closing row is a queryable signal. **Not yet closed**: no capture has run against a live socket, and a real network reconnect has never been exercised — the research note still records reconnect behaviour as UNVERIFIED |
 | Invalid messages enter a rejection ledger with reason and raw hash | **End-to-end evidence; no capture loop runs it against live traffic yet** | `RejectedObservationV1` carries `reason: RejectionReason`, `detail`, and `raw_payload_sha256`; `build_rejected_observation` derives a deterministic `rejection_id` so redelivery of the same invalid bytes for the same reason collapses rather than growing the ledger unbounded. `SQLiteEventStore.append_rejection`/`iter_rejections` persist it, keyed `(capture_run_id, ingest_sequence)` rather than on `rejection_id` alone, so two genuinely different malformed entries in one frame that happen to share one `rejection_id` (ADR-0011 section 7) both survive instead of one silently overwriting the other. The CLOB REST adapter slice closes the remaining gap end to end: a malformed real-shaped body fed through `normalize_clob_book` produces a `RejectedObservationV1` written to the ledger (`tests/test_clob_book_ingestion.py`). The WebSocket source now has the same evidence on its own path: `normalize_clob_price_change` turns every `ValueError` the domain raises — plus its own `entry_hash` length and display-control checks, deliberately inside its own `try` — into a `RejectedObservationV1` rather than an escaping exception, so a malformed real-shaped frame reaches the ledger with a reason and the raw hash (`tests/test_clob_price_change_ingestion.py`). **Not yet closed**: no capture loop runs either adapter continuously against live traffic |
 | Book snapshot plus deltas reconstruct a tested projection | Open | Both input payload models now exist — `OrderBookSnapshotV1` (snapshot) and `PriceChangeV1` (delta) — and the research note established that a delta's `hash` is the hash of the *resulting* book state and reconciles exactly with REST for the same state, which is what a projection would verify against. **Not yet closed**: no projection module and no WebSocket adapter exist |
 | No authenticated/user channel or trading code exists | Holds | Unchanged from M0-M1; the CLOB REST adapter is read-only by construction — it sends no credentials and exposes only the public `GET /book` endpoint (`src/argos/sources/clob.py` module docstring, ADR-0007) |
-| An interrupted capture closes or marks its manifest incomplete | **Store half only** | `capture_run` is append-only — opening inserts a row, closing inserts a second row, and "not yet closed" is a derived read via `iter_open_capture_runs`, with two partial unique indexes making double-open/double-close impossible at the schema level (ADR-0011 section 5, including its dated Correction for why the table is append-only rather than update-in-place). **Not yet closed**: no capture loop or manifest writer exists to open or close a real run |
+| An interrupted capture closes or marks its manifest incomplete | **Both halves now exist; never exercised against a live socket** | Store half (unchanged): `capture_run` is append-only, closing inserts a second row, and "not yet closed" is a derived read via `iter_open_capture_runs`, with partial unique indexes making double-open/double-close impossible (ADR-0011 section 5). Loop half (new): `run_capture` opens the run before consuming a frame and always closes it — `COMPLETED` on clean exhaustion, `FAILED` recorded and then re-raised on an exception. A process killed outright runs neither branch and writes no closing row, which `iter_open_capture_runs` reports as interrupted — that absence is the intended signal, not a gap, since a dying process cannot be trusted to describe its own death. **Not yet closed**: no capture loop has run against live traffic, so no real interruption has ever been observed |
 
 ## Known limitations from the M2 observation-identity slice
 

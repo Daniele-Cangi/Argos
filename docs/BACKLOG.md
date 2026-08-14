@@ -193,15 +193,22 @@ milestone named, because later code would inherit the defect.
       subscribe, `PING`/`PONG` heartbeat, reconnect with bounded seeded
       backoff, bounded blocking frame buffer, health counters. Yields raw
       frames only; no decoding, no sequence allocation, no manifest.
-- [ ] **Two gaps the transport states rather than hides, for the capture-loop
-      slice.** An oversized frame (above the explicit 1 MiB `max_size`) is
-      counted on the health record but produces no rejection-ledger row,
-      because no ingestion layer has seen those bytes and the transport has no
-      `capture_run_id`/`ingest_sequence` to write one under — the "counted"
-      half of `.claude/rules/data-integrity.md` without the "reasoned" half.
-      And a reconnect may lose messages undetectably: this channel has no
-      sequence number, confirmed absent by observation, so a gap is not
-      detectable from the channel alone. Nothing claims gap-freedom.
+- [x] **Two gaps the transport stated rather than hid. One is closed; the
+      other was my own item, written wrong, and is corrected here rather than
+      quietly dropped.** The oversized-frame gap ("counted but no
+      rejection-ledger row") is **not closable**: `WebsocketsConnector` passes
+      the same `MAX_FRAME_BYTES` to `websockets.connect` that `_classify` later
+      checks, and the library enforces `max_size` during frame reassembly,
+      raising out of `recv()` before an oversized payload is ever assembled
+      into a string. No bytes, therefore no `raw_payload_sha256`, ever reach
+      ARGOS, and `RejectedObservationV1.raw_payload_sha256` is required — a row
+      would have to invent a hash for content never received, which is
+      fabricated evidence against core invariant 7. The counter is the honest
+      maximum. Consequence to remember: with the shipped connector `_classify`'s
+      size check is unreachable, and is defence-in-depth only for an injected
+      connector with a larger or unenforced `max_size`. The reconnect-gap half
+      stands unchanged and unclosable from this channel: it has no sequence
+      number, confirmed absent by observation.
 - [x] Canonical market-data payloads (order book, price change — typed
       `VersionedModel`s that `build_observation_envelope` takes as `payload`).
       Closed for both message kinds M2 needs: `OrderBookSnapshotV1`
