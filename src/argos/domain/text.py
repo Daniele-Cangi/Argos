@@ -58,7 +58,34 @@ def is_display_control(character: str) -> bool:
     if character in "\n\t":
         return False
     codepoint = ord(character)
-    if unicodedata.category(character) == "Cc" or 0x7F <= codepoint <= 0x9F:
+    category = unicodedata.category(character)
+    if category == "Cc" or 0x7F <= codepoint <= 0x9F:
+        return True
+    # Lone UTF-16 surrogates (category ``Cs``). Not a *display* problem — this is
+    # text that cannot be encoded at all. `str.encode()` defaults to strict
+    # UTF-8 and raises `UnicodeEncodeError` on an unpaired surrogate, and
+    # Python's `json` module decodes the wire escape `"\ud800"` into exactly
+    # that `str` without checking pairing, so an ordinary-looking JSON body
+    # reaches ARGOS carrying one.
+    #
+    # Found by independent adversarial testing, and it was the sharpest
+    # remaining instance of the recurring "escapes the taxonomy, therefore no
+    # ledger entry" class: `Cs` was never inspected here, so
+    # `is_clean_identifier` called a lone surrogate *clean*, it passed both the
+    # ingestion check and `ObservationEnvelopeV1._validate_identifier`, and then
+    # `_observation_identity` -> `_digest` did `"|".join(parts).encode()` and
+    # raised `UnicodeEncodeError` — outside every `try` in the ingestion path.
+    # The frame vanished with no rejection row, on the WebSocket adapter and on
+    # the already-committed REST adapter alike.
+    #
+    # Neutralizing rather than exempting is unambiguously right here: unlike
+    # newline and tab, a lone surrogate is never legitimate content in any
+    # writing system. Handling it in this one predicate closes both paths at
+    # once — identifiers refuse it via `is_clean_identifier`, and prose replaces
+    # it via `neutralize_untrusted_text`, which is what keeps a rejection record
+    # writable instead of raising while trying to describe the very input that
+    # cannot be encoded.
+    if category == "Cs":
         return True
     # LRE/RLE/PDF/LRO/RLO, LRI/RLI/FSI/PDI, and the LRM/RLM/ALM marks. U+061C ALM
     # was missing from an earlier draft while the docstring claimed the mark set:
@@ -133,6 +160,38 @@ def is_clean_identifier(value: str) -> bool:
     return not any(character in "\n\t\r" or is_display_control(character) for character in value)
 
 
+def neutralize_identifier_and_bound(value: str, max_length: int) -> str:
+    """Neutralize an *identifier* for storage, where refusing is not an option.
+
+    :func:`is_clean_identifier` refuses a hostile identifier outright, which is
+    right for an accepted observation. The rejection ledger cannot do that: the
+    whole point of a rejection record is to describe an input that was already
+    judged unacceptable, so refusing its identifiers would mean the input
+    vanishes with no ledger entry — the silent drop core invariant 14 exists to
+    prevent. Those fields are therefore neutralized rather than refused.
+
+    They were, however, neutralized with the *prose* rules, and prose
+    deliberately exempts newline and tab (a market description legitimately
+    contains them, and the M1 defence there is the sanitizer **plus**
+    block-quoting). An identifier has no such exemption. The consequence was
+    reproduced by independent adversarial testing: a newline in the source's
+    ``market`` field survived into a durably stored ``condition_id`` on a
+    rejection row, carrying the payload ``"line1\\nline2: review status:
+    human_reviewed"`` — the original M1 audit-forgery attack, on a stored
+    identifier, waiting for the first renderer that prints a ledger row without
+    block-quoting it.
+
+    This applies the identifier rule (:func:`is_clean_identifier`'s, including
+    ``\\n``/``\\t``/``\\r``) as a *replacement* rather than a refusal, then
+    bounds the result exactly as :func:`neutralize_and_bound` does.
+    """
+    neutralized = "".join(
+        REPLACEMENT if character in "\n\t\r" or is_display_control(character) else character
+        for character in value
+    )
+    return _bound(neutralized, max_length)
+
+
 def neutralize_and_bound(text: str, max_length: int) -> str:
     """Neutralize ``text`` and bound its stored length.
 
@@ -141,7 +200,11 @@ def neutralize_and_bound(text: str, max_length: int) -> str:
     be able to grow a ledger record without limit. The suffix reports the true
     source length so the truncation is visible rather than silent.
     """
-    neutralized = neutralize_untrusted_text(text)
+    return _bound(neutralize_untrusted_text(text), max_length)
+
+
+def _bound(neutralized: str, max_length: int) -> str:
+    """Bound already-neutralized text, keeping the truncation visible and injective."""
     if len(neutralized) <= max_length:
         return neutralized
     # The suffix carries a digest of the full neutralized text, not only its

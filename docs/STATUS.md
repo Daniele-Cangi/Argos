@@ -47,6 +47,98 @@ fan-out, still deliberately undecided; and the deliberate refusal of a
 `(frame, token)` group carrying more than one distinct hash, a shape never
 observed live.
 
+## M2 slice: public market WebSocket transport, and two adversarial findings
+
+Two pieces landed together: the transport adapter
+(`src/argos/sources/clob_ws.py`, `tests/test_clob_ws.py`) and an independent
+adversarial review of the WebSocket ingestion step
+(`tests/test_clob_price_change_ingestion_adversarial.py`), whose findings are
+fixed here in `src/argos/domain/text.py` and
+`src/argos/domain/observation.py`.
+
+Quality gate: PASS — ruff, ruff format, mypy strict on 39 source files,
+**1,182 tests** (up from 1,101).
+
+### The transport
+
+`ClobMarketWsClient` connects to the public, unauthenticated market channel,
+subscribes with `{"assets_ids": [...], "type": "market"}`, sends the plain-text
+`PING` heartbeat every 10 s and consumes the `PONG` reply, and yields raw
+frames. All of it follows the REST sibling's shape: injected `Clock` and
+`Pacer` (ADR-0009), an adapter-owned seeded `random.Random`, a frozen health
+record, no wall clock. Verified independently rather than taken on trust:
+backoff is reproducible across two clients sharing a seed, and its maximum
+across 200 seeds × 12 attempts is exactly `MAX_BACKOFF_SECONDS`, so jitter
+cannot outrun the ceiling at any legal configuration. The connection is behind
+a `MarketWebSocket`/`WebSocketConnector` protocol pair, so every test drives a
+fake and no test opens a socket.
+
+**The transport decodes nothing.** It yields `MarketFrame(text, received_time,
+provenance)` and does not parse JSON, split arrays, or filter by token — core
+invariant 7 keeps raw data immutable and normalization a separate versioned
+step, which already exists in `argos.ingestion`.
+
+**Backpressure is real, not advisory.** The frame buffer is bounded at 64; when
+it fills, the receive loop blocks, so `recv()` is not called again and
+backpressure propagates to the TCP receive buffer. Frames are never dropped to
+keep up. The heartbeat runs independently, so a slow consumer does not make the
+client look dead to the source.
+
+**Two gaps stated rather than hidden.** An oversized frame (above an explicit
+1 MiB `max_size`, set rather than inherited from the library default) is
+counted on the health record but produces **no rejection-ledger row**, because
+no ingestion layer has seen those bytes and this module has no
+`capture_run_id`/`ingest_sequence` to write one under — the "counted" half of
+`.claude/rules/data-integrity.md` without the "reasoned" half, left for the
+capture-loop slice. And a reconnect **may lose messages**: this channel has no
+sequence number (confirmed absent by observation), so a gap across a reconnect
+is not detectable from the channel alone. Nothing in the module claims
+gap-freedom.
+
+This slice does **not** close "reconnect does not reset ingest sequence or
+silently lose manifest state": sequence allocation and the manifest are the
+capture-loop slice, and neither exists.
+
+### Adversarial findings, both fixed
+
+**HIGH — a lone UTF-16 surrogate escaped the taxonomy with no ledger entry, on
+both adapters.** `is_display_control` never inspected Unicode category `Cs`, so
+`is_clean_identifier` called a lone surrogate *clean*. It passed the ingestion
+check and `ObservationEnvelopeV1._validate_identifier`, then reached
+`_observation_identity` → `_digest`, whose `"|".join(parts).encode()` defaults
+to strict UTF-8 and raises `UnicodeEncodeError` on an unpaired surrogate —
+outside every `try` in the ingestion path. Python's `json` decodes the wire
+escape `"\ud800"` into exactly that string without checking pairing, so an
+ordinary-looking body reaches ARGOS carrying one, with an entirely honest
+`byte_length`. Reproduced on the WebSocket adapter **and on the
+already-committed REST adapter**; both now return a rejection. This is the
+fourth distinct instance of the "escapes the ARGOS error taxonomy, therefore no
+ledger entry" class in M2.
+
+**MEDIUM — the M1 audit-forgery attack, on a durably stored identifier.** The
+rejection ledger neutralizes identifiers rather than refusing them (refusing
+would mean the rejection itself could not be written), but it did so with the
+*prose* rules, and prose deliberately exempts newline and tab. So a newline in
+the source's `market` field survived into a stored `condition_id`, carrying
+`"line1\nline2: review status: human_reviewed"` — the original M1 attack,
+waiting for the first renderer that prints a ledger row without block-quoting.
+A new `neutralize_identifier_and_bound` applies the identifier rule as a
+*replacement* rather than a refusal.
+
+**One reported finding was rejected on the merits.** A hash spelled in
+Arabic-Indic digits was filed as a fourth hostile shape; the code is right and
+the expectation was wrong. Those are category `Nd` — ordinary text that cannot
+move a cursor, reorder a line, or hide itself — so refusing them would mean
+enforcing a *format* on `hash`, which ARGOS deliberately does not do on either
+adapter: the research observed 40 hex characters every time but never
+established it as a source guarantee, and enforcing it would turn a legitimate
+future format change into a total rejection storm. Contrast `token_id`, where a
+format **is** enforced, because the research did establish one there. The rule
+is "enforce what the evidence supports", not "enforce what looks tidy". The
+test now records the decision — its original docstring claimed all four shapes
+were "correctly caught" while its own assertion disproved it, the
+claim-outruns-assertion pattern again.
+
 ## M2 slice: pre-WebSocket decimal and hash hardening
 
 Two defects reported by the owner against `a9b9802`, both **reproduced before

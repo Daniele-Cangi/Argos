@@ -188,7 +188,20 @@ milestone named, because later code would inherit the defect.
       `ClobClient` → `normalize_clob_book` → `SQLiteEventStore` end to end.
       `ingest_sequence` allocation, a capture manifest, and a capture CLI
       remain open, listed separately below.
-- [ ] WebSocket lifecycle and subscriptions.
+- [x] WebSocket lifecycle and subscriptions. Closed by
+      `src/argos/sources/clob_ws.py` (`ClobMarketWsClient`): connect,
+      subscribe, `PING`/`PONG` heartbeat, reconnect with bounded seeded
+      backoff, bounded blocking frame buffer, health counters. Yields raw
+      frames only; no decoding, no sequence allocation, no manifest.
+- [ ] **Two gaps the transport states rather than hides, for the capture-loop
+      slice.** An oversized frame (above the explicit 1 MiB `max_size`) is
+      counted on the health record but produces no rejection-ledger row,
+      because no ingestion layer has seen those bytes and the transport has no
+      `capture_run_id`/`ingest_sequence` to write one under — the "counted"
+      half of `.claude/rules/data-integrity.md` without the "reasoned" half.
+      And a reconnect may lose messages undetectably: this channel has no
+      sequence number, confirmed absent by observation, so a gap is not
+      detectable from the channel alone. Nothing claims gap-freedom.
 - [x] Canonical market-data payloads (order book, price change — typed
       `VersionedModel`s that `build_observation_envelope` takes as `payload`).
       Closed for both message kinds M2 needs: `OrderBookSnapshotV1`

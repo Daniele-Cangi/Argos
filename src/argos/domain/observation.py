@@ -36,7 +36,11 @@ from pydantic import Field, field_serializer, field_validator, model_validator
 
 from argos.clock import ensure_utc
 from argos.domain.provenance import SHA256_LENGTH, SourceProvenanceV1
-from argos.domain.text import is_clean_identifier, neutralize_and_bound
+from argos.domain.text import (
+    is_clean_identifier,
+    neutralize_and_bound,
+    neutralize_identifier_and_bound,
+)
 from argos.domain.versioning import SCHEMA_VERSION_KEY, VersionedModel, freeze, thaw
 from argos.errors import ContractViolationError, RejectionReason, SchemaVersionError
 
@@ -360,7 +364,7 @@ class RejectedObservationV1(VersionedModel):
         """
         if value is None:
             return None
-        return neutralize_and_bound(value, MAX_IDENTIFIER_LENGTH)
+        return neutralize_identifier_and_bound(value, MAX_IDENTIFIER_LENGTH)
 
     @field_validator("received_time", "rejected_at")
     @classmethod
@@ -727,7 +731,7 @@ def _canonical_payload(payload: VersionedModel) -> dict[str, Any]:
 def _bound_identifier(value: str | None) -> str | None:
     """Apply the same neutralization the ledger record stores, so the identity is
     recomputable from the stored value rather than from the builder's argument."""
-    return None if value is None else neutralize_and_bound(value, MAX_IDENTIFIER_LENGTH)
+    return None if value is None else neutralize_identifier_and_bound(value, MAX_IDENTIFIER_LENGTH)
 
 
 def recompute_rejection_id(rejection: RejectedObservationV1) -> str:
