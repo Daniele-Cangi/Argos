@@ -49,6 +49,47 @@ fan-out, still deliberately undecided; and the deliberate refusal of a
 `(frame, token)` group carrying more than one distinct hash, a shape never
 observed live.
 
+## M2 closure: reviews did not deliver, and what was verified instead
+
+**Both closure reviews terminated without a verdict.** The architecture and
+security review agents each ran to completion and stopped without delivering a
+report — the same failure mode that has now consumed seven of nine agent runs in
+this milestone. **M2 therefore cannot be declared closed on independent review**,
+and this file does not claim it is. What follows is what I verified directly,
+which is evidence but explicitly *not* a substitute for an independent reviewer.
+
+**The raw-payload finding above came out of doing the architecture check by
+hand** after its agent went silent — a capture that discards the bytes it hashes
+is exactly the kind of thing a review exists to catch, and it was caught only
+because the silence was treated as "nothing verified" rather than "nothing
+found".
+
+**Targeted escape hunt, run directly.** M2 found the same class five times: an
+exception escaping the ARGOS error taxonomy, so a hostile input produced no
+rejection-ledger entry. I probed for a sixth: **27 hostile values** — lone UTF-16
+surrogates, NUL, OSC 52, newline, tab, CR, RLO, BOM, Unicode tag characters,
+interlinear annotation, ALM, a 300-character string, empty string, `-0`,
+`1E+1000000`, `NaN`, `Infinity`, a 600-character decimal, and the non-string
+types `None`/`int`/`list`/`dict`/`bool`/`float`/`nan` — across **18 field
+positions** on all three normalizers (`price_change`: hash, price, size, side,
+best_bid, market, timestamp, asset_id, capture_run_id; `ws_book`: hash, bids,
+level price, tick_size, market; `rest_book`: hash, tick_size, neg_risk,
+last_trade_price). **486 probes, zero escapes** — every one returned a
+`ValueError`/`ArgosError`, i.e. a counted rejection. The sixth instance is not
+where the previous five were.
+
+**A discipline note worth keeping.** The first run of that harness reported that
+*every* input escaped as `TypeError`, on every field, identically — including
+benign ones. A uniform result across inputs that should behave differently is
+the signature of a broken instrument, not a finding; the bug was in the harness
+(`**kwargs` swallowing the builder). Reporting it would have been a fabricated
+security finding, which is worse than none.
+
+**Still open before M2 can close**: an architecture verdict, a security verdict,
+and the fact that **CI has never run on any commit** — `.github/workflows/ci.yml`
+triggers only on `pull_request` and pushes to `main`, so every gate recorded in
+this file is a local result on one machine at one Python version.
+
 ## M2 closure finding: captures were discarding the raw bytes
 
 Found while verifying M2 for closure, after the architecture review agent
