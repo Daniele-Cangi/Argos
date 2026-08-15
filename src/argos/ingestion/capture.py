@@ -146,6 +146,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
+from pathlib import Path
 from typing import Any, Final, Protocol
 
 import orjson
@@ -166,6 +167,7 @@ from argos.ingestion.clob_price_change import (
 from argos.ingestion.clob_ws_book import CLOB_WS_BOOK_EVENT_TYPE, normalize_clob_ws_book
 from argos.sources.clob_ws import MarketFrame
 from argos.store.event_store import CompletionStatus, Disposition, EventStore
+from argos.store.raw_archive import write_raw_payload
 
 __all__ = ["CaptureHealth", "FrameSource", "run_capture"]
 
@@ -233,6 +235,17 @@ class _CaptureState:
     next_sequence: int = 1
     health: CaptureHealth = field(default_factory=CaptureHealth)
 
+    current_raw_location: str | None = None
+    """Where the frame currently being consumed was archived, or ``None`` when
+    raw archiving is switched off.
+
+    Set once per frame, before fan-out, so every record derived from one frame
+    points at the same archived bytes — which is the truth: they all came from
+    those bytes. Carried on the state object rather than threaded through five
+    call signatures because it has exactly the same lifetime and scope as the
+    sequence counter beside it, and splitting one per-frame fact across two
+    mechanisms is how they drift apart."""
+
     def peek_sequence(self) -> int:
         """Return the sequence a record would get, without consuming it."""
         return self.next_sequence
@@ -257,6 +270,7 @@ async def run_capture(
     clock: Clock,
     capture_run_id: str,
     subscribed_token_ids: Iterable[str],
+    raw_archive_dir: Path | None = None,
     clock_skew_tolerance: timedelta = DEFAULT_CLOCK_SKEW_TOLERANCE,
 ) -> CaptureHealth:
     """Consume `frame_source` into `store` under one `capture_run`, until exhausted or failed.
@@ -283,6 +297,26 @@ async def run_capture(
     try:
         async for frame in frame_source.frames():
             state.count(frames_consumed=1)
+            # Archived once per frame, before anything is normalized, because
+            # CLAUDE.md's engineering rules require storing the raw payload
+            # *plus* the normalized one, and core invariant 7 says normalization
+            # never replaces the source payload. Until this existed, a live
+            # capture kept `raw_payload_sha256` and threw the bytes away — a
+            # hash of something nobody had, an unverifiable claim, and no way to
+            # re-normalize a historical capture under a corrected parser, which
+            # is the correction mechanism ADR-0004 requires.
+            #
+            # A failure here is deliberately fatal to the run rather than
+            # counted: continuing would keep producing records that silently
+            # cannot be reproduced, which is worse than stopping loudly.
+            if raw_archive_dir is not None:
+                state.current_raw_location = str(
+                    write_raw_payload(
+                        raw_archive_dir,
+                        raw=frame.text.encode("utf-8"),
+                        provenance=frame.provenance,
+                    )
+                )
             _consume_frame(
                 frame,
                 state=state,
@@ -478,6 +512,7 @@ def _consume_price_change_for_token(
     result = normalize_clob_price_change(
         event=event,
         provenance=frame.provenance,
+        raw_payload_location=state.current_raw_location,
         requested_token_id=token_id,
         received_time=frame.received_time,
         rejected_at=clock.now(),
@@ -527,6 +562,7 @@ def _consume_ws_book_for_token(
     result = normalize_clob_ws_book(
         event=event,
         provenance=frame.provenance,
+        raw_payload_location=state.current_raw_location,
         requested_token_id=token_id,
         received_time=frame.received_time,
         rejected_at=clock.now(),

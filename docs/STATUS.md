@@ -49,6 +49,53 @@ fan-out, still deliberately undecided; and the deliberate refusal of a
 `(frame, token)` group carrying more than one distinct hash, a shape never
 observed live.
 
+## M2 closure finding: captures were discarding the raw bytes
+
+Found while verifying M2 for closure, after the architecture review agent
+terminated without a report and the check was done by hand instead. **Both
+live captures taken so far stored `raw_payload_sha256` for every observation
+and kept none of the bytes it hashes.** `raw_payload_location` was `None` on
+every record, and no raw payload file existed anywhere on disk.
+
+This breaks an explicit engineering rule in `CLAUDE.md` — *"Store raw payload
+plus normalized payload and schema/compiler version"* — and hollows out core
+invariant 7: normalization is supposed to *never replace* the source payload,
+but the source payload was not retained at all. Three consequences, none
+cosmetic:
+
+- the stored hash was an **unverifiable claim**: a digest of bytes nobody had;
+- a historical capture could **never be re-normalized under a corrected
+  parser**, which is precisely the correction mechanism ADR-0004 requires;
+- the milestone is named "CLOB capture and immutable event store", and its
+  captures were not reproducible.
+
+I treated this as blocking for M2 closure rather than filing it.
+
+**Fixed**: `run_capture` takes a `raw_archive_dir` and archives each frame once,
+before fan-out, so every record derived from one frame points at the same
+archived bytes — which is the truth. The CLI archives beside the database by
+default (`--no-raw-archive` exists, and its help text says outright that
+disabling it produces a capture that cannot be re-normalized and whose stored
+hash can never be checked). An archive failure is deliberately fatal to the run
+rather than counted: continuing would keep minting records that silently cannot
+be reproduced.
+
+**Verified on a third live capture, 40 seconds, 2026-08-15**: 135 observations,
+**135 with an archive location, and 135/135 stored `raw_payload_sha256` values
+recomputed from the archived bytes and matched**. The hash is now a checkable
+fact rather than an assertion. Cost measured rather than guessed: 131,948 bytes
+of archive for 40 seconds on one active token, roughly **285 MB/day/token**
+uncompressed — content-addressed, so a redelivered frame costs nothing extra.
+
+**A research finding this capture produced for free.** One event was rejected as
+`unknown_event_type` with the detail *"no payload model is wired for event_type
+'last_trade_price' yet"*. `docs/research/m2-clob-websocket.md` lists
+`last_trade_price` as **never observed** — no such message arrived in its ~85
+seconds of combined capture, so its field shape was documentation-only. It does
+arrive on live traffic. The research note's UNVERIFIED list is now one item
+shorter, and a `last_trade_price` payload model is a real M4 need (that document
+already flags it as the M4-relevant event type), filed rather than built here.
+
 ## M2 slice: the WebSocket `book` payload — a stored capture becomes self-sufficient
 
 `src/argos/domain/wsbook.py` (`WsBookSnapshotV1`, `ws_book_snapshot.v1`) and

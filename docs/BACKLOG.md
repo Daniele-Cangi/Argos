@@ -323,6 +323,16 @@ numbers so the next slice inherits evidence rather than a reminder.
       on live traffic too — the second live capture stored both payload kinds
       with zero rejections. It is a distinct schema from `OrderBookSnapshotV1`
       because the wire schemas genuinely differ.
+- [ ] A `last_trade_price` payload model. Observed live on 2026-08-15 during a
+      40-second capture, which is new: `docs/research/m2-clob-websocket.md`
+      records it as never observed in ~85 seconds and therefore
+      documentation-only. It is rejected as `unknown_event_type` today. That
+      document already names it as the M4-relevant event type, so this belongs
+      with the M4 baseline work rather than M2.
+- [ ] Retention and compaction for the raw archive. Measured on live traffic:
+      131,948 bytes for 40 seconds on one active token, roughly 285 MB/day/token
+      uncompressed. Content-addressed, so redelivered frames cost nothing, but
+      nothing prunes.
 - [ ] Sanitized sample capture fixture, committed only if size and licensing
       are appropriate.
 

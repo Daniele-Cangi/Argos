@@ -368,6 +368,17 @@ def capture_market(
         None, help="Stop the capture after this many raw frames have been consumed."
     ),
     db: Path | None = _DB_OPTION,
+    raw_archive: bool = typer.Option(
+        True,
+        "--raw-archive/--no-raw-archive",
+        help=(
+            "Archive every raw frame beside the database. On by default: "
+            "CLAUDE.md requires storing the raw payload alongside the normalized "
+            "one. Disabling it produces a capture that CANNOT be re-normalized "
+            "under a corrected parser and whose stored raw_payload_sha256 can "
+            "never be checked against anything."
+        ),
+    ),
     capture_run_id: str | None = typer.Option(
         None, help="Override the generated capture_run_id. Mainly for tests and resumption."
     ),
@@ -420,6 +431,12 @@ def capture_market(
 
     run_id = capture_run_id or _default_capture_run_id(clock)
     db_path = db if db is not None else settings.data_dir / "capture" / "events.sqlite3"
+    # Beside the database, not inside the data dir root: a capture's raw frames
+    # and its event store are one artifact and should move or be deleted
+    # together. Content-addressed by hash inside `write_raw_payload`, so a
+    # redelivered frame -- which really happens, one arrived in a 60-second live
+    # capture -- costs nothing extra.
+    raw_archive_dir = db_path.parent / "raw" if raw_archive else None
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     store = _open_store_or_exit(db_path)
@@ -437,6 +454,7 @@ def capture_market(
                 max_seconds=max_seconds,
             )
             return await run_capture(
+                raw_archive_dir=raw_archive_dir,
                 frame_source=bounded,
                 store=store,
                 clock=clock,
