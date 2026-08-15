@@ -85,10 +85,9 @@ the signature of a broken instrument, not a finding; the bug was in the harness
 (`**kwargs` swallowing the builder). Reporting it would have been a fabricated
 security finding, which is worse than none.
 
-**Still open before M2 can close**: an architecture verdict, a security verdict,
-and the fact that **CI has never run on any commit** — `.github/workflows/ci.yml`
-triggers only on `pull_request` and pushes to `main`, so every gate recorded in
-this file is a local result on one machine at one Python version.
+**Still open before M2 can close**: an architecture verdict and a security
+verdict. The CI gap is closed — see "Current state" above: pull request #2 ran
+the gate on Python 3.12 from a clean checkout and passed.
 
 ## M2 closure finding: captures were discarding the raw bytes
 
@@ -1670,17 +1669,16 @@ None.
 - The `sources`, `ingestion`, `store`, `projections`, `compiler`, `replay`,
   `baselines`, `resolution`, and `evaluation` packages are documented boundaries
   only; they contain no implementation yet.
-- **CI has still never run on any ARGOS commit.** `m1-market-discovery` is now
-  pushed (10 commits, through the `price_change.v1` slice), but
-  `.github/workflows/ci.yml` triggers only on `pull_request` and on `push` to
-  `main`, so pushing a feature branch runs nothing — `gh run list` reports zero
-  workflow runs for the repository. Every quality gate recorded in this file is
-  therefore a **local** result on one machine, at one Python version (3.13,
-  against a 3.12 floor), and has never been reproduced on a clean checkout by
-  an independent runner. Opening a pull request is what would trigger it; that
-  is an owner-visible action and has not been taken. Recorded here as an
-  evidence gap rather than a task, because "the gate passes" currently means
-  less than it appears to.
+- **CI ran for the first time on 2026-08-15 and passed**, on pull request #2
+  (`m1-market-discovery` -> `main`, 34 commits): ruff, ruff format, mypy strict
+  and **1,316 tests in 27.60 s**, green at the first attempt. Two things this
+  settles that no local run could. It ran on **Python 3.12.13** — the declared
+  floor in `pyproject.toml`, never previously executed anywhere, while every
+  local gate had run on 3.13. And it ran from a clean checkout with
+  `uv sync --all-groups`, which is M0's own first exit criterion and had until
+  now been verified only on this machine. Every gate recorded in this file
+  before that date remains a single-machine, single-version result; from here
+  they are reproduced independently.
 - Container immutability on `VersionedModel` is opt-in per field, not structural.
   `RunManifest` opts in; a future subclass with a bare `dict` field would not.
 - Branch coverage is unmeasured — `pytest-cov` is not installed and the thresholds
