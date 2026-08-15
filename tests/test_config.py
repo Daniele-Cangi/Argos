@@ -135,7 +135,7 @@ def test_manifest_round_trips_with_its_schema_version() -> None:
         settings=Settings(), clock=ReplayClock(START), run_id="run-1", mode=RunMode.REPLAY
     )
     record = manifest.to_record()
-    assert record["schema_version"] == "run_manifest.v2"
+    assert record["schema_version"] == "run_manifest.v3"
     assert RunManifest.from_record(record) == manifest
 
 

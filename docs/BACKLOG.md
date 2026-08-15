@@ -312,7 +312,20 @@ numbers so the next slice inherits evidence rather than a reminder.
 - [x] Book projection (snapshot plus deltas). Closed by
       `src/argos/projections/book.py`, verified on three real
       snapshot→deltas→snapshot transitions from the recorded live capture.
-- [ ] Capture CLI and integration fixture.
+- [x] Capture CLI. Closed by `argos capture market`; a real 45-second live
+      capture ran on 2026-08-15 (22 observations, 4 rejections, sequences
+      contiguous across both ledgers).
+- [ ] **Sharpest remaining M2 gap: a WebSocket `book` payload model.** The live
+      capture stores `price_change.v1` only — all four `book` snapshots in the
+      window became `unknown_event_type` rejections — so a stored capture is
+      **not self-sufficient for reconstruction**: the projection can replay its
+      deltas but has nothing in the same capture to seed from, and a seed must
+      currently come from a separate REST `/book` poll. It cannot reuse
+      `OrderBookSnapshotV1`: in-stream `book` events carry only `market`,
+      `asset_id`, `timestamp`, `hash`, `bids`, `asks`, omitting `tick_size`,
+      `last_trade_price`, `min_order_size` and `neg_risk`.
+- [ ] Sanitized sample capture fixture, committed only if size and licensing
+      are appropriate.
 
 ### Carried from the M2 observation-identity slice (ADR-0010)
 

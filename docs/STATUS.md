@@ -49,6 +49,75 @@ fan-out, still deliberately undecided; and the deliberate refusal of a
 `(frame, token)` group carrying more than one distinct hash, a shape never
 observed live.
 
+## M2 slice: the capture CLI, and the first live capture ARGOS has ever run
+
+`argos capture market` (`src/argos/cli.py`, `tests/test_capture_cli.py`), plus
+`RunManifest` bumped to `run_manifest.v3` with a `capture_run_id`. The last M2
+deliverable, and the first time any ARGOS code has opened a socket.
+
+Quality gate: PASS — ruff, ruff format, mypy strict on 41 source files,
+**1,249 tests** (up from 1,240).
+
+**A real capture ran against live Polymarket traffic on 2026-08-15**, 45
+seconds, two tokens discovered through the public Gamma endpoint:
+
+```
+loop_health : frames_consumed=25 events_seen=26 accepted=22 rejected=4
+              duplicate=0 decode_failures=0 not_applicable=22 unknown_event_type=4
+store_counts: accepted=22 duplicate=0 rejected=4
+```
+
+The loop's own counters and the store's independently derived counts **agree** —
+which is why the command prints both rather than one. Verified directly against
+the resulting database: 22 observation rows, 22 `accepted_new` deliveries, 4
+`unknown_event_type` rejections, two `capture_run` rows (open plus close), and
+ingest sequences **contiguous 1..26 across both ledgers with no gaps and no
+reuse** — the property previously proven only on replayed frames, now on live
+traffic. The manifest carries `run_manifest.v3`, `mode=capture`, the
+`capture_run_id`, the code revision, the schema versions, and
+`working_tree=dirty`, which was correct: the run was made with uncommitted
+changes, and the M0 provenance guard said so rather than flattering the run.
+
+**A required bound, not a default.** `--max-seconds` and/or `--max-frames` is
+mandatory; the command refuses to start an unbounded live run by accident.
+Reaching a bound closes the run `COMPLETED`; Ctrl-C closes it `FAILED` rather
+than leaving it dangling. "Interrupted" stays reserved for a process that dies
+outright and therefore never reaches any closing code — which is the only
+honest meaning, since a dying process cannot describe its own death.
+
+**Manifest linkage, without the unbounded growth the constraint forbids.**
+`RunManifest` gains `capture_run_id` and becomes `run_manifest.v3`; no `v2` was
+ever persisted by any code path, so this is a clean bump with no migration, the
+same reasoning already recorded for v1→v2. `input_provenance` is deliberately
+**empty** for a capture run — measured as 0 entries in the live manifest — because
+every ingested event's provenance is already stored once per record in the event
+store, and enumerating it here is exactly the unbounded growth the pre-M2 slice
+warned about.
+
+**A defect found by the slice's own failing test, and it was real.** Reusing an
+existing `capture_run_id` — an ordinary operator mistake the store deliberately
+refuses — printed **nothing at all** and crashed with a traceback. `run_capture`
+runs inside an `anyio` task group, so the `StorageError` arrived wrapped in an
+`ExceptionGroup`, which is not an `ArgosError` and sailed straight past the
+handler. This is the "escapes the error taxonomy" class the M2 slices closed
+three times inside the library, arriving at the CLI boundary, where the
+consequence is not a missing ledger row but an **operator told nothing**. Fixed
+in both `_run_or_exit` and the capture command by recursively unwrapping nested
+groups — task groups nest, and a store error during a capture is raised two
+scopes down.
+
+**A gap the live run made concrete, which no replayed test would have shown so
+plainly.** The captured database contains `price_change.v1` payloads only: all
+four `book` snapshots in those 45 seconds became `unknown_event_type`
+rejections, with the honest detail *"no payload model is wired for event_type
+'book' yet"*. So **a stored WebSocket capture is not yet self-sufficient for
+reconstruction** — the projection can replay its deltas but has nothing in the
+same capture to seed from, and today a seed must come from a REST `/book` poll.
+Closing this needs a WebSocket `book` payload model, which the projection slice
+already established cannot be `OrderBookSnapshotV1`: in-stream `book` events
+carry only ids, timestamp, hash and levels. Filed in `docs/BACKLOG.md` as the
+sharpest remaining M2 gap.
+
 ## M2 slice: the order-book projection
 
 `src/argos/projections/book.py` (`BookState`, `OrderBookProjection`,

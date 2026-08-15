@@ -166,7 +166,7 @@ MANIFESTS = _manifests()
 def test_a_record_survives_a_serialization_round_trip(manifest: RunManifest) -> None:
     record = manifest.to_record()
     assert RunManifest.from_record(record) == manifest
-    assert record["schema_version"] == "run_manifest.v2"
+    assert record["schema_version"] == "run_manifest.v3"
 
 
 @given(manifest=MANIFESTS)

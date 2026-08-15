@@ -11,6 +11,23 @@ longer misattributes the code that produced a run, and ``schema_versions`` /
 ever been persisted, so there is no migration path and none is written —
 compatibility wrappers are avoided per project convention when there is
 nothing yet to be compatible with.
+
+``run_manifest.v3`` is the same kind of clean, unmigrated bump for the same
+reason: no ``v2`` manifest has ever been persisted either (M1 discovery emits
+none; the standalone ``argos manifest`` command only prints one). It adds
+``capture_run_id``, the one field the M2 capture-CLI slice needs to satisfy
+core invariant 13 for a capture run without violating the constraint
+``docs/STATUS.md`` recorded from the pre-M2 pacing slice: an M2 capture
+manifest must **not** embed one ``SourceProvenanceV1`` per ingested event,
+because event volume makes that unbounded in a way M1 discovery's
+one-provenance-per-page never was. A capture run therefore leaves
+``input_provenance`` empty and points at its event store instead —
+``capture_run_id`` is that pointer. The provenance of every ingested event is
+already stored once, per record, in the event store's ``observation``/
+``rejection`` rows (ADR-0011); enumerating it again here would be exactly the
+unbounded growth the constraint forbids. A future reader wanting a
+manifest-level summary queries ``EventStore.counts_for_capture_run(capture_run_id)``
+rather than reading it off the manifest itself.
 """
 
 from __future__ import annotations
@@ -64,7 +81,7 @@ class WorkingTreeStatus(StrEnum):
 class RunManifest(VersionedModel):
     """Immutable description of one ARGOS run."""
 
-    schema_version: ClassVar[str] = "run_manifest.v2"
+    schema_version: ClassVar[str] = "run_manifest.v3"
 
     run_id: str = Field(min_length=1)
     mode: RunMode
@@ -76,6 +93,17 @@ class RunManifest(VersionedModel):
     see :func:`argos.cli._code_revision`. Never claim clean/dirty without that
     verification (enforced below), or a wheel install could report a stale
     ``CLEAN`` for code it cannot actually identify."""
+
+    capture_run_id: str | None = None
+    """The ``capture_run`` (``argos.store.event_store``, ADR-0011) this run
+    opened, for a ``RunMode.CAPTURE`` run. ``None`` for every other mode.
+    This is deliberately the *only* capture-specific field on the manifest —
+    see the module docstring for why ``input_provenance`` stays empty for a
+    capture run rather than growing one entry per ingested event: the event
+    store already carries that provenance once per record, keyed by this same
+    id, and a reader wanting a summary queries
+    ``EventStore.counts_for_capture_run(capture_run_id)`` instead of reading
+    it off this manifest."""
 
     config_fingerprint: str
     settings_snapshot: Mapping[str, Any]
@@ -167,6 +195,7 @@ def build_run_manifest(
     working_tree: WorkingTreeStatus = WorkingTreeStatus.UNKNOWN,
     schema_versions: Collection[str] = (),
     input_provenance: Collection[SourceProvenanceV1] = (),
+    capture_run_id: str | None = None,
 ) -> RunManifest:
     """Build a manifest for a run, stamping it with the injected clock's time."""
     from argos import __version__
@@ -178,6 +207,7 @@ def build_run_manifest(
         argos_version=__version__,
         code_revision=code_revision,
         working_tree=working_tree,
+        capture_run_id=capture_run_id,
         config_fingerprint=settings.fingerprint(),
         settings_snapshot=settings.snapshot(),
         schema_versions=tuple(schema_versions),

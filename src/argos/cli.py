@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+from collections.abc import AsyncIterator, Callable
+from dataclasses import asdict
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Final, NoReturn
@@ -14,20 +17,36 @@ import orjson
 import typer
 
 from argos import __version__
-from argos.clock import LiveClock, RealPacer
+from argos.clock import Clock, LiveClock, Pacer, RealPacer
 from argos.compiler import build_market_audit, compile_market_contract, render_market_audit
 from argos.config import RunMode, Settings, WorkingTreeStatus, build_run_manifest, load_settings
-from argos.domain.market import MarketDefinitionV1
+from argos.domain.market import TOKEN_ID_PATTERN, MarketDefinitionV1
+from argos.domain.observation import ObservationEnvelopeV1, RejectedObservationV1
+from argos.domain.pricechange import PriceChangeV1
 from argos.domain.selection import MarketSelectionPolicy, select_markets
 from argos.errors import ArgosError
-from argos.ingestion import normalize_market, normalize_markets
+from argos.ingestion import (
+    CaptureHealth,
+    FrameSource,
+    normalize_market,
+    normalize_markets,
+    run_capture,
+)
 from argos.logging import configure_logging
-from argos.sources import GammaClient
-from argos.store import write_raw_payload
+from argos.sources import (
+    ClobMarketWsClient,
+    GammaClient,
+    MarketFrame,
+    WebSocketConnector,
+    WebsocketsConnector,
+)
+from argos.store import EventStore, open_sqlite_event_store, write_raw_payload
 
 app = typer.Typer(no_args_is_help=True, help="ARGOS research CLI")
 markets_app = typer.Typer(no_args_is_help=True, help="Public market discovery and audit")
+capture_app = typer.Typer(no_args_is_help=True, help="Bounded live capture against a public source")
 app.add_typer(markets_app, name="markets")
+app.add_typer(capture_app, name="capture")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -202,6 +221,311 @@ def markets_audit(
     typer.echo(_json(audit.to_record()) if as_json else render_market_audit(audit))
 
 
+# --- capture ------------------------------------------------------------------------
+#
+# The last M2 deliverable: everything above this point evidences its exit
+# criteria only by replaying recorded frames. This command is what lets a
+# capture actually run against live traffic.
+
+# Every record schema one `capture market` run can read or write, for
+# `RunManifest.schema_versions` (core invariant 13). Not `run_capture`'s own
+# module-scoped constants because that module deliberately names none of
+# these -- see its own docstring, Decision 3: the manifest is this command's
+# responsibility, not the loop's.
+_CAPTURE_SCHEMA_VERSIONS: Final = (
+    ObservationEnvelopeV1.schema_version,
+    RejectedObservationV1.schema_version,
+    PriceChangeV1.schema_version,
+)
+
+
+def _default_connector(settings: Settings) -> WebSocketConnector:
+    return WebsocketsConnector(settings.clob_market_ws_url)
+
+
+# The narrowest injection seam available, not the widest: `WebSocketConnector`
+# is a `Protocol`, and Typer has no way to turn a protocol-typed parameter into
+# a CLI option, so a fake cannot enter through `capture_market`'s own
+# signature the way `--min-liquidity` enters `markets_discover`'s. A plain
+# module attribute a test can monkeypatch
+# (`monkeypatch.setattr(cli, "_CAPTURE_CONNECTOR_FACTORY", ...)`) is the
+# smallest seam that still lets `CliRunner` drive the real command end to end
+# with no socket opened. `capture_market` itself never changes shape because
+# of this; it always calls whichever factory this name is currently bound to.
+_CAPTURE_CONNECTOR_FACTORY: Callable[[Settings], WebSocketConnector] = _default_connector
+
+
+def _default_capture_run_id(clock: Clock) -> str:
+    """A unique, human-legible id: readable in a directory listing, sortable by start time."""
+    return f"clobws-{clock.now():%Y%m%dT%H%M%SZ}-{uuid4().hex[:8]}"
+
+
+class _BoundedFrameSource:
+    """Wraps a `FrameSource`, stopping cleanly once a configured bound is reached.
+
+    Reaching `--max-frames`/`--max-seconds` is a **deliberate operator stop,
+    not a failure**: this class stops by *returning* from its own generator —
+    ordinary async-generator exhaustion — which `run_capture` closes as
+    `CompletionStatus.COMPLETED`. It never stops by raising, which
+    `run_capture` would (correctly) close as `CompletionStatus.FAILED`, the
+    outcome reserved for a capture that broke while genuinely running
+    (`argos.ingestion.capture.run_capture`'s own module docstring). The
+    "interrupted capture" signal ADR-0011 defines — a `capture_run` row with
+    no closing row at all — means a process that died outright (`SIGKILL`, a
+    hard crash); by construction such a process never runs any of this code,
+    so a bound reached here is never that signal.
+
+    Ctrl-C needs no special handling in this class: `run_capture` already
+    closes `capture_run_id` (as `FAILED`, not dangling) for *any* exception
+    that reaches its own frame-consumption loop, cancellation included, so
+    the run this command started is never left open either way — only the
+    completion status differs from the two bounds above, and that is the
+    correct distinction (an operator's Ctrl-C is not "the same outcome as
+    reaching a configured limit", even though neither is "the process died").
+
+    `--max-seconds` is measured against `clock`, not against `pacer`'s own
+    notion of time: the deadline computed here is only bookkeeping across
+    loop iterations, never the thing that actually interrupts a stuck wait
+    for the next frame -- `pacer.move_on_after` does that, opened and closed
+    entirely within one loop iteration so no cancel scope ever spans a
+    suspended `yield`. Spanning one is exactly the hazard
+    `argos.sources.clob_ws`'s own module docstring documents reproducing for
+    a task group; a plain `CancelScope` does not spawn child tasks the way a
+    task group does, but this class does not lean on that distinction --
+    entering and exiting inside one iteration is safe regardless of which
+    kind of scope it is.
+    """
+
+    def __init__(
+        self,
+        inner: FrameSource,
+        *,
+        clock: Clock,
+        pacer: Pacer,
+        max_frames: int | None,
+        max_seconds: float | None,
+    ) -> None:
+        self._inner = inner
+        self._clock = clock
+        self._pacer = pacer
+        self._max_frames = max_frames
+        self._max_seconds = max_seconds
+
+    async def frames(self) -> AsyncIterator[MarketFrame]:
+        count = 0
+        inner_iter = self._inner.frames()
+        deadline: datetime | None = None
+        if self._max_seconds is not None:
+            deadline = self._clock.now() + timedelta(seconds=self._max_seconds)
+        while True:
+            if self._max_frames is not None and count >= self._max_frames:
+                return
+            if deadline is not None:
+                remaining = (deadline - self._clock.now()).total_seconds()
+                if remaining <= 0:
+                    return
+                with self._pacer.move_on_after(remaining) as scope:
+                    try:
+                        frame = await inner_iter.__anext__()
+                    except StopAsyncIteration:
+                        return
+                if scope.cancelled_caught:
+                    return
+            else:
+                try:
+                    frame = await inner_iter.__anext__()
+                except StopAsyncIteration:
+                    return
+            count += 1
+            yield frame
+
+
+def _open_store_or_exit(path: Path) -> EventStore:
+    try:
+        return open_sqlite_event_store(path)
+    except ArgosError as exc:
+        _fail(exc)
+
+
+# Module-level singletons, like `_MODE_OPTION` above: ruff (B008) does not
+# recognize `list[str]`/`Path` as safe inline `typer.Option` default types the
+# way it does `str`/`int`/`bool`/`None`.
+_TOKEN_ID_OPTION: Final = typer.Option(
+    None, "--token-id", help="CLOB token id to subscribe to. Repeatable; required at least once."
+)
+_DB_OPTION: Final = typer.Option(
+    None, "--db", help="SQLite event-store path. Defaults under the configured data dir."
+)
+
+
+@capture_app.command("market")
+def capture_market(
+    token_id: list[str] | None = _TOKEN_ID_OPTION,
+    max_seconds: float | None = typer.Option(
+        None, help="Stop the capture after this many seconds of real elapsed time."
+    ),
+    max_frames: int | None = typer.Option(
+        None, help="Stop the capture after this many raw frames have been consumed."
+    ),
+    db: Path | None = _DB_OPTION,
+    capture_run_id: str | None = typer.Option(
+        None, help="Override the generated capture_run_id. Mainly for tests and resumption."
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Emit the final report as JSON."),
+) -> None:
+    """Capture the public CLOB market-channel WebSocket for a small, explicit token set.
+
+    Runs until `--max-seconds` and/or `--max-frames` is reached, or until the
+    operator stops it with Ctrl-C -- at least one of the two bounds is
+    required outright: a research CLI must not start an unbounded live-
+    traffic run by accident. Wires `argos.sources.clob_ws.ClobMarketWsClient`
+    through `argos.ingestion.capture.run_capture` into a `SQLiteEventStore`
+    (ADR-0011), on an injected `LiveClock`/`RealPacer`, matching every other
+    live command in this module.
+
+    See `_BoundedFrameSource` for why reaching a configured bound closes the
+    capture run `CompletionStatus.COMPLETED` (a deliberate operator stop),
+    while Ctrl-C still closes it, just as `FAILED` rather than dangling --
+    "interrupted", the state ADR-0011's `iter_open_capture_runs` reports, is
+    reserved for a process that dies outright and therefore never reaches
+    any closing code at all.
+    """
+    token_ids: list[str] = list(token_id) if token_id else []
+    if not token_ids:
+        typer.echo("--token-id is required at least once", err=True)
+        raise typer.Exit(code=2)
+    for token in token_ids:
+        if not TOKEN_ID_PATTERN.fullmatch(token):
+            typer.echo(f"--token-id {token!r} does not match {TOKEN_ID_PATTERN.pattern}", err=True)
+            raise typer.Exit(code=2)
+    if max_seconds is None and max_frames is None:
+        typer.echo(
+            "one of --max-seconds or --max-frames is required; a research capture "
+            "must not start an unbounded run by accident",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if max_seconds is not None and max_seconds <= 0:
+        typer.echo("--max-seconds must be positive", err=True)
+        raise typer.Exit(code=2)
+    if max_frames is not None and max_frames <= 0:
+        typer.echo("--max-frames must be positive", err=True)
+        raise typer.Exit(code=2)
+
+    settings = _load_or_exit()
+    configure_logging(settings.log_level)
+    clock = LiveClock()
+    pacer = RealPacer()
+    code_revision, working_tree = _code_revision()
+
+    run_id = capture_run_id or _default_capture_run_id(clock)
+    db_path = db if db is not None else settings.data_dir / "capture" / "events.sqlite3"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    store = _open_store_or_exit(db_path)
+    connector = _CAPTURE_CONNECTOR_FACTORY(settings)
+
+    async def run() -> CaptureHealth:
+        async with ClobMarketWsClient(
+            settings, clock, pacer=pacer, connector=connector, token_ids=token_ids
+        ) as client:
+            bounded = _BoundedFrameSource(
+                client,
+                clock=clock,
+                pacer=pacer,
+                max_frames=max_frames,
+                max_seconds=max_seconds,
+            )
+            return await run_capture(
+                frame_source=bounded,
+                store=store,
+                clock=clock,
+                capture_run_id=run_id,
+                subscribed_token_ids=token_ids,
+            )
+
+    interrupted = False
+    health: CaptureHealth | None = None
+    manifest_path: Path | None = None
+    try:
+        try:
+            health = asyncio.run(run())
+        except KeyboardInterrupt:
+            # `run_capture` has already closed `run_id` -- as `FAILED`, not
+            # dangling -- for this exception the same way it would for any
+            # other (see `_BoundedFrameSource`'s docstring). There is nothing
+            # left to await; report what the store itself now says instead of
+            # the `CaptureHealth` this coroutine never returned.
+            interrupted = True
+        except BaseExceptionGroup as group:
+            # `run_capture` runs inside an `anyio` task group, so an
+            # `ArgosError` raised in it arrives wrapped and would sail past the
+            # handler below — reproduced: reusing an existing `capture_run_id`,
+            # an ordinary operator mistake the store deliberately refuses,
+            # printed **nothing at all** and crashed with a traceback instead of
+            # the refusal's own reason. Same unwrapping as `_run_or_exit`.
+            argos_errors = _flatten_argos_errors(group)
+            if argos_errors:
+                _fail(argos_errors[0])
+            raise
+        except ArgosError as exc:
+            _fail(exc)
+
+        counts = store.counts_for_capture_run(run_id)
+        run_manifest = build_run_manifest(
+            settings=settings,
+            clock=clock,
+            run_id=run_id,
+            mode=RunMode.CAPTURE,
+            code_revision=code_revision,
+            working_tree=working_tree,
+            capture_run_id=run_id,
+            schema_versions=_CAPTURE_SCHEMA_VERSIONS,
+        )
+        manifest_path = db_path.parent / f"{run_id}.manifest.json"
+        manifest_path.write_bytes(
+            orjson.dumps(
+                run_manifest.to_record(), option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS
+            )
+        )
+    finally:
+        store.close()
+
+    payload: dict[str, Any] = {
+        "capture_run_id": run_id,
+        "interrupted": interrupted,
+        "db_path": str(db_path),
+        "manifest_path": str(manifest_path),
+        "token_ids": token_ids,
+        # Both are printed deliberately: the loop's own counters and the
+        # store's independently derived counts must never disagree, and a
+        # disagreement between them is exactly the kind of defect that must
+        # be visible, not averaged away.
+        "loop_health": asdict(health) if health is not None else None,
+        "store_counts": {
+            "accepted": counts.accepted,
+            "duplicate": counts.duplicate,
+            "rejected": counts.rejected,
+        },
+    }
+    if as_json:
+        typer.echo(_json(payload))
+    else:
+        typer.echo(f"capture_run_id {run_id}")
+        typer.echo(f"  db       {db_path}")
+        typer.echo(f"  manifest {manifest_path}")
+        if interrupted:
+            typer.echo("  interrupted by the operator; capture_run is closed, not dangling")
+        typer.echo(f"  loop counters  {payload['loop_health']}")
+        typer.echo(
+            "  store counts   accepted={accepted} duplicate={duplicate} rejected={rejected}".format(
+                **payload["store_counts"]
+            )
+        )
+    if interrupted:
+        raise typer.Exit(code=130)
+
+
 def _normalize_or_exit(response: Any, observed_at: Any) -> MarketDefinitionV1:
     try:
         return normalize_market(
@@ -216,6 +540,24 @@ def _normalize_or_exit(response: Any, observed_at: Any) -> MarketDefinitionV1:
 def _run_or_exit(coroutine: Any) -> Any:
     try:
         return asyncio.run(coroutine)
+    except BaseExceptionGroup as group:
+        # An `ArgosError` raised inside an `anyio` task group arrives wrapped in
+        # an `ExceptionGroup`, which is not an `ArgosError`, so it used to sail
+        # past the handler below and reach the operator as a bare traceback with
+        # **no output at all**. Reproduced on the capture command: reusing an
+        # existing `capture_run_id` — an ordinary, expected operator mistake
+        # that the store deliberately refuses — printed an empty message and a
+        # crash instead of the refusal's own reason.
+        #
+        # This is the "escapes the error taxonomy" class the M2 slices closed
+        # three times inside the library, arriving at the CLI boundary, where
+        # the consequence is not a missing ledger row but an operator told
+        # nothing. Only the first matching error is reported; the rest are
+        # carried in its context by the group itself.
+        argos_errors = _flatten_argos_errors(group)
+        if argos_errors:
+            _fail(argos_errors[0])
+        raise
     except ArgosError as exc:
         _fail(exc)
     except ValueError as exc:
@@ -223,6 +565,23 @@ def _run_or_exit(coroutine: Any) -> Any:
         # error, not a crash. Without this it reaches the user as a traceback.
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from exc
+
+
+def _flatten_argos_errors(group: BaseException) -> list[ArgosError]:
+    """Collect every `ArgosError` inside an arbitrarily nested exception group.
+
+    Task groups nest: a group can contain groups. Recursing rather than
+    inspecting one level keeps the CLI honest about a failure raised two
+    scopes down, which is exactly where a store or adapter error is raised
+    during a capture.
+    """
+    found: list[ArgosError] = []
+    if isinstance(group, BaseExceptionGroup):
+        for inner in group.exceptions:
+            found.extend(_flatten_argos_errors(inner))
+    elif isinstance(group, ArgosError):
+        found.append(group)
+    return found
 
 
 def _fail(exc: ArgosError) -> NoReturn:
