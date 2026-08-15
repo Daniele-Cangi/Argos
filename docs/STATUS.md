@@ -20,9 +20,11 @@ Last updated: 2026-08-12
   `SQLiteEventStore` at the other; and now the `price_change.v1` typed delta
   payload (`src/argos/domain/pricechange.py`), the second and last payload
   model M2 needs, built against the recorded live WebSocket capture.
-  **No WebSocket adapter, no capture manifest and no capture CLI exist yet** —
-  the transport side of ingestion, and the loop that would run either adapter
-  against live traffic continuously, are still unbuilt.
+  Since then the WebSocket transport, the capture loop, and the order-book
+  projection have all landed. **What does not exist: a capture CLI, and any
+  run against live traffic.** Every M2 criterion below is evidenced against
+  *recorded* frames replayed through the real code path; no socket has ever
+  been opened by a capture.
 - Autonomous target: **complete M0-M4**
 - Owner gate: **required after M4**
 - Execution capability: **prohibited and absent**
@@ -46,6 +48,75 @@ refuse it with no ledger entry; `ingest_sequence` allocation and cross-token
 fan-out, still deliberately undecided; and the deliberate refusal of a
 `(frame, token)` group carrying more than one distinct hash, a shape never
 observed live.
+
+## M2 slice: the order-book projection
+
+`src/argos/projections/book.py` (`BookState`, `OrderBookProjection`,
+`BookProjectionAnomalyKind`) plus `tests/test_book_projection.py`. First
+implementation in the `argos.projections` package, which had been a documented
+boundary since M0. Closes the last substantive open M2 exit criterion.
+
+Quality gate: PASS — ruff, ruff format, mypy strict on 41 source files,
+**1,240 tests** (up from 1,199).
+
+**The criterion, on real recorded live traffic.** The capture contains 4 full
+`book` snapshots for the subscribed token and 34 delta frames. All three
+snapshot→deltas→snapshot transitions reconstruct exactly, level for level, and
+a single continuous run seeded once and fed all 28 deltas lands exactly on the
+final snapshot with zero anomalies. Re-verified through the shipped code path
+independently of the slice's own tests.
+
+**Two corrections the implementing agent made to my brief, both right.**
+
+1. I said the WebSocket `book` event omits `min_order_size` and `neg_risk`.
+   True only of the snapshot delivered on subscribe. The three *in-stream*
+   `book` events also omit `tick_size` and `last_trade_price` — they carry only
+   `market`, `asset_id`, `timestamp`, `hash`, `bids`, `asks`. This strengthens
+   the design rather than weakening it: a projection requiring `tick_size`
+   could not be re-seeded from the live stream at all, which is why `BookState`
+   carries ids and levels only. The research note's "UNVERIFIED whether the
+   omission is systematic" is now answered: it is systematic, and worse than
+   recorded.
+2. I asked for both real zero-size entries to be shown removing a level that
+   was present. Only one belongs to the subscribed token; the other belongs to
+   the binary sibling, for which the capture carries **no** `book` event at
+   all, so there is no source snapshot to verify it against. The agent declined
+   to claim it and pinned the honest version instead. That is the correct
+   answer to a brief that asked for slightly more than the data supports.
+
+**The reconciliation limitation, stated in the code and not only here.** The
+research established that a delta's `hash` is the hash of the resulting book
+state and reconciles exactly with REST for the same state — but **ARGOS cannot
+compute that hash**, because the algorithm is unpublished. So the projection
+cannot detect a missed delta from the delta stream alone; divergence is
+detectable only when a full snapshot arrives and disagrees. The stored field is
+named `source_asserted_hash`, no method compares it to anything ARGOS computes,
+and the projection's own `digest()` is a separate, explicitly ARGOS-side value
+for M3 golden tests. The two are asserted side by side in a test precisely so
+they can never be confused.
+
+**Out-of-order handling is deliberately M2-shallow**, and says so in prose:
+deltas apply in arrival order, the last applied event time is recorded, and a
+strict regression is *counted* rather than silently repaired. Equal event times
+are not treated as a regression, because the research found one logical
+transition spanning multiple frames with an identical `(timestamp, hash)`.
+Watermarks and a real late-event policy are M3 deliverables and are not
+pre-empted here.
+
+**Anomalies are counted, never absorbed** (invariant 14):
+`DELTA_BEFORE_SNAPSHOT` (real — the sibling token receives deltas but never a
+snapshot), `ASSET_ID_MISMATCH`, `CONDITION_ID_MISMATCH`,
+`REMOVE_OF_ABSENT_LEVEL`, `EVENT_TIME_REGRESSION`,
+`SNAPSHOT_DISAGREES_WITH_PROJECTION`. Every kind is always reported including
+zeros, because an absent counter and a zero counter read identically in a
+report.
+
+**A staleness in this file that the agent caught and I had missed.** Two
+present-tense claims — the "Current state" bullet and the exit-criteria table
+intro — still said no WebSocket adapter or capture loop existed, several slices
+after both landed. Corrected. The same sentences inside earlier slice sections
+are left as written: those are dated records of what was true at that slice,
+not claims about now.
 
 ## M2 slice: the capture loop, and three decisions deferred four times
 
@@ -996,9 +1067,10 @@ evidence from the CLOB REST adapter slice (a real recorded response through
 store-level evidence; one has payload-level evidence on real recorded frames;
 one has store-only partial evidence; the rest have no adapter or capture loop
 yet to produce evidence against and are listed as open rather than implied
-closed. No WebSocket adapter, no capture manifest, and no capture CLI exist
-yet — nothing runs either adapter continuously against live traffic yet, and
-no criterion is marked closed on the strength of a payload model alone.
+closed. **No capture CLI exists, and no capture has ever run against a live
+socket** — every criterion below is evidenced by replaying recorded frames
+through the real code path, which is why several are marked "structurally
+closed, never exercised live" rather than simply closed.
 
 | Criterion | Status | Evidence |
 |---|---|---|
@@ -1006,7 +1078,7 @@ no criterion is marked closed on the strength of a payload model alone.
 | Zero-size level update is represented as removal | **End-to-end evidence into the store; no transport receives a live frame yet** | Represented structurally, not by convention: `PriceLevelChangeKind.REMOVE` holds **if and only if** `size == 0`, validated on every construction path including replay and `from_record`, so a record cannot claim one and carry the other (`src/argos/domain/pricechange.py`). Both genuine zero-size entries in the recorded live capture now travel the full path — `normalize_clob_price_change` -> `build_observation_envelope` -> `SQLiteEventStore` — and land as `REMOVE` in a stored payload (`0.17` bid side, `0.83` ask side on the sibling), verified independently of the slice's own tests. `OrderBookSnapshotV1` separately implements the REST-snapshot side, where the same value is deliberately a counted anomaly rather than a removal. **Not yet closed**: no WebSocket transport exists, so the frames are replayed from a recorded capture rather than received from a socket |
 | Reconnect does not reset ingest sequence or silently lose manifest state | **Closed structurally; never exercised against a live socket** | `run_capture` owns the counter for the whole run, so a reconnect inside the transport is transparent to it — the transport keeps yielding from one async generator. Restarting the loop cannot silently restart the sequence either: re-opening the same `capture_run_id` is refused with `StorageError` by the store's partial unique index, so the property is structural rather than a check that could be forgotten. Verified independently of the slice's own tests, on the real recorded capture: sequences span both the delivery and rejection ledgers with no gaps and no reuse (exactly 1..38), and are identical across two runs. Manifest state cannot be lost silently: `capture_run` is append-only and a run with no closing row is a queryable signal. **Not yet closed**: no capture has run against a live socket, and a real network reconnect has never been exercised — the research note still records reconnect behaviour as UNVERIFIED |
 | Invalid messages enter a rejection ledger with reason and raw hash | **End-to-end evidence; no capture loop runs it against live traffic yet** | `RejectedObservationV1` carries `reason: RejectionReason`, `detail`, and `raw_payload_sha256`; `build_rejected_observation` derives a deterministic `rejection_id` so redelivery of the same invalid bytes for the same reason collapses rather than growing the ledger unbounded. `SQLiteEventStore.append_rejection`/`iter_rejections` persist it, keyed `(capture_run_id, ingest_sequence)` rather than on `rejection_id` alone, so two genuinely different malformed entries in one frame that happen to share one `rejection_id` (ADR-0011 section 7) both survive instead of one silently overwriting the other. The CLOB REST adapter slice closes the remaining gap end to end: a malformed real-shaped body fed through `normalize_clob_book` produces a `RejectedObservationV1` written to the ledger (`tests/test_clob_book_ingestion.py`). The WebSocket source now has the same evidence on its own path: `normalize_clob_price_change` turns every `ValueError` the domain raises — plus its own `entry_hash` length and display-control checks, deliberately inside its own `try` — into a `RejectedObservationV1` rather than an escaping exception, so a malformed real-shaped frame reaches the ledger with a reason and the raw hash (`tests/test_clob_price_change_ingestion.py`). **Not yet closed**: no capture loop runs either adapter continuously against live traffic |
-| Book snapshot plus deltas reconstruct a tested projection | Open | Both input payload models now exist — `OrderBookSnapshotV1` (snapshot) and `PriceChangeV1` (delta) — and the research note established that a delta's `hash` is the hash of the *resulting* book state and reconciles exactly with REST for the same state, which is what a projection would verify against. **Not yet closed**: no projection module and no WebSocket adapter exist |
+| Book snapshot plus deltas reconstruct a tested projection | **Closed on real recorded traffic** | `argos.projections.book` reconstructs the book from a snapshot plus `price_change` deltas. Verified on the recorded live capture, which contains 4 full `book` snapshots for the subscribed token and 34 delta frames: all three snapshot→deltas→snapshot transitions reconstruct **exactly**, level for level (`book@msg0 +13 → book@msg16`, `+7 → book@msg26`, `+8 → book@msg37`), and a single continuous run seeded once at msg0 and fed all 28 deltas lands exactly on msg37 with zero anomalies — re-verified independently of the slice's own tests. The zero-size removal convention is exercised through the projection, not merely at the payload. **Known limitation, not a gap in the test**: ARGOS cannot compute the source's own `hash` (algorithm unpublished), so a missed delta is undetectable from the delta stream alone; divergence surfaces only when a full snapshot arrives and disagrees, which is what these three transitions measure |
 | No authenticated/user channel or trading code exists | Holds | Unchanged from M0-M1; the CLOB REST adapter is read-only by construction — it sends no credentials and exposes only the public `GET /book` endpoint (`src/argos/sources/clob.py` module docstring, ADR-0007) |
 | An interrupted capture closes or marks its manifest incomplete | **Both halves now exist; never exercised against a live socket** | Store half (unchanged): `capture_run` is append-only, closing inserts a second row, and "not yet closed" is a derived read via `iter_open_capture_runs`, with partial unique indexes making double-open/double-close impossible (ADR-0011 section 5). Loop half (new): `run_capture` opens the run before consuming a frame and always closes it — `COMPLETED` on clean exhaustion, `FAILED` recorded and then re-raised on an exception. A process killed outright runs neither branch and writes no closing row, which `iter_open_capture_runs` reports as interrupted — that absence is the intended signal, not a gap, since a dying process cannot be trusted to describe its own death. **Not yet closed**: no capture loop has run against live traffic, so no real interruption has ever been observed |
 

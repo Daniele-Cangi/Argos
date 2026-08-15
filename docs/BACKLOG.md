@@ -306,7 +306,12 @@ numbers so the next slice inherits evidence rather than a reminder.
       Closed by ADR-0011 (`docs/adr/0011-sqlite-event-store-and-delivery-record.md`,
       `src/argos/store/event_store.py`). No adapter or capture loop writes
       through it yet.
-- [ ] Capture manifest and health metrics.
+- [x] Capture manifest and health metrics. Closed by the capture-loop slice:
+      the manifest is `RunManifest` plus the store's append-only `capture_run`
+      rows (no new concept), and `CaptureHealth` carries the counters.
+- [x] Book projection (snapshot plus deltas). Closed by
+      `src/argos/projections/book.py`, verified on three real
+      snapshot→deltas→snapshot transitions from the recorded live capture.
 - [ ] Capture CLI and integration fixture.
 
 ### Carried from the M2 observation-identity slice (ADR-0010)
