@@ -93,7 +93,9 @@ def _sibling_entry(
     }
 
 
-def _unknown_event(*, event_type: str = "book", asset_id: str | None = TOKEN_YES) -> dict[str, Any]:
+def _unknown_event(
+    *, event_type: str = "tick_size_change", asset_id: str | None = TOKEN_YES
+) -> dict[str, Any]:
     event: dict[str, Any] = {"event_type": event_type, "market": CONDITION_ID}
     if asset_id is not None:
         event["asset_id"] = asset_id

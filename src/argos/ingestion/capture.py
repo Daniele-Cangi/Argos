@@ -163,6 +163,7 @@ from argos.ingestion.clob_price_change import (
     CLOB_WS_PRICE_CHANGE_EVENT_TYPE,
     normalize_clob_price_change,
 )
+from argos.ingestion.clob_ws_book import CLOB_WS_BOOK_EVENT_TYPE, normalize_clob_ws_book
 from argos.sources.clob_ws import MarketFrame
 from argos.store.event_store import CompletionStatus, Disposition, EventStore
 
@@ -403,43 +404,57 @@ def _consume_event(
     event_type = event.get("event_type")
     event_type_label = event_type if isinstance(event_type, str) and event_type else None
 
-    if event_type_label != CLOB_WS_PRICE_CHANGE_EVENT_TYPE:
-        # Covers `book`, `last_trade_price`, `tick_size_change`, any other
-        # source-defined event_type, and an absent/non-string event_type --
-        # "anything unknown" per the task brief. No payload model is wired for
-        # any of these here; refusing rather than guessing at a model is the
-        # point (see the module docstring, "Do not invent one").
-        state.count(unknown_event_type=1)
-        detail = (
-            f"no payload model is wired for event_type {event_type_label!r} yet"
-            if event_type_label is not None
-            else _MISSING_EVENT_TYPE_DETAIL
-        )
-        _append_rejection(
-            reason=RejectionReason.UNKNOWN_EVENT_TYPE,
-            detail=detail,
-            source_event_type=event_type_label,
-            condition_id=_best_effort_text(event, "market"),
-            token_id=_best_effort_text(event, "asset_id"),
-            frame=frame,
-            state=state,
-            store=store,
-            clock=clock,
-            capture_run_id=capture_run_id,
-        )
+    if event_type_label == CLOB_WS_PRICE_CHANGE_EVENT_TYPE:
+        for token_id in tokens:
+            _consume_price_change_for_token(
+                event,
+                token_id=token_id,
+                frame=frame,
+                state=state,
+                store=store,
+                clock=clock,
+                capture_run_id=capture_run_id,
+                clock_skew_tolerance=clock_skew_tolerance,
+            )
         return
 
-    for token_id in tokens:
-        _consume_price_change_for_token(
-            event,
-            token_id=token_id,
-            frame=frame,
-            state=state,
-            store=store,
-            clock=clock,
-            capture_run_id=capture_run_id,
-            clock_skew_tolerance=clock_skew_tolerance,
-        )
+    if event_type_label == CLOB_WS_BOOK_EVENT_TYPE:
+        for token_id in tokens:
+            _consume_ws_book_for_token(
+                event,
+                token_id=token_id,
+                frame=frame,
+                state=state,
+                store=store,
+                clock=clock,
+                capture_run_id=capture_run_id,
+                clock_skew_tolerance=clock_skew_tolerance,
+            )
+        return
+
+    # Covers `last_trade_price`, `tick_size_change`, any other source-defined
+    # event_type, and an absent/non-string event_type -- "anything unknown"
+    # per the task brief. No payload model is wired for any of these here;
+    # refusing rather than guessing at a model is the point (see the module
+    # docstring, "Do not invent one").
+    state.count(unknown_event_type=1)
+    detail = (
+        f"no payload model is wired for event_type {event_type_label!r} yet"
+        if event_type_label is not None
+        else _MISSING_EVENT_TYPE_DETAIL
+    )
+    _append_rejection(
+        reason=RejectionReason.UNKNOWN_EVENT_TYPE,
+        detail=detail,
+        source_event_type=event_type_label,
+        condition_id=_best_effort_text(event, "market"),
+        token_id=_best_effort_text(event, "asset_id"),
+        frame=frame,
+        state=state,
+        store=store,
+        clock=clock,
+        capture_run_id=capture_run_id,
+    )
 
 
 def _consume_price_change_for_token(
@@ -461,6 +476,55 @@ def _consume_price_change_for_token(
     """
     sequence = state.peek_sequence()
     result = normalize_clob_price_change(
+        event=event,
+        provenance=frame.provenance,
+        requested_token_id=token_id,
+        received_time=frame.received_time,
+        rejected_at=clock.now(),
+        ingest_sequence=sequence,
+        capture_run_id=capture_run_id,
+        clock_skew_tolerance=clock_skew_tolerance,
+    )
+    if result is None:
+        state.count(not_applicable=1)
+        return
+
+    committed = state.commit_sequence()
+    assert committed == sequence, "sequence advanced between peek and commit"
+
+    if isinstance(result, ObservationEnvelopeV1):
+        delivery = store.append_observation(result)
+        if delivery.disposition is Disposition.ACCEPTED_NEW:
+            state.count(accepted=1)
+        else:
+            state.count(duplicate=1)
+    else:
+        store.append_rejection(result, ingest_sequence=sequence)
+        state.count(rejected=1)
+
+
+def _consume_ws_book_for_token(
+    event: Any,
+    *,
+    token_id: str,
+    frame: MarketFrame,
+    state: _CaptureState,
+    store: EventStore,
+    clock: Clock,
+    capture_run_id: str,
+    clock_skew_tolerance: timedelta,
+) -> None:
+    """Normalize one `book` event for one configured token; write if applicable.
+
+    Mirrors :func:`_consume_price_change_for_token` exactly -- same
+    peek-then-commit sequence discipline (module docstring, Decision 1), same
+    fan-out over the configured token set (Decision 2), same three-way
+    ``ObservationEnvelopeV1`` / ``RejectedObservationV1`` / ``None`` outcome
+    shape. A `book` event is one more record kind dispatched through the same
+    machinery, not a new allocation rule.
+    """
+    sequence = state.peek_sequence()
+    result = normalize_clob_ws_book(
         event=event,
         provenance=frame.provenance,
         requested_token_id=token_id,

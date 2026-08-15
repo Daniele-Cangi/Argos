@@ -315,15 +315,14 @@ numbers so the next slice inherits evidence rather than a reminder.
 - [x] Capture CLI. Closed by `argos capture market`; a real 45-second live
       capture ran on 2026-08-15 (22 observations, 4 rejections, sequences
       contiguous across both ledgers).
-- [ ] **Sharpest remaining M2 gap: a WebSocket `book` payload model.** The live
-      capture stores `price_change.v1` only — all four `book` snapshots in the
-      window became `unknown_event_type` rejections — so a stored capture is
-      **not self-sufficient for reconstruction**: the projection can replay its
-      deltas but has nothing in the same capture to seed from, and a seed must
-      currently come from a separate REST `/book` poll. It cannot reuse
-      `OrderBookSnapshotV1`: in-stream `book` events carry only `market`,
-      `asset_id`, `timestamp`, `hash`, `bids`, `asks`, omitting `tick_size`,
-      `last_trade_price`, `min_order_size` and `neg_risk`.
+- [x] **A WebSocket `book` payload model.** Closed by
+      `WsBookSnapshotV1` (`ws_book_snapshot.v1`) and `normalize_clob_ws_book`,
+      dispatched from the capture loop. A stored capture is now self-sufficient:
+      reading only from the event store, a projection seeds from a stored
+      snapshot and reconstructs three later stored snapshots exactly. Confirmed
+      on live traffic too — the second live capture stored both payload kinds
+      with zero rejections. It is a distinct schema from `OrderBookSnapshotV1`
+      because the wire schemas genuinely differ.
 - [ ] Sanitized sample capture fixture, committed only if size and licensing
       are appropriate.
 
