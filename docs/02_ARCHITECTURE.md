@@ -44,7 +44,8 @@ The intended package boundaries are:
 
 ```text
 argos.domain          versioned domain contracts and invariants
-argos.clock           Clock protocol, LiveClock, ReplayClock
+argos.clock           Clock protocol, LiveClock, ReplayClock, plus the
+                      live-only Pacer protocol and RealPacer (ADR-0009)
 argos.config          validated immutable configuration and run manifests
 argos.sources         source-specific REST/WebSocket clients
 argos.ingestion       retries, reconnect, normalization, dedupe, backpressure
@@ -86,6 +87,16 @@ Only these components may differ:
 - output storage location.
 
 Do not create `if replay:` branches inside forecasting or state logic.
+
+Pacing and timekeeping are separate ports (ADR-0009): `Clock` exposes only
+`now()`. Real elapsed time — waiting and deadlines — is a `Pacer`
+(`argos.clock.pacing`), used only by live source adapters for retry backoff
+and connection deadlines. A live adapter's retry pacing has no replay
+counterpart: a replay run issues no request, so there is nothing to retry or
+wait for. The "pacing policy" that legitimately differs between live and
+replay is the *scheduler's* pacing (real-time vs. accelerated vs. stepwise
+replay), which is separate M3 work in `argos.replay` and must never influence
+the output hash.
 
 ## Temporal model
 

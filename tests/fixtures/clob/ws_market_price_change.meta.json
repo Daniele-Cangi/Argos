@@ -1,0 +1,11 @@
+{
+  "byte_length": 45232,
+  "note": "Verbatim live public CLOB market-channel WebSocket capture, reused unmodified from docs/research/fixtures/clob-ws-market-2026-08-10T184742Z.json (docs/research/m2-clob-websocket.md). Copied here so tests/test_fixtures.py's provenance and drift guard covers it: a test that reads a fixture living only under docs/research/ can have its meaning silently changed by an edit no hash check sees. Contains 34 real price_change frames and 4 book events for two tokens (the subscribed YES token and its unsubscribed binary sibling), including 2 real zero-size entries -- the direct live evidence for the M2 exit criterion 'zero-size level update is represented as removal'. Also carries the identity hazard this slice pins: the same (timestamp, hash) pair for one token arrives across up to 3 separate frames, each with a different price level change.",
+  "parser_version": "price-change-parser/1",
+  "payload_kind": "clob.market_ws_capture",
+  "raw_sha256": "f0391eab79879487a4b74e0ef9823bc8b15ef26aa18bb051c6285385e5f003e4",
+  "redaction": "none -- the market channel is public and unauthenticated; no subscribe frame or header carried a credential",
+  "retrieved_at": "2026-08-10T18:47:42Z",
+  "source": "clob_market_ws",
+  "source_endpoint": "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+}

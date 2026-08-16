@@ -1,0 +1,314 @@
+[
+    {
+        "wall_time": "2026-08-10T18:54:18.986617+00:00",
+        "source": "WS_SUBSCRIBE",
+        "sub": {
+            "assets_ids": [
+                "34691510069031117755834214800869745291092253295564665516660269316660628637961"
+            ],
+            "type": "market"
+        }
+    },
+    {
+        "wall_time": "2026-08-10T18:54:19.122347+00:00",
+        "source": "WS_book",
+        "hash": "ec0f4aab7df98a1a4666e643c9f61001cdc7bea1",
+        "timestamp": "1786388046489"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:21.671156+00:00",
+        "source": "WS_price_change",
+        "hash": "1c2e9dd2560b5625ecf9cd29a9a83d90d8f09902",
+        "timestamp": "1786388061629",
+        "price": "0.31",
+        "size": "57153.04"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:21.675984+00:00",
+        "source": "WS_price_change",
+        "hash": "4bdc9b24de68024631083e5000913f7e62c04fde",
+        "timestamp": "1786388061633",
+        "price": "0.24",
+        "size": "35549.75"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:22.144079+00:00",
+        "source": "REST",
+        "hash": "1c2e9dd2560b5625ecf9cd29a9a83d90d8f09902",
+        "timestamp": "1786388061629"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:22.158070+00:00",
+        "source": "WS_price_change",
+        "hash": "b172da28ba8e3cf81d5c43a14ab6eb6db14dec38",
+        "timestamp": "1786388062127",
+        "price": "0.58",
+        "size": "20"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:22.332215+00:00",
+        "source": "WS_price_change",
+        "hash": "76006762d09556b52353fca8bf329a9db59a6f71",
+        "timestamp": "1786388062287",
+        "price": "0.3",
+        "size": "26210.67"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:22.356147+00:00",
+        "source": "WS_price_change",
+        "hash": "8625e6534ff3fb77b7c0cc4d4c7c328d5eff0c5a",
+        "timestamp": "1786388062325",
+        "price": "0.29",
+        "size": "82485.86"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:25.269265+00:00",
+        "source": "REST",
+        "hash": "8625e6534ff3fb77b7c0cc4d4c7c328d5eff0c5a",
+        "timestamp": "1786388062325"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:28.396329+00:00",
+        "source": "REST",
+        "hash": "8625e6534ff3fb77b7c0cc4d4c7c328d5eff0c5a",
+        "timestamp": "1786388062325"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:29.721191+00:00",
+        "source": "WS_price_change",
+        "hash": "c4b01299dccf9a942a4e33200f2de7147a773661",
+        "timestamp": "1786388069688",
+        "price": "0.49",
+        "size": "425"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:29.721387+00:00",
+        "source": "WS_price_change",
+        "hash": "c4b01299dccf9a942a4e33200f2de7147a773661",
+        "timestamp": "1786388069688",
+        "price": "0.24",
+        "size": "35309.75"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:29.758187+00:00",
+        "source": "WS_price_change",
+        "hash": "008debc1e89cecb18aa52c2800a659e9b87d79cd",
+        "timestamp": "1786388069726",
+        "price": "0.49",
+        "size": "665"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:29.759167+00:00",
+        "source": "WS_price_change",
+        "hash": "d077e7f43e4b727d4cebb6d8874a1bc5fcc7ea26",
+        "timestamp": "1786388069727",
+        "price": "0.23",
+        "size": "33924.48"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:31.516128+00:00",
+        "source": "REST",
+        "hash": "d077e7f43e4b727d4cebb6d8874a1bc5fcc7ea26",
+        "timestamp": "1786388069727"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:33.260114+00:00",
+        "source": "WS_price_change",
+        "hash": "66f96621260ffcc9bffc8d412b05d629f5fab1a4",
+        "timestamp": "1786388073229",
+        "price": "0.24",
+        "size": "35359.75"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:33.262107+00:00",
+        "source": "WS_price_change",
+        "hash": "3738005a0928160b962009c3ff82bb06a5a8200f",
+        "timestamp": "1786388073229",
+        "price": "0.31",
+        "size": "57203.04"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:34.644274+00:00",
+        "source": "REST",
+        "hash": "3738005a0928160b962009c3ff82bb06a5a8200f",
+        "timestamp": "1786388073229"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:37.773303+00:00",
+        "source": "REST",
+        "hash": "3738005a0928160b962009c3ff82bb06a5a8200f",
+        "timestamp": "1786388073229"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:40.934461+00:00",
+        "source": "REST",
+        "hash": "3738005a0928160b962009c3ff82bb06a5a8200f",
+        "timestamp": "1786388073229"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:44.064148+00:00",
+        "source": "REST",
+        "hash": "3738005a0928160b962009c3ff82bb06a5a8200f",
+        "timestamp": "1786388073229"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:47.206322+00:00",
+        "source": "REST",
+        "hash": "3738005a0928160b962009c3ff82bb06a5a8200f",
+        "timestamp": "1786388073229"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:50.339227+00:00",
+        "source": "REST",
+        "hash": "3738005a0928160b962009c3ff82bb06a5a8200f",
+        "timestamp": "1786388073229"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:53.474480+00:00",
+        "source": "REST",
+        "hash": "3738005a0928160b962009c3ff82bb06a5a8200f",
+        "timestamp": "1786388073229"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:54.620366+00:00",
+        "source": "WS_price_change",
+        "hash": "c4228650b3a872b6e47825a9e21b9f3dcc26b6f9",
+        "timestamp": "1786388094589",
+        "price": "0.48",
+        "size": "10"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:54.723378+00:00",
+        "source": "WS_price_change",
+        "hash": "fd5a85bfbc86adcb6fc4c7a923b197739f2288e5",
+        "timestamp": "1786388094692",
+        "price": "0.61",
+        "size": "0"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:54.723515+00:00",
+        "source": "WS_price_change",
+        "hash": "fd5a85bfbc86adcb6fc4c7a923b197739f2288e5",
+        "timestamp": "1786388094692",
+        "price": "0.64",
+        "size": "48.13"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:54.723584+00:00",
+        "source": "WS_price_change",
+        "hash": "fd5a85bfbc86adcb6fc4c7a923b197739f2288e5",
+        "timestamp": "1786388094692",
+        "price": "0.49",
+        "size": "636"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:54.724114+00:00",
+        "source": "WS_price_change",
+        "hash": "fd5a85bfbc86adcb6fc4c7a923b197739f2288e5",
+        "timestamp": "1786388094692",
+        "price": "0.56",
+        "size": "0"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:54.724204+00:00",
+        "source": "WS_price_change",
+        "hash": "fd5a85bfbc86adcb6fc4c7a923b197739f2288e5",
+        "timestamp": "1786388094692",
+        "price": "0.42",
+        "size": "0"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:54.724263+00:00",
+        "source": "WS_price_change",
+        "hash": "fd5a85bfbc86adcb6fc4c7a923b197739f2288e5",
+        "timestamp": "1786388094692",
+        "price": "0.47",
+        "size": "33"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:54.873308+00:00",
+        "source": "WS_price_change",
+        "hash": "aa33ff2008bbbee4c53acb868d218ba2c6fb4cf6",
+        "timestamp": "1786388094842",
+        "price": "0.25",
+        "size": "104455.03"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:54.874131+00:00",
+        "source": "WS_price_change",
+        "hash": "2ee2e38e983194d653fe8af58e7fd64f80d227c1",
+        "timestamp": "1786388094842",
+        "price": "0.26",
+        "size": "68174.38"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:55.411212+00:00",
+        "source": "WS_price_change",
+        "hash": "9c9a1033940bd5ca5ef40a72178b388e5167e21d",
+        "timestamp": "1786388095363",
+        "price": "0.64",
+        "size": "63.13"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:55.847415+00:00",
+        "source": "WS_price_change",
+        "hash": "dcdafd0576d7c7b6a2c98c7909ab6039426d98ab",
+        "timestamp": "1786388095816",
+        "price": "0.64",
+        "size": "104.13"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:55.849192+00:00",
+        "source": "WS_price_change",
+        "hash": "91947715be59982a98dcf834be44df7fb76f130c",
+        "timestamp": "1786388095818",
+        "price": "0.49",
+        "size": "665"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:55.850145+00:00",
+        "source": "WS_price_change",
+        "hash": "08f39ef630453d05c32cd51196f6406acec8f2ea",
+        "timestamp": "1786388095819",
+        "price": "0.48",
+        "size": "38"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:56.628776+00:00",
+        "source": "REST",
+        "hash": "6c4d7d124a95a0835409a1b5334ab152b94707cb",
+        "timestamp": "1786388096477"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:56.629137+00:00",
+        "source": "WS_price_change",
+        "hash": "6c4d7d124a95a0835409a1b5334ab152b94707cb",
+        "timestamp": "1786388096477",
+        "price": "0.48",
+        "size": "60"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:57.700271+00:00",
+        "source": "WS_price_change",
+        "hash": "c016a2d1a7ae01251ee16f877711e561219150fd",
+        "timestamp": "1786388097659",
+        "price": "0.65",
+        "size": "197.85"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:58.375432+00:00",
+        "source": "WS_price_change",
+        "hash": "43b5d10b76b3c3585af14b55e1e230691a16a81e",
+        "timestamp": "1786388098333",
+        "price": "0.25",
+        "size": "104450.03"
+    },
+    {
+        "wall_time": "2026-08-10T18:54:58.375626+00:00",
+        "source": "WS_price_change",
+        "hash": "43b5d10b76b3c3585af14b55e1e230691a16a81e",
+        "timestamp": "1786388098333",
+        "price": "0.26",
+        "size": "68169.38"
+    }
+]

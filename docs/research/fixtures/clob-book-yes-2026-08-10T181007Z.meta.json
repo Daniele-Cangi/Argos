@@ -1,0 +1,10 @@
+{
+  "retrieved_at_utc": "2026-08-10T18:10:07Z",
+  "source_url": "https://clob.polymarket.com/book?token_id=63842529068710005716169325380315470359047749786610778647370693404952498013178",
+  "http_status": 200,
+  "http_method": "GET",
+  "auth": "none",
+  "notes": "Live public CLOB order-book snapshot for the Fed-rate-decision YES token, recorded verbatim (pretty-printed only) via curl. No fields added, removed, or reordered. token_id sourced from a public, unauthenticated GET https://gamma-api.polymarket.com/markets call on the same date.",
+  "recorded_by": "argos research subagent",
+  "argos_status_context": "M2 CLOB capture design research, docs/research/m2-clob-rest-book.md"
+}

@@ -1,0 +1,41 @@
+{
+  "retrieved_at_utc_range": "2026-08-10T18:10:07Z to 2026-08-10T18:12:52Z",
+  "auth": "none",
+  "note": "Each entry is the verbatim response body for the given GET request against https://clob.polymarket.com, recorded during the same research session as clob-book-yes-2026-08-10T181007Z.json for the same token unless noted. token_id sourced from a public GET https://gamma-api.polymarket.com/markets call the same date.",
+  "responses": {
+    "GET /midpoint?token_id=<fed_yes>": {
+      "mid": "0.425"
+    },
+    "GET /spread?token_id=<fed_yes>": {
+      "spread": "0.01"
+    },
+    "GET /tick-size?token_id=<fed_yes>": {
+      "minimum_tick_size": 0.01
+    },
+    "GET /last-trade-price?token_id=<fed_yes>": {
+      "price": "0.43",
+      "side": "BUY"
+    },
+    "GET /price?token_id=<fed_yes>&side=BUY": {
+      "price": "0.42"
+    },
+    "GET /price?token_id=<fed_yes>&side=SELL": {
+      "price": "0.43"
+    },
+    "GET /book?token_id=not-a-real-token (HTTP 404)": {
+      "error": "No orderbook exists for the requested token id"
+    },
+    "GET /book?token_id=0 (HTTP 404)": {
+      "error": "No orderbook exists for the requested token id"
+    },
+    "GET /book (token_id omitted, HTTP 400)": {
+      "error": "Invalid token id"
+    },
+    "GET /book?token_id=<syntactically-valid-but-unknown-numeric> (HTTP 404)": {
+      "error": "No orderbook exists for the requested token id"
+    },
+    "GET /book?token_id=<known-closed-market-yes-token> (HTTP 404)": {
+      "error": "No orderbook exists for the requested token id"
+    }
+  }
+}

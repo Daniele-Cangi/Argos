@@ -1,0 +1,11 @@
+{
+  "byte_length": 19806,
+  "note": "A page of active markets ordered by volume.",
+  "parser_version": "gamma-market-normalizer/1",
+  "payload_kind": "gamma.markets.list",
+  "raw_sha256": "d7a9ca6524fc7d83fd5499cdb9ba0b98bcfef18044f2dce042fafa9a671761c0",
+  "redaction": "none \u2014 the endpoint is public and unauthenticated, and no request carried credentials",
+  "retrieved_at": "2026-08-06T22:40:17Z",
+  "source": "gamma",
+  "source_endpoint": "https://gamma-api.polymarket.com/markets?limit=3&closed=false&order=volumeNum&ascending=false"
+}

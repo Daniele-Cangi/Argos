@@ -1,0 +1,14 @@
+{
+  "retrieved_at_utc": "2026-08-10T18:47:42Z",
+  "connect_url": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+  "subscribe_sent": {
+    "assets_ids": ["34691510069031117755834214800869745291092253295564665516660269316660628637961"],
+    "type": "market"
+  },
+  "token_id_context": "YES token for the tennis market 'National Bank Open: Diana Shnaider vs Iga Swiatek' (conditionId 0x94a39addec8bd24a2d03deeaa43bdee6a2b11eca403cd12495eb24132cc23173), chosen for real-time order flow at capture time via GET https://gamma-api.polymarket.com/markets?limit=5&active=true&closed=false&order=volume24hr&ascending=false",
+  "duration_seconds": 45,
+  "auth": "none",
+  "notes": "Live public CLOB market-channel WebSocket capture, recorded verbatim as {direction, wall_time (client-side, UTC, ISO 8601), raw} tuples, pretty-printed only. 'raw' is the exact text frame sent or received, unparsed except for the pretty-printing of this file. PING/PONG are plain-text frames, not JSON, and appear verbatim as the strings 'PING'/'PONG'. Captured with the Python 'websockets' library (v17.0.1) in an isolated venv under the session scratchpad; the venv and helper scripts are not part of this repository.",
+  "recorded_by": "argos research subagent",
+  "argos_status_context": "M2 CLOB capture design research, docs/research/m2-clob-websocket.md"
+}

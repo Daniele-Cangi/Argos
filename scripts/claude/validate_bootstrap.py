@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-
 REQUIRED = (
     "CLAUDE.md",
     ".claude/settings.json",
@@ -41,7 +40,8 @@ def main() -> int:
             return 1
         names[name] = agent
 
-    print(f"Bootstrap valid: {len(names)} agents, {len(list((root / '.claude' / 'skills').glob('*/SKILL.md')))} skills")
+    skills = list((root / ".claude" / "skills").glob("*/SKILL.md"))
+    print(f"Bootstrap valid: {len(names)} agents, {len(skills)} skills")
     return 0
 
 
