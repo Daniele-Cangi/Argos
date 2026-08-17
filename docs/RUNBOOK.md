@@ -18,7 +18,17 @@ the reason (see `docs/12_TECH_STACK.md`, "Dependency additions").
 ```bash
 uv run python scripts/claude/quality_gate.py            # ruff, format, mypy, pytest
 uv run python scripts/claude/quality_gate.py --quick    # fast inner loop
+uv run python scripts/claude/quality_gate.py --coverage # branch coverage thresholds
 ```
+
+`--coverage` is deliberately not part of the default gate: the suite runs in
+roughly 80 seconds and the same suite under coverage takes roughly 610, and a
+gate that slow stops being run between slices. CI runs it as its own step,
+where nobody is waiting. It enforces the per-area thresholds in
+`docs/13_TEST_STRATEGY.md` — 90% for domain contracts, replay ordering and
+scoring rules; 80% for source adapters — rather than one aggregate number,
+because that document's own first sentence about thresholds is "do not optimize
+for a vanity global coverage number".
 
 Individually:
 
@@ -43,7 +53,7 @@ uv run python scripts/claude/validate_bootstrap.py      # agents and skills load
 uv run argos status                  # current milestone from docs/STATUS.md
 uv run argos version
 uv run argos config                  # validated settings + config fingerprint
-uv run argos manifest --mode inspect # run manifest record (schema run_manifest.v1)
+uv run argos manifest --mode inspect # run manifest record (schema run_manifest.v5)
 ```
 
 ### Market discovery and audit (M1)
@@ -72,6 +82,38 @@ retry allowance: `timeout × attempts + 10s × (attempts − 1)`. At the default
 `audit` makes no probability claim. `yes_condition` and `no_condition` are
 deliberately empty: extracting them from prose is semantic work gated behind the
 owner review after M4.
+
+### Live capture (M2)
+
+`argos capture market` opens a socket to the **public, unauthenticated** CLOB
+market channel. It sends no credentials and subscribes only to token ids the
+operator names.
+
+```bash
+uv run argos capture market --token-id 34691...961 --max-seconds 45
+uv run argos capture market --token-id A --token-id B --max-frames 200 --json
+uv run argos capture market --token-id A --max-seconds 60 --db /tmp/run.sqlite3
+```
+
+**One of `--max-seconds` or `--max-frames` is required.** A research CLI must
+not start an unbounded run against a live public endpoint by accident. Reaching
+a bound closes the capture run `completed`; Ctrl-C closes it `failed` rather
+than leaving it dangling, and exits 130. "Interrupted" is reserved for a
+process that dies outright and therefore writes no closing row at all — that is
+what `EventStore.iter_open_capture_runs` reports, and it is the only honest
+meaning, since a dying process cannot describe its own death.
+
+Every run writes three artifacts beside each other: a SQLite event store
+(default `$ARGOS_DATA_DIR/capture/events.sqlite3`), a
+`<capture_run_id>.manifest.json` (`run_manifest.v5`), and a content-addressed
+archive of every raw frame under `raw/`. `--no-raw-archive` turns the last one
+off and its help text says what that costs: a capture that cannot be
+re-normalized under a corrected parser, and whose stored `raw_payload_sha256`
+can never be checked against anything.
+
+The command prints the loop's own counters *and* the store's independently
+derived counts. They must agree; printing one would hide a disagreement, and a
+disagreement is exactly the kind of defect that must stay visible.
 
 ## Configuration
 

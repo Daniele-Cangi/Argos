@@ -123,7 +123,7 @@ def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
         "price_change.v1": "PriceChangeV1",
         "quarantined_market.v1": "QuarantinedMarketV1",
         "rejected_observation.v1": "RejectedObservationV1",
-        "run_manifest.v4": "RunManifest",
+        "run_manifest.v5": "RunManifest",
         "source_provenance.v1": "SourceProvenanceV1",
         "ws_book_snapshot.v1": "WsBookSnapshotV1",
     }

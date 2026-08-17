@@ -157,6 +157,36 @@ gap_warnings[]
 completion_status
 ```
 
+**Implemented as three existing records, not as a class with this name** —
+decided in the M2 capture-loop slice, recorded here in the M2 closure so the
+specification and the code stop disagreeing. `RunManifest` (`run_manifest.v5`)
+carries `code_revision`, `config_sha256` (as `config_fingerprint`),
+`schema_versions`, `source_urls` (inside `settings_snapshot`),
+`subscribed_token_ids` (inside `run_parameters`), and `capture_run_id`; the
+store's append-only `capture_run` rows carry `started_at`, `ended_at` and
+`completion_status`; and `EventStore.counts_for_capture_run` *derives*
+`accepted_count`/`duplicate_count`/`rejected_count` by query, so a summary can
+never silently disagree with the rows it summarizes (ADR-0011 section 5).
+
+Four fields are genuinely **not implemented**, and saying so is the point of
+this note:
+
+- `market_filter` and `selected_markets` — capture takes explicit token ids
+  today; no selection policy runs inside a capture, so recording one would be
+  recording a filter that did not filter anything;
+- `host_metadata` and `clock_metadata` — nothing reads them, and a manifest
+  field nobody reads is a field that quietly stops being true;
+- `reconnect_count` and `gap_warnings[]` — the transport counts reconnects on
+  `ClobWsHealth`, which is in-memory and not persisted, and this channel has no
+  sequence number, so ARGOS cannot detect a gap at all
+  (`docs/research/m2-clob-websocket.md`). A `gap_warnings` field would be
+  permanently empty and would read as "no gaps", which is a stronger claim than
+  "cannot tell".
+
+The M1 architecture review's blocking finding was a specified contract silently
+dropped, and ADR-0010's B3 was the same shape. This note exists so that this one
+is dropped *loudly*.
+
 ## `ReplayManifestV1`
 
 ```text

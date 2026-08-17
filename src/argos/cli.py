@@ -499,6 +499,19 @@ def capture_market(
             working_tree=working_tree,
             capture_run_id=run_id,
             schema_versions=_CAPTURE_SCHEMA_VERSIONS,
+            # The operator's own arguments, which are not settings and were in
+            # no durable artifact before `run_parameters` existed (core
+            # invariant 13). `subscribed_token_ids` is recorded in the form the
+            # loop actually fanned out over -- deduplicated and sorted, matching
+            # `run_capture`'s own `sorted(frozenset(...))` -- because that set is
+            # what determines `ingest_sequence` allocation, and the order the
+            # flags happened to appear in determines nothing.
+            run_parameters={
+                "subscribed_token_ids": sorted(frozenset(token_ids)),
+                "max_seconds": max_seconds,
+                "max_frames": max_frames,
+                "raw_archive": raw_archive,
+            },
         )
         manifest_path = db_path.parent / f"{run_id}.manifest.json"
         manifest_path.write_bytes(

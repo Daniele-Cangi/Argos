@@ -40,6 +40,7 @@ from argos.store import CompletionStatus, open_sqlite_event_store
 runner = CliRunner()
 
 TOKEN_YES = "34691510069031117755834214800869745291092253295564665516660269316660628637961"
+TOKEN_NO = "95561057794427123541889915407555646439882912350845258651794843110787555977699"
 CONDITION_ID = "0x94a39addec8bd24a2d03deeaa43bdee6a2b11eca403cd12495eb24132cc23173"
 
 
@@ -254,7 +255,7 @@ def test_a_successful_run_writes_observations_closes_the_run_and_emits_a_manifes
     manifest_path = Path(report["manifest_path"])
     assert manifest_path.exists()
     manifest_record: dict[str, Any] = orjson.loads(manifest_path.read_bytes())
-    assert manifest_record["schema_version"] == "run_manifest.v4"
+    assert manifest_record["schema_version"] == "run_manifest.v5"
     assert manifest_record["mode"] == "capture"
     assert manifest_record["capture_run_id"] == "test-run-success"
     assert "code_revision" in manifest_record
@@ -264,6 +265,57 @@ def test_a_successful_run_writes_observations_closes_the_run_and_emits_a_manifes
         "rejected_observation.v1",
     }
     assert manifest_record["input_provenance"] == []
+    # Core invariant 13: the operator's own arguments are configuration too, and
+    # they are not settings. `subscribed_token_ids` is the one that matters --
+    # `run_capture` fans out over the configured set, sorted, and that is what
+    # determines `ingest_sequence` allocation. Recorded in the form the loop
+    # actually used, so a reader gets the determinant rather than the flag order.
+    assert manifest_record["run_parameters"] == {
+        "subscribed_token_ids": [TOKEN_YES],
+        "max_seconds": None,
+        "max_frames": 3,
+        "raw_archive": True,
+    }
+
+
+def test_the_manifest_records_the_token_set_the_loop_used_not_the_flag_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deduplicated and sorted, matching `run_capture`'s own `sorted(frozenset(...))`.
+
+    A capture could not be reproduced from its own manifest before this, and
+    reproducing it needs the set the fan-out actually iterated -- not the order
+    somebody happened to type the flags in, which determines nothing.
+    """
+    socket = ScriptedWebSocket([_price_change_text()])
+    _install_connector(monkeypatch, SingleConnectionConnector(socket))
+    db_path = tmp_path / "events.sqlite3"
+    result = runner.invoke(
+        cli.app,
+        [
+            "capture",
+            "market",
+            "--token-id",
+            TOKEN_NO,
+            "--token-id",
+            TOKEN_YES,
+            "--token-id",
+            TOKEN_NO,
+            "--max-frames",
+            "1",
+            "--db",
+            str(db_path),
+            "--capture-run-id",
+            "test-run-token-order",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    report: dict[str, Any] = orjson.loads(result.stdout)
+    manifest_record: dict[str, Any] = orjson.loads(Path(report["manifest_path"]).read_bytes())
+    assert manifest_record["run_parameters"]["subscribed_token_ids"] == sorted(
+        {TOKEN_YES, TOKEN_NO}
+    )
 
 
 def test_human_readable_output_names_the_run_db_and_manifest(

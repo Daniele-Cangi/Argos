@@ -203,7 +203,7 @@ class Settings(BaseSettings):
         including ``data_dir``. The reasoning is in the module docstring and in
         ``docs/DECISION_LOG.md``; the consequence worth stating here is that a
         fingerprint recorded by an earlier build is **not comparable** to one
-        recorded now. ``RunManifest`` is bumped to ``run_manifest.v4`` so that
+        recorded now. ``RunManifest`` was bumped to ``run_manifest.v4`` so that
         incomparability is mechanical rather than a footnote — unlike the v1→v2
         and v2→v3 bumps, manifests carrying the older meaning really were
         written, by the three live captures of 2026-08-15.

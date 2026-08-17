@@ -15,7 +15,7 @@ from pydantic import ValidationError
 
 from argos.domain.provenance import SourceProvenanceV1, sha256_hex
 from argos.errors import ImmutabilityViolationError, SchemaVersionError, StorageError
-from argos.store import read_raw_payload, write_raw_payload
+from argos.store import archive_relative_location, read_raw_payload, write_raw_payload
 
 RAW = b'[{"id":"1","question":"Will it?"}]'
 RETRIEVED = datetime(2026, 8, 7, 12, 0, tzinfo=UTC)
@@ -234,3 +234,55 @@ def test_rewriting_a_payload_restores_a_lost_sidecar(tmp_path: Path) -> None:
     path.with_name(f"{sha256_hex(RAW)}.meta.json").unlink()
     write_raw_payload(tmp_path, raw=RAW, provenance=_provenance())
     assert path.with_name(f"{sha256_hex(RAW)}.meta.json").exists()
+
+
+# --- the stored location is join-safe (M2 closure security review, S2) ------------
+
+
+@pytest.mark.parametrize(
+    "hostile_source",
+    ["../elsewhere", "/etc", "a/b", "a\b", ".", "..", "a b", "A", ""],
+)
+def test_a_hostile_source_can_never_reach_a_stored_location(hostile_source: str) -> None:
+    """`archive_relative_location` composes a value that now lives in a durable
+    record and that a consumer will join back onto an archive root, so a
+    separator or a traversal segment in it would escape that root at read time
+    -- one layer further out than the containment check in `write_raw_payload`,
+    which only guards the write.
+
+    The defence is that `SourceProvenanceV1.source` cannot hold such a value at
+    all: `^[a-z0-9][a-z0-9_-]{0,31}$` admits no slash, backslash, or dot. Asserted at
+    the contract rather than at the composition, because that is where the
+    property actually lives -- and a test that only checked the composed string
+    would keep passing if the pattern were ever relaxed.
+    """
+    with pytest.raises(ValidationError):
+        SourceProvenanceV1(
+            source=hostile_source,
+            endpoint="/book",
+            http_status=200,
+            retrieved_at=RETRIEVED,
+            raw_sha256=sha256_hex(b"{}"),
+            byte_length=2,
+        )
+
+
+def test_a_stored_location_stays_inside_the_archive_when_joined_back(tmp_path: Path) -> None:
+    """The composed value, joined to a root, resolves inside that root -- and it
+    is the same string `write_raw_payload` wrote to, not a parallel guess."""
+    payload = b'{"ok": true}'
+    provenance = SourceProvenanceV1(
+        source="clob_market_ws",
+        endpoint="wss://ws-subscriptions-clob.polymarket.com/ws/market",
+        http_status=None,
+        retrieved_at=RETRIEVED,
+        raw_sha256=sha256_hex(payload),
+        byte_length=len(payload),
+    )
+    written = write_raw_payload(tmp_path, raw=payload, provenance=provenance)
+    location = archive_relative_location(provenance)
+
+    assert not Path(location).is_absolute()
+    joined = (tmp_path / location).resolve()
+    assert joined.is_relative_to(tmp_path.resolve())
+    assert joined == written.resolve()

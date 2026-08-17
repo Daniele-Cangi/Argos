@@ -12,8 +12,25 @@ ever been persisted, so there is no migration path and none is written —
 compatibility wrappers are avoided per project convention when there is
 nothing yet to be compatible with.
 
-``run_manifest.v4`` is **not** that kind of bump, and the difference matters.
-No field is added or removed; what changed is the *meaning* of
+``run_manifest.v5`` adds ``run_parameters``, closing a real gap in core
+invariant 13 that the M2 closure architecture review found: *"every run records
+configuration, code revision, schema versions, and data provenance"*, and a
+capture run recorded none of the inputs that are not settings. The important
+one is ``subscribed_token_ids``. ``argos.ingestion.capture`` fans out over the
+*configured* token set, sorted — its own docstring calls that "the load-bearing
+one for M3", because it is what makes ``ingest_sequence`` allocation a function
+of configuration rather than of connection topology — and that set arrived from
+``--token-id`` flags, which are not settings and were therefore in no durable
+artifact anywhere. A capture could not be reproduced from its own manifest.
+
+Two version bumps in one day, for two unrelated reasons, is worth a word. The
+alternative was to widen ``v4`` after committing it, which would leave two
+different record shapes sharing one version string inside this branch's own
+history — the exact ambiguity the ``v3``→``v4`` bump exists to prevent. A
+version number is cheap; a version that means two things is not.
+
+``run_manifest.v4`` was **not** a clean bump, and the difference matters. No
+field was added or removed; what changed is the *meaning* of
 ``config_fingerprint``, which now covers only experiment-scoped settings and no
 longer covers ``data_dir`` (see
 :class:`argos.config.settings.FingerprintScope`). Two manifests carrying the
@@ -54,7 +71,7 @@ from pydantic import Field, field_serializer, field_validator, model_validator
 from argos.clock import Clock, ensure_utc
 from argos.config.settings import Settings
 from argos.domain.provenance import SourceProvenanceV1
-from argos.domain.versioning import VersionedModel, freeze, thaw
+from argos.domain.versioning import FrozenDict, VersionedModel, freeze, thaw
 
 _SchemaVersion = Annotated[str, Field(min_length=1)]
 
@@ -93,7 +110,7 @@ class WorkingTreeStatus(StrEnum):
 class RunManifest(VersionedModel):
     """Immutable description of one ARGOS run."""
 
-    schema_version: ClassVar[str] = "run_manifest.v4"
+    schema_version: ClassVar[str] = "run_manifest.v5"
 
     run_id: str = Field(min_length=1)
     mode: RunMode
@@ -131,6 +148,28 @@ class RunManifest(VersionedModel):
     fingerprint excludes. This is what makes the scoping safe: an auditor asking
     "where did this run write?" reads it here rather than losing it."""
 
+    run_parameters: Mapping[str, Any] = FrozenDict({})
+    """The run's inputs that are **not** settings — the operator's own arguments.
+
+    Core invariant 13 asks every run to record its configuration, and a
+    ``Settings`` snapshot is only part of that: a capture's subscribed token
+    ids, its stopping bounds and whether it archived raw frames all arrive as
+    command-line arguments, and none of them was recorded anywhere durable
+    before this field existed. ``subscribed_token_ids`` is the one that matters
+    most — it is what ``argos.ingestion.capture`` fans out over, and therefore
+    what determines ``ingest_sequence`` allocation.
+
+    Recorded in the form the loop actually used (deduplicated and sorted), not
+    in the order the flags happened to appear, because the sorted set is the
+    determinant and the flag order is not.
+
+    Deliberately an open mapping rather than one typed field per mode: a
+    ``replay`` run's parameters are not a capture's, and modelling every mode's
+    arguments on one class would make the contract change every time a CLI flag
+    does. Frozen on validation like ``settings_snapshot``, so a manifest cannot
+    be edited after the fact.
+    """
+
     schema_versions: tuple[_SchemaVersion, ...] = ()
     """The schema versions of every record this run reads or writes — for
     example ``("market_definition.v1", "compiled_market_contract.v1")`` for a
@@ -157,12 +196,12 @@ class RunManifest(VersionedModel):
         """
         return ensure_utc(value)
 
-    @field_validator("settings_snapshot")
+    @field_validator("settings_snapshot", "run_parameters")
     @classmethod
     def _freeze_snapshot(cls, value: Mapping[str, Any]) -> Mapping[str, Any]:
         return cast(Mapping[str, Any], freeze(value))
 
-    @field_serializer("settings_snapshot")
+    @field_serializer("settings_snapshot", "run_parameters")
     def _serialize_snapshot(self, value: Mapping[str, Any]) -> dict[str, Any]:
         return cast(dict[str, Any], thaw(value))
 
@@ -219,6 +258,7 @@ def build_run_manifest(
     schema_versions: Collection[str] = (),
     input_provenance: Collection[SourceProvenanceV1] = (),
     capture_run_id: str | None = None,
+    run_parameters: Mapping[str, Any] | None = None,
 ) -> RunManifest:
     """Build a manifest for a run, stamping it with the injected clock's time."""
     from argos import __version__
@@ -233,6 +273,7 @@ def build_run_manifest(
         capture_run_id=capture_run_id,
         config_fingerprint=settings.fingerprint(),
         settings_snapshot=settings.snapshot(),
+        run_parameters=dict(run_parameters or {}),
         schema_versions=tuple(schema_versions),
         input_provenance=tuple(input_provenance),
     )

@@ -176,6 +176,147 @@ and silence from it would again be indistinguishable from a clean result. The
 owner gate after M4 is where an independent pass genuinely belongs, and
 `docs/OWNER_REVIEW_GATE.md` already requires one.
 
+## M2 closure reviews (2026-08-17)
+
+**Read the label before the verdicts.** These four reviews were performed by the
+same author who is building M3, not by an independent reviewer. M0 and M1 closed
+on independent verdicts; M2 does not, and this section does not pretend
+otherwise. The alternative was a fourth attempt at a delegation that failed
+seven times in this milestone, where silence would again have been
+indistinguishable from a clean result. Every finding below names what was
+*measured* rather than what was read, because that is the only part of a
+non-independent review worth anything.
+
+### Architecture — APPROVE_WITH_FOLLOWUPS
+
+**A1, fixed in this slice — a capture could not be reproduced from its own
+manifest.** Core invariant 13 says every run records its configuration.
+`RunManifest` recorded `Settings`, and a capture's real inputs are not settings:
+the subscribed token ids, the stopping bounds and the raw-archive flag all
+arrive as command-line arguments and were in **no durable artifact anywhere**.
+`subscribed_token_ids` is the one that matters. `argos.ingestion.capture` fans
+out over the *configured* token set, sorted — its own docstring calls that "the
+load-bearing one for M3", because it is what keeps `ingest_sequence` allocation
+a function of configuration rather than of connection topology — and that set
+existed only in the operator's shell history. Closed by `run_parameters` on
+`run_manifest.v5`, recorded deduplicated and sorted, in the form the loop
+actually used.
+
+**A2, fixed in this slice — a specified contract that was never implemented.**
+`docs/04_DATA_CONTRACTS.md` specifies `CaptureManifestV1` with eighteen fields.
+No such record exists; the capture-loop slice decided the manifest is
+`RunManifest` plus the store's `capture_run` rows, which is a good decision that
+was never written back into the specification. This is precisely the shape of
+the M1 architecture review's blocking finding and of ADR-0010's B3: a specified
+contract silently dropped. The document now says which record carries each
+field, and names the four that are genuinely unimplemented — `market_filter`
+and `selected_markets` (capture takes explicit token ids; there is no filter to
+record), `host_metadata`/`clock_metadata` (nothing reads them), and
+`reconnect_count`/`gap_warnings` (reconnects are counted in memory only, and
+this channel has no sequence number, so an always-empty `gap_warnings` would
+read as "no gaps" when the truth is "cannot tell").
+
+**A3, open, and it is M3's first deliverable — there is no dispatcher.** Core
+invariant 5 says live and replay use the same domain handlers. That is currently
+true only because there is *one* path, not because two share one: the capture
+loop writes to the store and stops, and every projection this repository has
+driven was driven by a test. Nothing is wrong with the M2 code; what is wrong is
+reading the exit-criteria table as evidence of a shared handler, which it is
+not. Filed under "Now — M3".
+
+**A4 — verified, no action.** Package boundaries and dependency direction hold
+(the AST boundary tests pass, including the ones added this session). All four
+adapters plus the capture loop expose the health counters
+`docs/02_ARCHITECTURE.md`'s failure model requires (`SourceHealth`, `ClobHealth`,
+`ClobWsHealth`, `CaptureHealth`). The only wall-clock read in `src/` is
+`LiveClock.now`. The store's append-only guarantee survives the new schema
+stamping: `PRAGMA` writes file-header fields, not rows, and the forbidden-SQL
+boundary test still passes.
+
+### Security — PASS_WITH_FINDINGS, no blocker
+
+**S1, accepted with the reasoning recorded.** Three statements in
+`event_store.py` interpolate into SQL with an f-string. SQLite cannot
+parameterize a pragma's name or its value, so there is no parameterized
+alternative; all three interpolate module constants — `_EXPECTED_TABLES` keys
+and two module integers — and no caller input reaches any of them. Recorded
+rather than left for a future reviewer to re-derive, because "f-string in SQL"
+is a pattern that should always be justified in place.
+
+**S2, verified negative, now pinned by a test.** R4 made
+`archive_relative_location` compose a value that lives in a durable record and
+that a consumer will join back onto an archive root — one layer further out than
+`write_raw_payload`'s containment check, which only guards the write. A
+separator or `..` in it would escape at read time. It cannot occur:
+`SourceProvenanceV1.source` is `^[a-z0-9][a-z0-9_-]{0,31}$` and `raw_sha256` is
+validated 64-character hex, so the composed string admits no slash, backslash or
+dot. Asserted at the *contract*, not at the composition, so relaxing the pattern
+breaks the test rather than silently reopening the hole.
+
+**S3, accepted.** The adopt-an-unstamped-store path (R3) lets ARGOS write into a
+pre-existing correctly-shaped database. Reaching it requires local write access
+to the database path, which is the same precondition as the already-filed **L2**
+symlink item; it is not an escalation, and refusing instead would strand every
+capture taken before today for no gain.
+
+**S4, accepted and documented at the point of use.** The schema registry (R2)
+makes "dispatch on whatever the record claims to be" the easy path, which is the
+silent coercion `.claude/rules/data-integrity.md` forbids.
+`read_declared_payload`'s docstring states that resolving is not accepting and
+that a consumer must still refuse what it does not handle, with a count.
+
+**S5 — no exposure from narrowing the fingerprint.** R1 removed `data_dir` and
+`log_level` from `config_fingerprint`. Both are still recorded verbatim in
+`settings_snapshot`, so nothing became unauditable; only the hash was scoped.
+
+No new network surface, no execution surface (the boundary scans pass), and the
+one dependency added — `pytest-cov` — is dev-only.
+
+### Testing — branch coverage measured for the first time
+
+`pytest-cov` was not installed, so `docs/13_TEST_STRATEGY.md`'s coverage
+thresholds had been **unverifiable since M0** and were filed as such. They are
+now measured, and they pass:
+
+| Area | Threshold | Measured |
+|---|---|---|
+| `argos.domain` (contracts) | 90% | 95-99% across eight modules |
+| `argos.sources` (adapters) | 80% | 94-96% across three modules |
+| `argos.replay` (ordering) | 90% | no module yet — M3 |
+| `argos.evaluation` (scoring) | 90% | no module yet — M4 |
+
+Whole-project branch coverage is 96% (3,346 statements, 762 branches, 101
+statements and 57 branch arcs unexercised). Enforcement is per area rather than
+aggregate, because that document's own first sentence about thresholds is "do
+not optimize for a vanity global coverage number", and an empty area is reported
+as empty rather than passing silently. It runs in CI and behind
+`--coverage` locally, not in the default gate: the suite takes ~80 s and the
+same suite under coverage takes ~610 s, and a gate that slow stops being run
+between slices.
+
+**A fourth instance of the "claim outruns its assertion" pattern this file
+already names three times.** Enabling the schema registry showed that a stub in
+`tests/test_observation_envelope.py` had been declaring
+`"order_book_snapshot.v1"` — the real payload model's version — inside the test
+module for `read_payload`, which is the function whose version check that
+collision defeats. The M2 security review had *described* this exact attack; the
+repository was carrying an instance of it in the test file for the affected
+function, and had been for four slices.
+
+### Documentation — two stale claims, both fixed
+
+`docs/RUNBOOK.md` documented no `capture` command at all, several slices after
+`argos capture market` shipped and three live captures ran — the milestone's
+last deliverable, the only one that opens a socket, and the one an operator is
+most likely to reach for. It also described `argos manifest` as emitting
+`run_manifest.v1`, three versions out of date. Both corrected, and the capture
+section states the things an operator can get wrong: the mandatory bound, what
+Ctrl-C does versus a killed process, and what `--no-raw-archive` costs.
+
+`docs/04_DATA_CONTRACTS.md` is reconciled with the code (A2 above).
+`docs/STATUS.md`'s own two stale present-tense claims were corrected by the
+readiness audit, above.
+
 ## M2 closure finding: captures were discarding the raw bytes
 
 Found while verifying M2 for closure, after the architecture review agent

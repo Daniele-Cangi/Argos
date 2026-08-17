@@ -377,7 +377,7 @@ def test_manifest_command_accepts_every_declared_mode(mode: RunMode) -> None:
     assert result.exit_code == 0
     payload = orjson.loads(result.stdout)
     assert payload["mode"] == mode.value
-    assert payload["schema_version"] == "run_manifest.v4"
+    assert payload["schema_version"] == "run_manifest.v5"
 
 
 def test_manifest_command_rejects_a_mode_outside_the_enum() -> None:
@@ -501,3 +501,48 @@ def test_a_probe_does_not_write_to_the_git_index(
     cli._working_tree_status()
 
     assert index.stat().st_mtime_ns == before
+
+
+# --- run_parameters (M2 closure: core invariant 13 for a capture) ------------------
+
+
+def test_run_parameters_default_to_empty_and_are_frozen() -> None:
+    """A run with no operator arguments records an empty mapping, not a missing
+    one: "this run had no parameters" and "nobody recorded them" are different
+    claims, and only the first is ever true of a manifest ARGOS built."""
+    manifest = build_run_manifest(
+        settings=Settings(), clock=ReplayClock(START), run_id="run-1", mode=RunMode.INSPECT
+    )
+    assert manifest.run_parameters == {}
+    with pytest.raises(TypeError):
+        manifest.run_parameters["injected"] = True  # type: ignore[index]
+
+
+def test_run_parameters_survive_a_record_round_trip() -> None:
+    manifest = build_run_manifest(
+        settings=Settings(),
+        clock=ReplayClock(START),
+        run_id="run-1",
+        mode=RunMode.CAPTURE,
+        capture_run_id="capture-1",
+        run_parameters={"subscribed_token_ids": ["1", "2"], "max_frames": 10},
+    )
+    record = manifest.to_record()
+    assert record["run_parameters"] == {"subscribed_token_ids": ["1", "2"], "max_frames": 10}
+    assert RunManifest.from_record(record) == manifest
+
+
+def test_mutating_the_caller_s_dict_afterwards_cannot_reach_the_manifest() -> None:
+    """The same guarantee `settings_snapshot` has, for the same reason: a
+    manifest whose contents can change after it was built is not a record of
+    anything (core invariant 7)."""
+    parameters: dict[str, Any] = {"subscribed_token_ids": ["1"]}
+    manifest = build_run_manifest(
+        settings=Settings(),
+        clock=ReplayClock(START),
+        run_id="run-1",
+        mode=RunMode.CAPTURE,
+        run_parameters=parameters,
+    )
+    parameters["subscribed_token_ids"].append("2")
+    assert manifest.to_record()["run_parameters"] == {"subscribed_token_ids": ["1"]}
