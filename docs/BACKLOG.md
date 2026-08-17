@@ -2,6 +2,56 @@
 
 Work top to bottom unless a milestone dependency requires reordering.
 
+## Must close before M3 — from the M3 readiness audit (2026-08-17)
+
+Reconstructed from `main` and from measurement, not from this file's own
+previous state; see `docs/STATUS.md`, "M3 readiness audit". Each item below is
+a genuine blocker for *deterministic replay* specifically, and each names the
+measurement that made it one. Everything else this audit touched is either
+already closed (marked `[x]` in place, with the evidence) or is real but does
+not block M3, and stays where it was filed.
+
+- [ ] **R1 — `config_fingerprint` covers `data_dir`, an output location.**
+      Measured: two `Settings` differing only in `data_dir` fingerprint
+      `a555c764…` and `2dee89e1…`. `docs/02_ARCHITECTURE.md` names "output
+      storage location" as a component that legitimately *differs* between live
+      and replay, and `docs/04_DATA_CONTRACTS.md` requires
+      `ReplayManifestV1.config_sha256` plus "repeated replay of identical
+      input, code, config, and mode must produce identical state hash". As it
+      stands, two replays of one capture into two directories are the same
+      experiment recorded under two configurations. This is the "**Before M3**"
+      item carried from the M0 closure reviews, now due.
+- [ ] **R2 — no `payload_schema_version` -> model registry.** `read_payload`
+      takes the model as an argument, so a replay dispatcher over heterogeneous
+      payloads has to grow an `if/elif` chain on version strings — in the one
+      module whose whole purpose is that live and replay run the *same*
+      handlers. Carried from the ADR-0010 slice as "**Before M3 dispatch**",
+      now due. Closing it also closes the M2 security review's unenforced
+      `schema_version` uniqueness item, which is the same map viewed from the
+      other side.
+- [ ] **R3 — the SQLite store has no schema identity or version.** Measured:
+      `PRAGMA user_version` and `PRAGMA application_id` are both 0 on a store
+      this repository just wrote, and `open_sqlite_event_store` opened a
+      database whose `observation` table was a foreign two-column table
+      *and let `open_capture_run` succeed on it* — the failure surfaces later,
+      mid-run, as a generic SQLite error. Filed as **L4** from the event-store
+      slice; it becomes a blocker at M3 because "identical input produces an
+      identical output hash" needs "identical input" to be a checkable claim
+      about the file being read, and a replay reader is the first code that
+      opens a store it did not itself write.
+- [ ] **R4 — every stored observation embeds an absolute filesystem path.**
+      Found by this audit, not previously filed. `run_capture` stores
+      `str(write_raw_payload(...))`, and `write_raw_payload` resolves its
+      directory, so `raw_payload_location` durably records a machine-specific
+      absolute path inside `observation.record`. The link is not merely
+      cosmetic: it is unverified (nothing checks the path exists), it breaks
+      silently if the capture directory is moved or shared, and it makes two
+      captures of identical bytes on two machines produce different stored
+      records. It is also redundant — `read_raw_payload(directory, sha256)`
+      globs by hash and never reads this field. The same class as R1, one layer
+      down: a physical location baked into a record that should describe
+      content.
+
 ## Now — M0
 
 - [x] Verify Claude settings, agents, skills, and hooks load.
@@ -28,6 +78,7 @@ milestone named, because later code would inherit the defect.
 - [ ] **Before M3** — decide what `config_fingerprint` covers. It currently includes
       `data_dir`, but `docs/02_ARCHITECTURE.md` allows output location to differ between
       live and replay, so an otherwise identical replay gets a different fingerprint.
+      **Now due, and measured** — see **R1** at the top of this file.
 - [x] **Before M2** — `RunManifest` needs schema versions (plural), data provenance, and
       a `mode` enum instead of a free-form string, to satisfy invariant 13 in full.
       Closed: `run_manifest.v2` adds `RunMode` (StrEnum), `schema_versions`
@@ -139,11 +190,16 @@ milestone named, because later code would inherit the defect.
       `raw_payload_sha256`/`raw_payload_location` rather than absorbing them
       into a row.
 - [ ] Discovery does not yet emit a run manifest linking sample to configuration.
-- [ ] **Constraint on the M2 capture-manifest design** — `RunManifest.input_provenance`
+- [x] **Constraint on the M2 capture-manifest design** — `RunManifest.input_provenance`
       is an unbounded tuple of `SourceProvenanceV1`, fine at M1 discovery scale (one
       record per fetched page/market). An M2 capture manifest must not embed one
       provenance record per ingested event; it must reference the event store instead.
       Decide the reference shape before the capture manifest is built, not after.
+      Closed by the capture-CLI slice and confirmed by the M3 readiness audit:
+      the reference shape is `RunManifest.capture_run_id` (`run_manifest.v3`),
+      `input_provenance` is empty for a capture run, and a reader wanting a
+      summary queries `EventStore.counts_for_capture_run`. Measured on the
+      2026-08-15 live capture: 0 `input_provenance` entries.
 - [ ] M2's CLOB REST and WebSocket adapters take a `Pacer` (per ADR-0009), not `Clock`,
       for retry/backoff/reconnect waits, and their own seeded `random.Random` for
       jitter. A shared bounded-retry helper is justified once the second client exists.
@@ -376,6 +432,7 @@ numbers so the next slice inherits evidence rather than a reminder.
 - [ ] **Before M3 dispatch** — no `payload_schema_version` -> model registry
       exists. `read_payload` takes an explicit `model` argument; dispatch
       across multiple payload types during replay will otherwise grow ad hoc.
+      **Now due** — see **R2** at the top of this file.
 - [ ] `read_payload` hard-matches exactly one `payload_schema_version` instead
       of accepting a set via `ensure_supported_version`; no reader can accept
       more than one payload version yet.
@@ -385,7 +442,7 @@ numbers so the next slice inherits evidence rather than a reminder.
       zero-size levels in a REST snapshot (never observed), and behaviour under
       a paused/halted market as distinct from a closed one
       (`docs/research/m2-clob-rest-book.md`, "UNVERIFIED").
-- [ ] The WebSocket research slice must answer: does the market channel supply
+- [x] The WebSocket research slice must answer: does the market channel supply
       a sequence number or only `timestamp`/`hash`; does a delta carry the hash
       of the book state it produces; does zero-size mean removal on the delta
       stream (this is where the corresponding M2 exit criterion actually
@@ -425,6 +482,12 @@ None is a blocker; all are recorded so they are chosen rather than forgotten.
       no transport discriminator, so one silent-substitution risk was replaced by
       another inside the contract whose job is provenance. Close when the
       WebSocket adapter lands and a transport field has a real second value.
+      **The condition has been met**: `argos.sources.clob_ws` ships and writes
+      `http_status=None` on every frame, so the second value now genuinely
+      exists and the ambiguity is live rather than anticipated. Not a *replay*
+      blocker — provenance is carried, never dispatched on — so the M3
+      readiness audit left it here rather than promoting it. It is the oldest
+      item whose stated trigger has actually fired.
 - [ ] `schema_version` uniqueness is unenforced across `VersionedModel`
       subclasses. Two classes both declaring `order_book_snapshot.v1` defeat
       `read_payload`'s version check — review built a `Trade` out of a book
@@ -501,6 +564,12 @@ than discovered late by an adapter or the capture CLI.
       message. A future migration will have no version to migrate from. Note
       the engineering rule "Every public schema and persistent record is
       versioned" is satisfied for records but not for the schema.
+      **Re-measured by the M3 readiness audit and promoted to a blocker** —
+      see **R3** at the top of this file. The audit found it is one step worse
+      than recorded here: against a database whose `observation` table was a
+      foreign two-column table, `open_sqlite_event_store` *and*
+      `open_capture_run` both succeeded, so the run is already open and
+      recorded before anything fails.
 - [ ] **L5** `write_raw_payload` does `mkdir(parents=True)` but
       `_fsync_directory` syncs only `path.parent`, so for the first payload of
       a new source the file is durable inside a directory whose own entry may
@@ -535,6 +604,10 @@ than discovered late by an adapter or the capture CLI.
       `~/.cache/argos-sec-probe/e.sqlite3`, could not be removed (the
       permission system denied `rm`). It is outside the repository and
       affects no commit, but note it as a manual cleanup item.
+      **Owner action, not reachable from here**: it lives in the home
+      directory of the machine that ran that review, which is not the machine
+      this milestone is being built on. Left open deliberately so it is not
+      marked done by someone who merely could not see it.
 
 ### Carried from the M2 CLOB REST adapter slice
 
@@ -582,7 +655,10 @@ capture-loop slice.
       reimplement decimal normalization** — with the `price_change`
       WebSocket delta model as the concrete next place this can reappear.
 
-## Later — M3
+## Now — M3
+
+Blockers **R1-R4** at the top of this file close first; these are the milestone
+deliverables themselves (`docs/07_MILESTONES.md`, M3).
 
 - [ ] Replay source and scheduler.
 - [ ] Event-time watermark policy.
@@ -590,6 +666,23 @@ capture-loop slice.
 - [ ] `VirtualPacer` for accelerated/stepwise replay pacing (per ADR-0009's
       consequences section), living in `argos.replay`, and never influencing the
       output hash. Deliberately not built pre-M2 to avoid scope drift.
+- [ ] A dispatcher that live and replay both call. Named here because the M3
+      readiness audit found it does not exist in either direction: the capture
+      loop writes to the store and stops, and every projection this repository
+      has driven so far was driven by a test. "Live and replay use the same
+      domain handlers" (core invariant 5) is therefore currently true only
+      because there is one path, not because two paths share one.
+- [ ] Decide, explicitly, what a **duplicate delivery** means to a replayed
+      projection. `iter_deliveries` returns one row per arrival including
+      duplicates, and re-applying a `price_change` group is not a no-op in
+      general (a second `REMOVE` of a level records
+      `REMOVE_OF_ABSENT_LEVEL`). Skipping duplicates for *state* while counting
+      them for the *manifest* is the obvious answer and must be written down,
+      not inferred.
+- [ ] Decide, explicitly, the replay order **across** capture runs.
+      `ingest_sequence` is unique and contiguous within one run and carries no
+      meaning between runs, so "replay this database" needs a stated total
+      order or an explicit refusal to span runs.
 
 ## Later — M4
 

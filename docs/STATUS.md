@@ -1,30 +1,21 @@
 # ARGOS status
 
-Last updated: 2026-08-12
+Last updated: 2026-08-17
 
 ## Current state
 
-- Current milestone: **M2 — CLOB capture — in progress**. M0 and M1 closed. The
-  pacing-versus-timekeeping ADR that gated M2 (ADR-0009) is resolved and merged.
-  Seven M2 vertical slices have landed: the canonical `ObservationEnvelopeV1` /
-  `RejectedObservationV1` contracts and their identity derivation (ADR-0010);
-  the first typed payload, `OrderBookSnapshotV1`; a security review of both
-  contracts (verdict **PASS_WITH_FINDINGS**, no blocker, findings closed in
-  `1fb057c`); a public CLOB WebSocket market-channel research note built from
-  live capture, not documentation alone; the idempotent, append-only SQLite
-  event store and delivery record specified by ADR-0011; the public CLOB
-  REST order-book adapter and its normalization step
-  (`src/argos/sources/clob.py`, `src/argos/ingestion/clob_book.py`) — the
-  first slice that is a genuinely complete vertical: real recorded bytes go
-  in one end and a deduplicated, identity-stable observation lands in
-  `SQLiteEventStore` at the other; and now the `price_change.v1` typed delta
-  payload (`src/argos/domain/pricechange.py`), the second and last payload
-  model M2 needs, built against the recorded live WebSocket capture.
-  Since then the WebSocket transport, the capture loop, and the order-book
-  projection have all landed. **What does not exist: a capture CLI, and any
-  run against live traffic.** Every M2 criterion below is evidenced against
-  *recorded* frames replayed through the real code path; no socket has ever
-  been opened by a capture.
+- Current milestone: **M3 — deterministic replay — starting**. M0 and M1 are
+  closed. **M2 is functionally complete and is closed on evidence rather than
+  on an independent verdict** — see "M2 closure" below, which does not claim
+  more than that, and "M3 readiness audit" for what was re-derived from `main`
+  rather than read off this file.
+- Every M2 deliverable in `docs/07_MILESTONES.md` exists: the public CLOB REST
+  order-book adapter, the public market WebSocket transport, both typed payload
+  models plus the WebSocket `book` model, bounded seeded reconnect backoff, the
+  idempotent append-only SQLite event store (ADR-0011), the capture loop with
+  health counters, a bounded blocking frame buffer, the `argos capture market`
+  CLI, and a raw frame archive. Three live captures ran against real Polymarket
+  traffic on 2026-08-15 (45 s, 60 s, 40 s).
 - Autonomous target: **complete M0-M4**
 - Owner gate: **required after M4**
 - Execution capability: **prohibited and absent**
@@ -32,22 +23,108 @@ Last updated: 2026-08-12
 
 ## Current objective
 
-Build the WebSocket market-channel **adapter** — the transport half of
-ingestion — using the same `Pacer`/`Clock` separation (ADR-0009) and
-`ObservationEnvelopeV1`/`RejectedObservationV1` contracts (ADR-0010) the REST
-adapter slice proved end-to-end against `SQLiteEventStore`. Both payload
-models M2 needs now exist, so this next slice is transport and ingestion only,
-not schema design.
+Close the four blockers the M3 readiness audit identified (`docs/BACKLOG.md`,
+**R1-R4**), then build M3: a replay source reading a capture in original ingest
+order, a `ReplayClock` moved only by the replay scheduler, an explicit
+watermark and late-event policy, one dispatcher that live and replay both call,
+a replay manifest with an output state hash, accelerated and stepwise modes,
+and a golden replay fixture with a deterministic regression test.
 
-`docs/BACKLOG.md` carries four constraints this slice must close, each with the
-measurement that produced it rather than a reminder: a byte cap checked
-*before* parsing (measured: 900,000 `price_changes` entries cost 146.87 s CPU
-and 731.7 MiB, and no `Pacer` can bound synchronous CPU work); validating
-`entry_hash` inside the ingestion `try` rather than leaving the envelope to
-refuse it with no ledger entry; `ingest_sequence` allocation and cross-token
-fan-out, still deliberately undecided; and the deliberate refusal of a
-`(frame, token)` group carrying more than one distinct hash, a shape never
-observed live.
+## M3 readiness audit (2026-08-17)
+
+Performed before writing any M3 code, and deliberately **not** by reading this
+file: the state below was reconstructed from `main`, from the merged commits,
+and from running the code. Where the reconstruction disagreed with what this
+file previously said, the reconstruction won and the disagreement is recorded
+rather than smoothed over.
+
+**Environment, first, because it invalidated evidence before any of it was
+read.** The repository had only ever been checked out on Linux. On a fresh
+Windows clone, Git's default `core.autocrlf=true` rewrote every recorded
+fixture from LF to CRLF, and all four failed `tests/test_fixtures.py` — their
+own hash guard, doing exactly its job. `book_yes.raw.json` arrived as 7,532
+bytes hashing `8f95c861…` against the 7,174 bytes hashing `510f03e4…` its
+sidecar records. That is core invariant 7 broken before a single test runs, and
+it had been latent since M1. Closed by `.gitattributes` (`* -text`), verified
+by checking a file out with `core.autocrlf=true` forced and getting the
+recorded bytes back. The M0/M1/M2 gate results in this file were all produced
+on Linux and are unaffected; this audit's own measurements were re-run on
+Python 3.12 on Linux, matching CI, for the same reason.
+
+**Baseline re-measured, not assumed**: `uv run python
+scripts/claude/quality_gate.py` → PASS. ruff, ruff format, mypy strict on 43
+source files, **1,316 tests**. That reproduces the number this file records for
+the last M2 slice, on a machine that has never run this repository before.
+
+### What the audit found, and what it decided about each
+
+**Four genuine blockers for deterministic replay**, filed as **R1-R4** at the
+top of `docs/BACKLOG.md` with their measurements. In summary: `config_fingerprint`
+covers `data_dir`, which is an output *location* that `docs/02_ARCHITECTURE.md`
+explicitly allows to differ between live and replay (R1); there is no
+`payload_schema_version` -> model registry, so a replay dispatcher would grow an
+`if/elif` chain in the one module whose purpose is that live and replay share
+handlers (R2); the SQLite store carries no schema identity, and a database whose
+`observation` table was a foreign two-column table was opened *and accepted an
+opened capture run* before failing later with a generic error (R3); and every
+stored observation embeds an absolute filesystem path in `raw_payload_location`,
+which is unverified, breaks silently when a capture is moved, and is redundant
+with the hash lookup that actually reads the archive (R4). R4 was not previously
+filed anywhere — it is the same class as R1, one layer down.
+
+**Backlog items that were already closed and still marked open.** The
+capture-manifest constraint carried from the pre-M2 pacing slice (closed by
+`run_manifest.v3`'s `capture_run_id` and an empty `input_provenance`, measured
+at 0 entries on the live capture) and the WebSocket research questions (answered
+in `docs/research/m2-clob-websocket.md`, with the answers quoted inside the item
+itself while the checkbox stayed unticked). Both are now `[x]` with their
+evidence in place.
+
+**One item whose stated trigger has fired and which is still correctly open.**
+`SourceProvenanceV1.http_status` was made nullable with the note "close when the
+WebSocket adapter lands and a transport field has a real second value". The
+adapter shipped and writes `None` on every frame, so the ambiguity is now live
+rather than anticipated. It is not a replay blocker — provenance is carried,
+never dispatched on — so the audit left it filed rather than promoting it, and
+said so.
+
+**Two decisions M3 must make explicitly rather than inherit.** `iter_deliveries`
+returns one row per arrival *including duplicates*, and re-applying a
+`price_change` group is not a no-op in general — a second `REMOVE` of a level
+records `REMOVE_OF_ABSENT_LEVEL`. And `ingest_sequence` is unique and contiguous
+within one capture run and carries no meaning between runs, so "replay this
+database" needs a stated total order or an explicit refusal to span runs. Both
+are filed under "Now — M3".
+
+**Correction/supersession was checked and is deliberately *not* being added.**
+`ObservationEnvelopeV1` still has no `supersedes_observation_id`, and ADR-0011
+already recorded why: adding an unused nullable field is the compatibility
+wrapper the engineering rules warn against, and because the record is JSON,
+adding it later is cheap. The audit confirms M3 does not need it — a replay
+reads one capture run's records as they were captured, and nothing in this
+repository can yet re-normalize a capture under a corrected parser, which is the
+only operation that mints an unlinked second identity. It becomes due when a
+re-normalization command is written, not before. Recorded here because "checked
+and deliberately not done" and "not checked" look identical afterwards.
+
+**Ordering was verified by running it, not by reading it.** The 42 received
+frames of the recorded live capture driven through the real `run_capture` into a
+real `SQLiteEventStore` produce sequences **contiguous 1..42 across the delivery
+and rejection ledgers combined**, with no gaps and no reuse, **zero event-time
+regressions in arrival order**, and exactly one record per sequence value
+(`_reserve_ingest_sequence` enforces that across both tables inside the
+insert's own transaction). So event-store order, replay order, and the order a
+projection will see are the same total order, and merging the two ledgers by
+`ingest_sequence` in `argos.replay` is well defined without adding a query to
+the `EventStore` port.
+
+**One earlier probe result that was an artifact, recorded so it is not repeated
+as a finding.** Feeding the recorded fixture's frames straight into
+`run_capture` produces four `malformed_payload` rejections. They are the
+server's plain-text `PONG` replies, which the real transport consumes in
+`ClobMarketWsClient._classify` and never yields; the rejections exist only
+because the probe bypassed the transport. Nothing in the shipped path writes
+them.
 
 ## M2 closure: reviews did not deliver, and what was verified instead
 
@@ -86,8 +163,18 @@ the signature of a broken instrument, not a finding; the bug was in the harness
 security finding, which is worse than none.
 
 **Still open before M2 can close**: an architecture verdict and a security
-verdict. The CI gap is closed — see "Current state" above: pull request #2 ran
-the gate on Python 3.12 from a clean checkout and passed.
+verdict. The CI gap is closed — pull request #2 ran the gate on Python 3.12
+from a clean checkout and passed.
+
+**Update, 2026-08-17.** Those two verdicts are delivered in "M2 closure
+reviews" below, and they are labelled for what they are: reviews performed by
+the same author who is building M3, not by an independent reviewer. That is
+weaker than the M0 and M1 closures, which had independent verdicts, and the
+weakness is stated rather than papered over — the alternative on offer was a
+fourth attempt at a delegation that has failed seven times in this milestone,
+and silence from it would again be indistinguishable from a clean result. The
+owner gate after M4 is where an independent pass genuinely belongs, and
+`docs/OWNER_REVIEW_GATE.md` already requires one.
 
 ## M2 closure finding: captures were discarding the raw bytes
 
@@ -1273,21 +1360,29 @@ systematic) is unresolved and must not be assumed by the capture loop.
 
 ## M2 exit criteria
 
-Tracking `docs/07_MILESTONES.md`. Two criteria now have **end-to-end**
-evidence from the CLOB REST adapter slice (a real recorded response through
-`ClobClient` → `normalize_clob_book` → `SQLiteEventStore`), not merely
-store-level evidence; one has payload-level evidence on real recorded frames;
-one has store-only partial evidence; the rest have no adapter or capture loop
-yet to produce evidence against and are listed as open rather than implied
-closed. **No capture CLI exists, and no capture has ever run against a live
-socket** — every criterion below is evidenced by replaying recorded frames
-through the real code path, which is why several are marked "structurally
-closed, never exercised live" rather than simply closed.
+Tracking `docs/07_MILESTONES.md`.
+
+**Re-checked by the M3 readiness audit (2026-08-17), and two rows below were
+stale in the direction that flatters the milestone.** The table's introduction
+said "no capture CLI exists, and no capture has ever run against a live socket"
+several slices after both had landed, and the zero-size row said "no WebSocket
+transport exists" for the same reason. Those sentences are corrected here; the
+identical sentences *inside* the dated slice sections further down are left
+alone, because those are records of what was true at that slice, not claims
+about now. This is the third time in this milestone that a present-tense claim
+in this file outlived the thing it described, which is why the audit
+re-derived the state from `main` instead of reading it here.
+
+As it actually stands: the CLI exists, three live captures have run, and the
+remaining honest qualifications are narrower and specific — a real network
+reconnect has never happened, and no capture has ever been interrupted by a
+process dying. Those two are marked "never exercised live" below and are not
+claimed as closed.
 
 | Criterion | Status | Evidence |
 |---|---|---|
 | Duplicate source event does not create a second accepted observation | **End-to-end evidence; no capture loop runs it against live traffic yet** | `_observation_identity` collides an identical redelivery onto one `observation_id`, on the real recorded CLOB payload as well as a constructed one (`docs/research/m2-clob-rest-book.md`, "Consequence for `ObservationEnvelopeV1`"). `SQLiteEventStore.append_observation` enforces it at the store: a redelivery inserts zero second `observation` rows and exactly one `delivery` row with `disposition="duplicate"`, both writes inside one `BEGIN IMMEDIATE` transaction (`tests/test_event_store.py`, `tests/test_event_store_adversarial.py`, including real multi-connection race tests). The CLOB REST adapter slice closes the remaining gap end to end: a real recorded response fed through `ClobClient` → `normalize_clob_book` → `SQLiteEventStore` produces one observation row and two delivery rows (`accepted=1, duplicate=1`) for a redelivery. **Now closed on live traffic**: a 60-second live capture on 2026-08-15 received a genuine duplicate from the source and collapsed it — 18 observation rows, 18 `accepted_new` deliveries and 1 `duplicate` delivery, with no second observation minted |
-| Zero-size level update is represented as removal | **End-to-end evidence into the store; no transport receives a live frame yet** | Represented structurally, not by convention: `PriceLevelChangeKind.REMOVE` holds **if and only if** `size == 0`, validated on every construction path including replay and `from_record`, so a record cannot claim one and carry the other (`src/argos/domain/pricechange.py`). Both genuine zero-size entries in the recorded live capture now travel the full path — `normalize_clob_price_change` -> `build_observation_envelope` -> `SQLiteEventStore` — and land as `REMOVE` in a stored payload (`0.17` bid side, `0.83` ask side on the sibling), verified independently of the slice's own tests. `OrderBookSnapshotV1` separately implements the REST-snapshot side, where the same value is deliberately a counted anomaly rather than a removal. **Not yet closed**: no WebSocket transport exists, so the frames are replayed from a recorded capture rather than received from a socket |
+| Zero-size level update is represented as removal | **Closed structurally and end-to-end into the store; not observed on a live capture** | Represented structurally, not by convention: `PriceLevelChangeKind.REMOVE` holds **if and only if** `size == 0`, validated on every construction path including replay and `from_record`, so a record cannot claim one and carry the other (`src/argos/domain/pricechange.py`). Both genuine zero-size entries in the recorded live capture now travel the full path — `normalize_clob_price_change` -> `build_observation_envelope` -> `SQLiteEventStore` — and land as `REMOVE` in a stored payload (`0.17` bid side, `0.83` ask side on the sibling), verified independently of the slice's own tests. `OrderBookSnapshotV1` separately implements the REST-snapshot side, where the same value is deliberately a counted anomaly rather than a removal. **Corrected 2026-08-17**: the earlier "no WebSocket transport exists" qualification was stale — the transport, the capture loop and the CLI all shipped afterwards, and three live captures have run. The accurate residual is narrower: the two zero-size entries that carry this criterion come from the *recorded* capture, and no zero-size entry has been observed in a live ARGOS capture, because none of the three live runs happened to contain one. The `kind is REMOVE` ⟺ `size == 0` validator makes the representation structural either way |
 | Reconnect does not reset ingest sequence or silently lose manifest state | **Closed structurally; never exercised against a live socket** | `run_capture` owns the counter for the whole run, so a reconnect inside the transport is transparent to it — the transport keeps yielding from one async generator. Restarting the loop cannot silently restart the sequence either: re-opening the same `capture_run_id` is refused with `StorageError` by the store's partial unique index, so the property is structural rather than a check that could be forgotten. Verified independently of the slice's own tests, on the real recorded capture: sequences span both the delivery and rejection ledgers with no gaps and no reuse (exactly 1..38), and are identical across two runs. Manifest state cannot be lost silently: `capture_run` is append-only and a run with no closing row is a queryable signal. **Not yet closed**: no capture has run against a live socket, and a real network reconnect has never been exercised — the research note still records reconnect behaviour as UNVERIFIED |
 | Invalid messages enter a rejection ledger with reason and raw hash | **End-to-end evidence; no capture loop runs it against live traffic yet** | `RejectedObservationV1` carries `reason: RejectionReason`, `detail`, and `raw_payload_sha256`; `build_rejected_observation` derives a deterministic `rejection_id` so redelivery of the same invalid bytes for the same reason collapses rather than growing the ledger unbounded. `SQLiteEventStore.append_rejection`/`iter_rejections` persist it, keyed `(capture_run_id, ingest_sequence)` rather than on `rejection_id` alone, so two genuinely different malformed entries in one frame that happen to share one `rejection_id` (ADR-0011 section 7) both survive instead of one silently overwriting the other. The CLOB REST adapter slice closes the remaining gap end to end: a malformed real-shaped body fed through `normalize_clob_book` produces a `RejectedObservationV1` written to the ledger (`tests/test_clob_book_ingestion.py`). The WebSocket source now has the same evidence on its own path: `normalize_clob_price_change` turns every `ValueError` the domain raises — plus its own `entry_hash` length and display-control checks, deliberately inside its own `try` — into a `RejectedObservationV1` rather than an escaping exception, so a malformed real-shaped frame reaches the ledger with a reason and the raw hash (`tests/test_clob_price_change_ingestion.py`). **Not yet closed**: no capture loop runs either adapter continuously against live traffic |
 | Book snapshot plus deltas reconstruct a tested projection | **Closed on real recorded traffic** | `argos.projections.book` reconstructs the book from a snapshot plus `price_change` deltas. Verified on the recorded live capture, which contains 4 full `book` snapshots for the subscribed token and 34 delta frames: all three snapshot→deltas→snapshot transitions reconstruct **exactly**, level for level (`book@msg0 +13 → book@msg16`, `+7 → book@msg26`, `+8 → book@msg37`), and a single continuous run seeded once at msg0 and fed all 28 deltas lands exactly on msg37 with zero anomalies — re-verified independently of the slice's own tests. The zero-size removal convention is exercised through the projection, not merely at the payload. **Known limitation, not a gap in the test**: ARGOS cannot compute the source's own `hash` (algorithm unpublished), so a missed delta is undetectable from the delta stream alone; divergence surfaces only when a full snapshot arrives and disagrees, which is what these three transitions measure |
