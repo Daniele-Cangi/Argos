@@ -44,7 +44,7 @@ not block M3, and stays where it was filed.
       The uniqueness half was not hypothetical — a stub declaring
       `order_book_snapshot.v1` was sitting inside the test module for
       `read_payload` itself, and is now the test that asserts the refusal.
-- [ ] **R3 — the SQLite store has no schema identity or version.** Measured:
+- [x] **R3 — the SQLite store has no schema identity or version.** Measured:
       `PRAGMA user_version` and `PRAGMA application_id` are both 0 on a store
       this repository just wrote, and `open_sqlite_event_store` opened a
       database whose `observation` table was a foreign two-column table
@@ -54,7 +54,21 @@ not block M3, and stays where it was filed.
       identical output hash" needs "identical input" to be a checkable claim
       about the file being read, and a replay reader is the first code that
       opens a store it did not itself write.
-- [ ] **R4 — every stored observation embeds an absolute filesystem path.**
+      **Closed**: a fresh store is stamped `application_id = 0x41524753` and
+      `user_version = 1`, and every open verifies the *shape* — each table's
+      columns, and that both `capture_run` indexes are genuinely UNIQUE and
+      partial — before trusting the stamp. Shape is the evidence, the stamp is
+      the fast path: an unstamped store of the right shape is adopted rather
+      than stranded, because captures taken before 2026-08-17 carry
+      `application_id = 0`, while a store stamped by another application is
+      refused outright. Two further holes surfaced while building it: an index
+      of the right name and the wrong nature (non-unique, non-partial) survives
+      `CREATE UNIQUE INDEX IF NOT EXISTS` untouched and silently downgrades
+      ADR-0011 section 5's schema-level guarantee to a convention; and a foreign
+      *table* named after one of those indexes made schema application fail as a
+      bare `sqlite3.OperationalError`, outside the taxonomy, on the one code
+      path that runs before any check could catch it.
+- [x] **R4 — every stored observation embeds an absolute filesystem path.**
       Found by this audit, not previously filed. `run_capture` stores
       `str(write_raw_payload(...))`, and `write_raw_payload` resolves its
       directory, so `raw_payload_location` durably records a machine-specific
@@ -66,6 +80,13 @@ not block M3, and stays where it was filed.
       globs by hash and never reads this field. The same class as R1, one layer
       down: a physical location baked into a record that should describe
       content.
+      **Closed**: `archive_relative_location` is the one place that composes the
+      stored value, `write_raw_payload` builds its own target from the same
+      function so the layout and the record cannot drift, and `run_capture`
+      stores the relative form. `write_raw_payload` still *returns* an absolute
+      path, because its other callers are operator-facing CLI reports where the
+      whole path is what an operator wants — a different question with a
+      different answer.
 
 ## Now — M0
 
@@ -577,14 +598,14 @@ than discovered late by an adapter or the capture CLI.
       because the builder is the only production write path. Also
       `source_frame_offset` is unvalidated (`-1` accepted; `2**63` raises a
       bare `OverflowError`).
-- [ ] **L4** The database schema has no identity and no version:
+- [x] **L4** The database schema has no identity and no version:
       `PRAGMA user_version` is never set or read, and
       `CREATE TABLE IF NOT EXISTS` opens a differently-shaped pre-existing
       file silently, failing at the first write mid-capture with a generic
       message. A future migration will have no version to migrate from. Note
       the engineering rule "Every public schema and persistent record is
       versioned" is satisfied for records but not for the schema.
-      **Re-measured by the M3 readiness audit and promoted to a blocker** —
+      **Closed as R3.** **Re-measured by the M3 readiness audit and promoted to a blocker** —
       see **R3** at the top of this file. The audit found it is one step worse
       than recorded here: against a database whose `observation` table was a
       foreign two-column table, `open_sqlite_event_store` *and*

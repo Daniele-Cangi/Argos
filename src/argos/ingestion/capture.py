@@ -167,7 +167,7 @@ from argos.ingestion.clob_price_change import (
 from argos.ingestion.clob_ws_book import CLOB_WS_BOOK_EVENT_TYPE, normalize_clob_ws_book
 from argos.sources.clob_ws import MarketFrame
 from argos.store.event_store import CompletionStatus, Disposition, EventStore
-from argos.store.raw_archive import write_raw_payload
+from argos.store.raw_archive import archive_relative_location, write_raw_payload
 
 __all__ = ["CaptureHealth", "FrameSource", "run_capture"]
 
@@ -310,13 +310,18 @@ async def run_capture(
             # counted: continuing would keep producing records that silently
             # cannot be reproduced, which is worse than stopping loudly.
             if raw_archive_dir is not None:
-                state.current_raw_location = str(
-                    write_raw_payload(
-                        raw_archive_dir,
-                        raw=frame.text.encode("utf-8"),
-                        provenance=frame.provenance,
-                    )
+                write_raw_payload(
+                    raw_archive_dir,
+                    raw=frame.text.encode("utf-8"),
+                    provenance=frame.provenance,
                 )
+                # The archive-*relative* location, not the absolute path the
+                # write returns. An archive root is a fact about a run; a record
+                # that embeds one is only readable on the machine that wrote it,
+                # breaks silently when the capture is moved, and differs between
+                # two stores holding identical bytes. Same decision as keeping
+                # `data_dir` out of `config_fingerprint`, one layer down.
+                state.current_raw_location = archive_relative_location(frame.provenance)
             _consume_frame(
                 frame,
                 state=state,

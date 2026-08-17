@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import orjson
@@ -545,3 +546,45 @@ def test_capture_health_is_a_frozen_dataclass() -> None:
     health = CaptureHealth()
     with pytest.raises(Exception):  # noqa: B017 - AttributeError or FrozenInstanceError
         health.accepted = 5  # type: ignore[misc]
+
+
+# --- archived location is machine-independent (M3 blocker R4) ---------------------
+
+
+async def test_the_stored_archive_location_is_relative_to_the_archive_root(
+    tmp_path: Path,
+) -> None:
+    """The M3 readiness audit's fourth blocker.
+
+    `run_capture` stored `str(write_raw_payload(...))`, and `write_raw_payload`
+    resolves its directory, so every observation durably recorded an absolute
+    filesystem path: unverified by anything, silently wrong the moment the
+    capture directory moved, and different in two stores holding byte-identical
+    evidence. Asserted two ways -- the value is the archive-relative layout, and
+    it does not contain the root -- because "is not absolute" alone would pass
+    for an empty string.
+    """
+    store = open_sqlite_event_store(":memory:")
+    clock = ReplayClock(START)
+    archive = tmp_path / "raw"
+
+    await run_capture(
+        frame_source=ListFrameSource([_frame(_price_change_event())]),
+        store=store,
+        clock=clock,
+        capture_run_id="relative-location",
+        subscribed_token_ids=[TOKEN_YES],
+        raw_archive_dir=archive,
+    )
+
+    deliveries = list(store.iter_deliveries("relative-location"))
+    assert deliveries, "the recorded capture must produce at least one observation"
+    for delivery in deliveries:
+        envelope = store.get_observation(delivery.observation_id)
+        assert envelope is not None
+        location = envelope.raw_payload_location
+        assert location == f"clob_market_ws/{envelope.raw_payload_sha256}.raw.json"
+        assert str(tmp_path) not in location
+        # ...and the bytes really are there, so "relative" did not become
+        # "wrong": joining the root back on finds the archived payload.
+        assert (archive / location).is_file()

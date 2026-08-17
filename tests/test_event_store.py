@@ -37,6 +37,11 @@ from argos.errors import (
     StorageError,
 )
 from argos.store.event_store import (
+    _EXPECTED_INDEXES,
+    _EXPECTED_TABLES,
+    _SCHEMA_SQL,
+    ARGOS_APPLICATION_ID,
+    EVENT_STORE_SCHEMA_VERSION,
     CompletionStatus,
     Disposition,
     SQLiteEventStore,
@@ -619,3 +624,179 @@ def test_a_file_backed_store_really_is_in_wal_mode(tmp_path: Path) -> None:
         assert event_store._connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
     finally:
         event_store.close()
+
+
+# --- schema identity and version (M3 blocker R3) ----------------------------------
+
+
+def test_the_expected_shape_matches_the_ddl_this_module_actually_runs() -> None:
+    """The duplication in `_EXPECTED_TABLES` is only safe if it cannot drift.
+
+    It is written out rather than parsed back out of `_SCHEMA_SQL` so a change
+    to the DDL and a change to what the module believes the DDL is cannot happen
+    in one edit. This is the test that makes that safe: it reads the shape out
+    of a freshly created database, so the DDL is the authority and the constant
+    is the claim.
+    """
+    connection = sqlite3.connect(":memory:")
+    connection.executescript(_SCHEMA_SQL)
+    for table, expected in _EXPECTED_TABLES.items():
+        actual = tuple(row[1] for row in connection.execute(f"PRAGMA table_info({table})"))
+        assert actual == expected, f"{table} DDL and _EXPECTED_TABLES disagree"
+    indexes = {
+        row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='index'")
+    }
+    assert set(_EXPECTED_INDEXES) <= indexes
+    connection.close()
+
+
+def test_a_fresh_store_is_stamped_with_its_identity_and_version(tmp_path: Path) -> None:
+    path = tmp_path / "events.sqlite3"
+    store = open_sqlite_event_store(path)
+    store.close()
+
+    connection = sqlite3.connect(path)
+    assert connection.execute("PRAGMA application_id").fetchone()[0] == ARGOS_APPLICATION_ID
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == EVENT_STORE_SCHEMA_VERSION
+    connection.close()
+
+
+def test_a_foreign_table_of_the_same_name_is_refused_on_open(tmp_path: Path) -> None:
+    """The measured hole, closed.
+
+    `CREATE TABLE IF NOT EXISTS` creates what is missing and leaves a
+    wrongly-shaped existing table alone, so before this check
+    `open_sqlite_event_store` succeeded against a database whose `observation`
+    was a foreign two-column table -- and so did `open_capture_run`, meaning a
+    run was opened and recorded before anything failed. What finally failed was
+    a generic SQLite error, mid-capture.
+    """
+    path = tmp_path / "foreign.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE observation (id INTEGER PRIMARY KEY, wrong TEXT)")
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(StorageError) as caught:
+        open_sqlite_event_store(path)
+    assert caught.value.context["table"] == "observation"
+
+
+def test_a_database_stamped_by_another_application_is_refused(tmp_path: Path) -> None:
+    """A different stamp is a positive claim by somebody else that the file is
+    theirs, which is a different thing from an unstamped file and gets a
+    different answer."""
+    path = tmp_path / "other.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.execute("PRAGMA application_id = 559038737")
+    connection.close()
+
+    with pytest.raises(StorageError) as caught:
+        open_sqlite_event_store(path)
+    assert caught.value.context["application_id"] == 559038737
+
+
+def test_a_future_schema_version_is_refused_rather_than_read_hopefully(tmp_path: Path) -> None:
+    path = tmp_path / "future.sqlite3"
+    open_sqlite_event_store(path).close()
+    connection = sqlite3.connect(path)
+    connection.execute(f"PRAGMA user_version = {EVENT_STORE_SCHEMA_VERSION + 1}")
+    connection.close()
+
+    with pytest.raises(StorageError) as caught:
+        open_sqlite_event_store(path)
+    assert caught.value.context["found"] == EVENT_STORE_SCHEMA_VERSION + 1
+
+
+def test_an_unstamped_store_of_the_right_shape_is_adopted(tmp_path: Path) -> None:
+    """Captures taken before 2026-08-17 carry `application_id = 0`.
+
+    Refusing them would strand real data for no gain: by the time the stamp is
+    read, the shape check has already established what the file is. The shape is
+    the evidence; the stamp is the fast path. Verified by reading a row back
+    out, not only by the open succeeding.
+    """
+    path = tmp_path / "legacy.sqlite3"
+    store = open_sqlite_event_store(path)
+    store.open_capture_run("legacy-run", started_at=START)
+    store.close()
+
+    connection = sqlite3.connect(path)
+    connection.execute("PRAGMA application_id = 0")
+    connection.execute("PRAGMA user_version = 0")
+    connection.close()
+
+    reopened = open_sqlite_event_store(path)
+    run = reopened.get_capture_run("legacy-run")
+    assert run is not None and run.is_open
+    reopened.close()
+
+    connection = sqlite3.connect(path)
+    assert connection.execute("PRAGMA application_id").fetchone()[0] == ARGOS_APPLICATION_ID
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == EVENT_STORE_SCHEMA_VERSION
+    connection.close()
+
+
+def test_a_dropped_index_is_recreated_rather_than_refused(tmp_path: Path) -> None:
+    """The self-heal, asserted so it is a decision rather than an accident.
+
+    `CREATE UNIQUE INDEX IF NOT EXISTS` restores a *missing* index, and doing so
+    is safe precisely because recreating a unique index over data that violated
+    it would fail loudly instead. Verified by the property, not by the name
+    reappearing.
+    """
+    path = tmp_path / "deindexed.sqlite3"
+    open_sqlite_event_store(path).close()
+    connection = sqlite3.connect(path)
+    connection.execute("DROP INDEX capture_run_open_once")
+    connection.commit()
+    connection.close()
+
+    open_sqlite_event_store(path).close()
+    connection = sqlite3.connect(path)
+    properties = {
+        row[1]: (row[2], row[4])
+        for row in connection.execute("PRAGMA index_list(capture_run)").fetchall()
+    }
+    connection.close()
+    assert properties["capture_run_open_once"] == (1, 1)
+
+
+def test_an_index_of_the_right_name_and_the_wrong_nature_is_refused(tmp_path: Path) -> None:
+    """What `IF NOT EXISTS` cannot fix, and the reason the check is about
+    properties rather than names.
+
+    ADR-0011 section 5 hangs "opened twice and closed twice are impossible at
+    the schema level" on these two indexes being UNIQUE and partial. A plain
+    non-unique index of the same name survives `CREATE UNIQUE INDEX IF NOT
+    EXISTS` untouched, and that guarantee silently degrades to a convention --
+    with nothing anywhere reporting it.
+    """
+    path = tmp_path / "weakened.sqlite3"
+    open_sqlite_event_store(path).close()
+    connection = sqlite3.connect(path)
+    connection.execute("DROP INDEX capture_run_open_once")
+    connection.execute("CREATE INDEX capture_run_open_once ON capture_run (capture_run_id)")
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(StorageError) as caught:
+        open_sqlite_event_store(path)
+    assert caught.value.context["index"] == "capture_run_open_once"
+    assert caught.value.context["found"] == "unique=0, partial=0"
+
+
+def test_a_schema_that_cannot_be_applied_stays_inside_the_taxonomy(tmp_path: Path) -> None:
+    """A foreign *table* named after one of the indexes makes `CREATE UNIQUE
+    INDEX IF NOT EXISTS` fail outright, on the one code path that runs before
+    any check could catch it. Left bare it escapes as `sqlite3.OperationalError`
+    -- the "escapes the ARGOS error taxonomy" class this milestone has closed
+    four times elsewhere."""
+    path = tmp_path / "namesquat.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.execute("CREATE TABLE capture_run_open_once (id INTEGER PRIMARY KEY)")
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(StorageError):
+        open_sqlite_event_store(path)

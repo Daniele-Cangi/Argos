@@ -19,17 +19,44 @@ from argos.domain.provenance import SourceProvenanceV1, sha256_hex
 from argos.errors import ImmutabilityViolationError, StorageError
 
 
+def archive_relative_location(provenance: SourceProvenanceV1) -> str:
+    """Where a payload lives *within* an archive, independent of any machine.
+
+    This is the value that belongs in a durable record —
+    :attr:`argos.domain.observation.ObservationEnvelopeV1.raw_payload_location` —
+    and the M3 readiness audit found an absolute path there instead (**R4**,
+    ``docs/BACKLOG.md``). ``run_capture`` stored ``str(write_raw_payload(...))``
+    and :func:`write_raw_payload` resolves its directory, so every observation
+    durably recorded a path that meant something only on the machine that wrote
+    it: unverified, silently broken by moving the capture, and different in two
+    stores holding identical bytes.
+
+    An archive root is a fact about a *run*, not about a record. Keeping the
+    root out of the record is the same decision, one layer down, as keeping
+    ``data_dir`` out of ``config_fingerprint``.
+
+    :func:`write_raw_payload` composes its target from this function, so the
+    stored location and the real layout cannot drift apart.
+    """
+    return f"{provenance.source}/{provenance.raw_sha256}.raw.json"
+
+
 def write_raw_payload(
     directory: Path,
     *,
     raw: bytes,
     provenance: SourceProvenanceV1,
 ) -> Path:
-    """Archive ``raw`` under ``directory`` and return the path written.
+    """Archive ``raw`` under ``directory`` and return the absolute path written.
 
     Refuses to write if the payload does not match its provenance, and refuses to
     replace an existing archive entry whose bytes differ — an identical rewrite is
     idempotent and allowed, because re-running a capture should not fail.
+
+    The return value is absolute because its callers are operator-facing: a CLI
+    report telling somebody where a file went is more useful with the whole
+    path. What goes into a *record* is :func:`archive_relative_location`, which
+    is a different question with a different answer.
     """
     if not provenance.matches(raw):
         raise StorageError(
@@ -39,7 +66,7 @@ def write_raw_payload(
         )
 
     root = directory.resolve()
-    target = root / provenance.source / f"{provenance.raw_sha256}.raw.json"
+    target = root / archive_relative_location(provenance)
     if not target.resolve().parent.is_relative_to(root):
         # `source` is a plain string on the provenance contract, so a value like
         # "../elsewhere" or an absolute path would place the write outside the

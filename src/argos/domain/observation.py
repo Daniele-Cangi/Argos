@@ -196,7 +196,26 @@ class ObservationEnvelopeV1(VersionedModel):
     named by ``payload_schema_version``."""
 
     raw_payload_sha256: str = Field(min_length=SHA256_LENGTH, max_length=SHA256_LENGTH)
+
     raw_payload_location: str | None = Field(default=None, min_length=1)
+    """Where the raw bytes were archived, **relative to the archive root**, or
+    ``None`` when nothing archived them.
+
+    Relative deliberately. Until 2026-08-17 this held the absolute path
+    ``write_raw_payload`` returned, so every observation durably recorded a
+    string that meant something only on the machine that wrote it — unverified
+    by anything, silently wrong once the capture directory moved, and different
+    in two stores holding byte-identical evidence. An archive root is a fact
+    about a *run*, not about a record. See
+    :func:`argos.store.raw_archive.archive_relative_location`, which is the one
+    place that composes this value, and which ``write_raw_payload`` also builds
+    its own target from so the two cannot disagree.
+
+    It is a convenience, not the link: ``raw_payload_sha256`` is the link, and
+    ``read_raw_payload`` finds archived bytes by hash without reading this field
+    at all.
+    """
+
     provenance: SourceProvenanceV1
 
     parser_version: str = Field(min_length=1)

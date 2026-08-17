@@ -74,7 +74,93 @@ from argos.errors import ContractViolationError, ImmutabilityViolationError, Sto
 _SYNCHRONOUS_FULL = 2
 """``PRAGMA synchronous`` reports an integer; FULL is 2."""
 
+ARGOS_APPLICATION_ID = 0x41524753
+"""``PRAGMA application_id`` for an ARGOS event store: ASCII ``ARGS``.
+
+SQLite reserves this pragma for exactly this — telling one application's files
+apart from another's — and defaults it to 0, so "not stamped" and "stamped by
+somebody else" stay distinguishable.
+"""
+
+EVENT_STORE_SCHEMA_VERSION = 1
+"""``PRAGMA user_version`` for the table shape below.
+
+The engineering rule is that every public schema and persistent record is
+versioned. Records satisfied it; the *database* did not, and
+``docs/BACKLOG.md`` filed that as **L4**. The M3 readiness audit promoted it to
+a blocker (**R3**) because a replay reader is the first code in this repository
+that opens a store it did not itself write, and "identical input produces an
+identical output hash" needs "identical input" to be a checkable claim about
+the file being read.
+
+Bumping this is what a future migration migrates *from*. There is no migration
+machinery and deliberately none: with one version in existence, migration code
+would be a compatibility wrapper for a case that has never occurred.
+"""
+
+_EXPECTED_TABLES: dict[str, tuple[str, ...]] = {
+    "capture_run": ("id", "capture_run_id", "started_at", "ended_at", "completion_status"),
+    "observation": (
+        "id",
+        "observation_id",
+        "schema_version",
+        "payload_schema_version",
+        "source",
+        "market_id",
+        "condition_id",
+        "token_id",
+        "event_time",
+        "raw_payload_sha256",
+        "first_seen_capture_run_id",
+        "first_seen_ingest_sequence",
+        "first_seen_received_time",
+        "record",
+    ),
+    "delivery": (
+        "id",
+        "capture_run_id",
+        "ingest_sequence",
+        "observation_id",
+        "received_time",
+        "disposition",
+        "source_frame_sha256",
+        "source_frame_offset",
+    ),
+    "rejection": (
+        "id",
+        "capture_run_id",
+        "ingest_sequence",
+        "rejection_id",
+        "reason",
+        "source",
+        "raw_payload_sha256",
+        "received_time",
+        "rejected_at",
+        "duplicate_of_observation_id",
+        "record",
+    ),
+}
+"""The shape a store must actually have, checked on open.
+
+Written out rather than parsed back out of ``_SCHEMA_SQL`` so that a change to
+the DDL and a change to what this module *believes* the DDL is cannot happen in
+one edit. ``tests/test_event_store.py`` asserts the two agree, so the
+duplication cannot drift — which is the point of duplicating it.
+"""
+
+_EXPECTED_INDEXES = ("capture_run_open_once", "capture_run_closed_once")
+"""The two partial unique indexes ADR-0011 section 5 hangs "opened twice and
+closed twice are impossible at the schema level" on.
+
+Checked for the same reason removing an index is in the forbidden-SQL token set
+``tests/test_boundaries.py`` enforces: without both of them, the append-only
+``capture_run`` design silently degrades from a schema-level guarantee to a
+convention, and nothing anywhere reports it.
+"""
+
 __all__ = [
+    "ARGOS_APPLICATION_ID",
+    "EVENT_STORE_SCHEMA_VERSION",
     "CaptureRunCounts",
     "CaptureRunRecord",
     "CompletionStatus",
@@ -540,7 +626,21 @@ class SQLiteEventStore:
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
-        connection.executescript(_SCHEMA_SQL)
+        try:
+            connection.executescript(_SCHEMA_SQL)
+        except sqlite3.Error as error:
+            # Reachable against a foreign database: a *table* already named
+            # `capture_run_open_once` makes `CREATE UNIQUE INDEX IF NOT EXISTS`
+            # fail with "there is already another table or index with this
+            # name". Left bare, that leaves the taxonomy as a raw
+            # `sqlite3.OperationalError` — the escape class this milestone has
+            # closed four times elsewhere, on the one code path that runs before
+            # any check could catch it.
+            raise StorageError(
+                "the event-store schema could not be applied to this database",
+                error=str(error),
+            ) from error
+        _verify_schema_identity(connection)
 
     def close(self) -> None:
         self._connection.close()
@@ -836,6 +936,98 @@ class SQLiteEventStore:
         duplicate: int = duplicate_row[0]
         rejected: int = rejected_row[0]
         return CaptureRunCounts(accepted=accepted, duplicate=duplicate, rejected=rejected)
+
+
+def _verify_schema_identity(connection: sqlite3.Connection) -> None:
+    """Establish that this file really is an ARGOS event store of this shape.
+
+    Runs after ``CREATE TABLE IF NOT EXISTS``, which is precisely why the shape
+    check is the load-bearing half: ``IF NOT EXISTS`` creates what is missing
+    and leaves a *wrongly-shaped* existing table alone. The M3 readiness audit
+    measured that hole — against a database whose ``observation`` was a foreign
+    two-column table, ``open_sqlite_event_store`` succeeded **and**
+    ``open_capture_run`` succeeded, so a run was opened and recorded before
+    anything failed, and what finally failed was a generic SQLite error
+    mid-capture.
+
+    Order of authority is deliberate: the *shape* is the evidence and the stamp
+    is the fast path, not the reverse. A store written before this check existed
+    carries ``application_id = 0``, and refusing it would strand every capture
+    taken before 2026-08-17 for no gain — the shape check has already
+    established what the file is by the time the stamp is read. So an unstamped
+    database of the right shape is stamped and accepted, while a database
+    stamped by *another* application is refused outright, because that is a
+    positive claim by somebody else that this file is theirs.
+    """
+    tables = {
+        row[0]: row[1]
+        for row in connection.execute("SELECT name, type FROM sqlite_master").fetchall()
+    }
+    for table, expected_columns in _EXPECTED_TABLES.items():
+        if tables.get(table) != "table":
+            raise StorageError(
+                "database is missing an event-store table", table=table, found=tables.get(table)
+            )
+        actual = tuple(row[1] for row in connection.execute(f"PRAGMA table_info({table})"))
+        if actual != expected_columns:
+            raise StorageError(
+                "database has an event-store table of the wrong shape; this is "
+                "not an ARGOS event store, or it was written by an incompatible "
+                "version",
+                table=table,
+                expected=list(expected_columns),
+                found=list(actual),
+            )
+    # Checked as *properties* rather than by name or by DDL text. A missing
+    # index is recreated by the `CREATE UNIQUE INDEX IF NOT EXISTS` above, which
+    # is a genuine self-heal — recreating a unique index over data that violated
+    # it would fail loudly. What `IF NOT EXISTS` cannot fix is an index of the
+    # right *name* and the wrong nature: a plain, non-unique, non-partial
+    # `capture_run_open_once` survives it untouched, and "opened twice is
+    # impossible at the schema level" (ADR-0011 section 5) silently becomes a
+    # convention. `PRAGMA index_list` reports exactly the two properties that
+    # claim depends on.
+    # PRAGMA index_list columns: seq, name, unique, origin, partial.
+    index_properties = {
+        row[1]: (row[2], row[4])
+        for row in connection.execute("PRAGMA index_list(capture_run)").fetchall()
+    }
+    for index in _EXPECTED_INDEXES:
+        properties = index_properties.get(index)
+        if properties != (1, 1):
+            raise StorageError(
+                "capture_run is missing a partial UNIQUE index the append-only "
+                "design depends on, or carries one of that name that is neither "
+                "unique nor partial",
+                index=index,
+                expected="unique=1, partial=1",
+                found=(
+                    None
+                    if properties is None
+                    else f"unique={properties[0]}, partial={properties[1]}"
+                ),
+            )
+
+    application_id = _pragma_result(connection, "PRAGMA application_id")
+    if application_id not in (0, ARGOS_APPLICATION_ID):
+        raise StorageError(
+            "database is stamped as belonging to another application",
+            application_id=application_id,
+            expected=ARGOS_APPLICATION_ID,
+        )
+    user_version = _pragma_result(connection, "PRAGMA user_version")
+    if application_id == ARGOS_APPLICATION_ID and user_version != EVENT_STORE_SCHEMA_VERSION:
+        raise StorageError(
+            "event-store schema version is not supported by this build, and no migration exists",
+            found=user_version,
+            supported=EVENT_STORE_SCHEMA_VERSION,
+        )
+    if application_id != ARGOS_APPLICATION_ID:
+        # Not a mutation of any record: `PRAGMA` writes file header fields, not
+        # rows, so the append-only guarantee ADR-0011 enforces over `argos.store`
+        # is untouched.
+        connection.execute(f"PRAGMA application_id = {ARGOS_APPLICATION_ID}")
+        connection.execute(f"PRAGMA user_version = {EVENT_STORE_SCHEMA_VERSION}")
 
 
 def _capture_run_status(connection: sqlite3.Connection, capture_run_id: str) -> str:
