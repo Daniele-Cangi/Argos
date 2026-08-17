@@ -544,7 +544,18 @@ def test_rejection_identity_changes_with_reason() -> None:
 
 
 class _OrderBookSnapshotStub(VersionedModel):
-    schema_version: ClassVar[str] = "order_book_snapshot.v1"
+    """A second payload shape, used to prove the label follows the model.
+
+    Its version was literally ``"order_book_snapshot.v1"`` until 2026-08-17 —
+    the same string the real :class:`argos.domain.orderbook.OrderBookSnapshotV1`
+    declares. That is the exact collision the M2 security review demonstrated
+    defeating `read_payload`'s version check, sitting unnoticed inside the test
+    module for `read_payload`. `VersionedModel.__init_subclass__` now refuses it
+    at import time (M3 blocker R2), and the collision itself is asserted
+    directly in `test_versioning.py` rather than lived with here.
+    """
+
+    schema_version: ClassVar[str] = "test_order_book_snapshot_stub.v1"
 
     bids: list[dict[str, Any]]
     asks: list[dict[str, Any]]
@@ -570,7 +581,7 @@ def test_the_payload_label_cannot_disagree_with_the_payload() -> None:
     string, the mismatch stayed invisible until `read_payload` ran during
     *replay* — against a capture that can no longer be re-taken."""
     envelope = _envelope(payload=_OrderBookSnapshotStub(bids=[], asks=[]))
-    assert envelope.payload_schema_version == "order_book_snapshot.v1"
+    assert envelope.payload_schema_version == "test_order_book_snapshot_stub.v1"
     assert read_payload(envelope, _OrderBookSnapshotStub).bids == []
 
 

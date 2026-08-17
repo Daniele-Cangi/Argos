@@ -41,7 +41,13 @@ from argos.domain.text import (
     neutralize_and_bound,
     neutralize_identifier_and_bound,
 )
-from argos.domain.versioning import SCHEMA_VERSION_KEY, VersionedModel, freeze, thaw
+from argos.domain.versioning import (
+    SCHEMA_VERSION_KEY,
+    VersionedModel,
+    freeze,
+    resolve_schema,
+    thaw,
+)
 from argos.errors import ContractViolationError, RejectionReason, SchemaVersionError
 
 # Untrusted source text is neutralized, never dropped outright, and bounded so a
@@ -559,6 +565,27 @@ def read_payload[PayloadT: VersionedModel](
             supported=[model.schema_version],
         )
     return model.model_validate(thaw(envelope.payload))
+
+
+def read_declared_payload(envelope: ObservationEnvelopeV1) -> VersionedModel:
+    """Validate ``envelope.payload`` into whichever model its own version names.
+
+    The counterpart to :func:`read_payload` for a reader that does *not* know
+    the payload type in advance — an M3 replay dispatcher over a capture holding
+    several payload kinds, or any future tool that walks a stored capture. It
+    goes through :func:`argos.domain.versioning.resolve_schema`, so the model is
+    looked up rather than selected by a chain of string comparisons, and so the
+    lookup is backed by the uniqueness guarantee that makes it meaningful: two
+    classes cannot both claim one version.
+
+    Resolving is not the same as accepting. This returns the typed payload; a
+    caller that only knows how to handle certain kinds must still check what it
+    got and refuse the rest deliberately, with a count. Dispatching on whatever
+    a stored record claims to be is exactly the silent coercion
+    ``.claude/rules/data-integrity.md`` forbids.
+    """
+    model = resolve_schema(envelope.payload_schema_version)
+    return read_payload(envelope, model)
 
 
 def _observation_identity(

@@ -56,7 +56,7 @@ class _Payload(VersionedModel):
     aliasing questions are real.
     """
 
-    schema_version: ClassVar[str] = "test_payload.v1"
+    schema_version: ClassVar[str] = "test_adversarial_payload.v1"
 
     price: Decimal | None = None
     bids: tuple[Decimal, ...] = ()
@@ -139,7 +139,7 @@ def _direct_envelope(**overrides: Any) -> ObservationEnvelopeV1:
         "event_time": None,
         "received_time": START,
         "ingest_sequence": 1,
-        "payload_schema_version": "test_payload.v1",
+        "payload_schema_version": "test_adversarial_payload.v1",
         "payload": {},
         "raw_payload_sha256": sha256_hex(RAW_BYTES),
         "provenance": _provenance(),

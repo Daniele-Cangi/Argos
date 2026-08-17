@@ -29,7 +29,7 @@ not block M3, and stays where it was filed.
       `settings_snapshot` still records both verbatim, so nothing is lost.
       `RunManifest` is bumped to `run_manifest.v4` because the meaning of
       `config_fingerprint` changed and three `v3` manifests really exist.
-- [ ] **R2 — no `payload_schema_version` -> model registry.** `read_payload`
+- [x] **R2 — no `payload_schema_version` -> model registry.** `read_payload`
       takes the model as an argument, so a replay dispatcher over heterogeneous
       payloads has to grow an `if/elif` chain on version strings — in the one
       module whose whole purpose is that live and replay run the *same*
@@ -37,6 +37,13 @@ not block M3, and stays where it was filed.
       now due. Closing it also closes the M2 security review's unenforced
       `schema_version` uniqueness item, which is the same map viewed from the
       other side.
+      **Closed**: `VersionedModel.__init_subclass__` registers each version and
+      refuses a second claimant, `resolve_schema` turns a stored version into
+      the model that declares it, and `read_declared_payload` is the typed
+      accessor for a reader that does not know the payload type in advance.
+      The uniqueness half was not hypothetical — a stub declaring
+      `order_book_snapshot.v1` was sitting inside the test module for
+      `read_payload` itself, and is now the test that asserts the refusal.
 - [ ] **R3 — the SQLite store has no schema identity or version.** Measured:
       `PRAGMA user_version` and `PRAGMA application_id` are both 0 on a store
       this repository just wrote, and `open_sqlite_event_store` opened a
@@ -496,10 +503,15 @@ None is a blocker; all are recorded so they are chosen rather than forgotten.
       blocker — provenance is carried, never dispatched on — so the M3
       readiness audit left it here rather than promoting it. It is the oldest
       item whose stated trigger has actually fired.
-- [ ] `schema_version` uniqueness is unenforced across `VersionedModel`
+- [x] `schema_version` uniqueness is unenforced across `VersionedModel`
       subclasses. Two classes both declaring `order_book_snapshot.v1` defeat
       `read_payload`'s version check — review built a `Trade` out of a book
       envelope with no error. A registry check in `__init_subclass__` closes it.
+      Closed exactly that way, as part of **R2**. Worth recording: the
+      collision this described already existed in the repository — a stub in
+      `tests/test_observation_envelope.py` declared
+      `order_book_snapshot.v1`, in the test module for `read_payload` itself,
+      and nothing noticed for four slices.
 - [x] Neither `observation_id` nor `rejection_id` is enforced by a validator: a
       forged id round-trips through `from_record` while `recompute_*` disagrees.
       The recompute functions exist; nothing obliges a reader to call them. The
