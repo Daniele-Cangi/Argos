@@ -12,8 +12,20 @@ ever been persisted, so there is no migration path and none is written —
 compatibility wrappers are avoided per project convention when there is
 nothing yet to be compatible with.
 
-``run_manifest.v3`` is the same kind of clean, unmigrated bump for the same
-reason: no ``v2`` manifest has ever been persisted either (M1 discovery emits
+``run_manifest.v4`` is **not** that kind of bump, and the difference matters.
+No field is added or removed; what changed is the *meaning* of
+``config_fingerprint``, which now covers only experiment-scoped settings and no
+longer covers ``data_dir`` (see
+:class:`argos.config.settings.FingerprintScope`). Two manifests carrying the
+same version string and two incomparable fingerprints is exactly the ambiguity
+a schema version exists to prevent, and unlike the two bumps below, ``v3``
+manifests really were written — the three live captures of 2026-08-15 each left
+one on disk. No migration is provided because nothing in this repository reads
+a manifest back; the version bump is there so that a future reader cannot
+compare the two meanings without noticing.
+
+``run_manifest.v3`` was a clean, unmigrated bump: no ``v2`` manifest had ever
+been persisted either (M1 discovery emits
 none; the standalone ``argos manifest`` command only prints one). It adds
 ``capture_run_id``, the one field the M2 capture-CLI slice needs to satisfy
 core invariant 13 for a capture run without violating the constraint
@@ -81,7 +93,7 @@ class WorkingTreeStatus(StrEnum):
 class RunManifest(VersionedModel):
     """Immutable description of one ARGOS run."""
 
-    schema_version: ClassVar[str] = "run_manifest.v3"
+    schema_version: ClassVar[str] = "run_manifest.v4"
 
     run_id: str = Field(min_length=1)
     mode: RunMode
@@ -106,7 +118,18 @@ class RunManifest(VersionedModel):
     it off this manifest."""
 
     config_fingerprint: str
+    """SHA-256 over the *experiment-scoped* configuration only
+    (:meth:`argos.config.settings.Settings.fingerprint`). Deliberately not a
+    hash of ``settings_snapshot``: two runs differing only in where they write
+    output are the same experiment, and ``docs/02_ARCHITECTURE.md`` names output
+    location as a component that legitimately differs between live and replay.
+    The full configuration is beside it in ``settings_snapshot``, so nothing is
+    lost — only the hash is scoped."""
+
     settings_snapshot: Mapping[str, Any]
+    """Every setting, verbatim, including the environment-scoped ones the
+    fingerprint excludes. This is what makes the scoping safe: an auditor asking
+    "where did this run write?" reads it here rather than losing it."""
 
     schema_versions: tuple[_SchemaVersion, ...] = ()
     """The schema versions of every record this run reads or writes — for

@@ -11,7 +11,7 @@ measurement that made it one. Everything else this audit touched is either
 already closed (marked `[x]` in place, with the evidence) or is real but does
 not block M3, and stays where it was filed.
 
-- [ ] **R1 — `config_fingerprint` covers `data_dir`, an output location.**
+- [x] **R1 — `config_fingerprint` covers `data_dir`, an output location.**
       Measured: two `Settings` differing only in `data_dir` fingerprint
       `a555c764…` and `2dee89e1…`. `docs/02_ARCHITECTURE.md` names "output
       storage location" as a component that legitimately *differs* between live
@@ -21,6 +21,14 @@ not block M3, and stays where it was filed.
       stands, two replays of one capture into two directories are the same
       experiment recorded under two configurations. This is the "**Before M3**"
       item carried from the M0 closure reviews, now due.
+      **Closed**: every settings field declares a `FingerprintScope`
+      (`experiment` or `environment`) on the field itself, the fingerprint
+      hashes only the experiment-scoped view, and there is no default — an
+      unclassified field raises rather than being guessed at either way.
+      `data_dir` and `log_level` are the two environment-scoped fields;
+      `settings_snapshot` still records both verbatim, so nothing is lost.
+      `RunManifest` is bumped to `run_manifest.v4` because the meaning of
+      `config_fingerprint` changed and three `v3` manifests really exist.
 - [ ] **R2 — no `payload_schema_version` -> model registry.** `read_payload`
       takes the model as an argument, so a replay dispatcher over heterogeneous
       payloads has to grow an `if/elif` chain on version strings — in the one

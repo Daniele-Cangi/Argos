@@ -45,7 +45,7 @@ def test_manifest_command_emits_a_versioned_record() -> None:
     result = runner.invoke(app, ["manifest", "--mode", "inspect"])
     assert result.exit_code == 0
     payload = orjson.loads(result.stdout)
-    assert payload["schema_version"] == "run_manifest.v3"
+    assert payload["schema_version"] == "run_manifest.v4"
     assert payload["mode"] == "inspect"
 
 

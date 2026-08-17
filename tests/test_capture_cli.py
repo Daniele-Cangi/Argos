@@ -254,7 +254,7 @@ def test_a_successful_run_writes_observations_closes_the_run_and_emits_a_manifes
     manifest_path = Path(report["manifest_path"])
     assert manifest_path.exists()
     manifest_record: dict[str, Any] = orjson.loads(manifest_path.read_bytes())
-    assert manifest_record["schema_version"] == "run_manifest.v3"
+    assert manifest_record["schema_version"] == "run_manifest.v4"
     assert manifest_record["mode"] == "capture"
     assert manifest_record["capture_run_id"] == "test-run-success"
     assert "code_revision" in manifest_record

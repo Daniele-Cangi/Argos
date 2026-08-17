@@ -377,7 +377,7 @@ def test_manifest_command_accepts_every_declared_mode(mode: RunMode) -> None:
     assert result.exit_code == 0
     payload = orjson.loads(result.stdout)
     assert payload["mode"] == mode.value
-    assert payload["schema_version"] == "run_manifest.v3"
+    assert payload["schema_version"] == "run_manifest.v4"
 
 
 def test_manifest_command_rejects_a_mode_outside_the_enum() -> None:
