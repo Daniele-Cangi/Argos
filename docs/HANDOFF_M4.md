@@ -265,11 +265,14 @@ Prioritized, and deliberately not started.
   list; this document deliberately no longer pins a hash that goes stale on the
   next commit.
 - **Uncommitted changes**: none.
-- **Continuous integration**: **green.** GitHub Actions run **`32195822692`**
-  completed successfully on pull request #1. Every step passed: checkout,
-  `uv sync --all-groups`, Ruff, format check, mypy, pytest, and the
-  branch-coverage thresholds. Section 12 records the numbers and states exactly
-  what a green pipeline does and does not establish.
+- **Continuous integration**: **green.** Every push to pull request #1 runs the
+  full workflow. Run **`32195822692`** (commit `26559f5`) and run
+  **`32198450524`** (commit `b0ddff5`, 1,582 tests) each completed successfully,
+  every step passing: checkout, `uv sync --all-groups`, Ruff, format check,
+  mypy, pytest, and the branch-coverage thresholds. Two runs are recorded rather
+  than one so this bullet states what CI has established rather than pinning a
+  hash that goes stale on the next push. Section 12 has the numbers and states
+  exactly what a green pipeline does and does not establish.
 - **Open TODOs**: none in source. `docs/BACKLOG.md` carries every deferred item
   with its reasoning, including one (`~/.cache/argos-sec-probe/e.sqlite3`) that
   is an owner cleanup on a different machine.
