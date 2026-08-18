@@ -294,10 +294,19 @@ Every gate below ran on **one machine**, which is the material limitation:
 | Python | 3.12.3 — the declared floor, and the version CI pins |
 | uv | 0.12.5 |
 | SQLite | 3.45.1 |
-| Commit | the M4.1 hygiene commit; see section 11 |
+| Commit verified | `3ebb592`, the M4.1 hygiene commit |
 | Suite | **1,580 tests**, all passing |
 | Coverage gate | PASS against every per-area threshold in `docs/13_TEST_STRATEGY.md` |
-| Fixture integrity under `core.autocrlf=true` | PASS — verified on a genuinely fresh clone, 9 of 9 raw fixtures matching their recorded hashes |
+
+Run **from a fresh clone into a fresh environment**, not from the working tree:
+`git clone --config core.autocrlf=true`, a new `uv sync --frozen`, then
+`ruff check` (pass), `ruff format --check` (110 files already formatted),
+`mypy --strict src` (**no issues in 58 source files**), `pytest` (1,580 passed
+in 76.94 s) and the coverage gate (PASS). The clone carries
+`core.autocrlf=true` in its own config, and it contains **zero** CRLF files:
+`tests/test_fixtures.py` passes there, 19 tests, 9 of 9 raw fixtures matching
+their recorded hashes under exactly the configuration that corrupted them
+before `.gitattributes` was scoped.
 
 ### Confirmed bugs, fixed
 
