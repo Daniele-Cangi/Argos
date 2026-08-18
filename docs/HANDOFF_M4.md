@@ -255,22 +255,21 @@ Prioritized, and deliberately not started.
 
 ## 11. Git status
 
-- **Branch**: `m3-deterministic-replay`, ahead of `main`. Pushed to `origin`;
-  **pull request #3 is open and must not be merged** without owner review.
+- **Canonical repository**: `Daniele-Cangi/Argos`. It is the only repository
+  this work is pushed to; nothing is pushed to any other copy.
+- **Branch**: `m3-deterministic-replay`, ahead of `main`, pushed to `origin`.
+  **Pull request #1 is the open review surface and must not be merged** without
+  owner review.
 - **Head at the time of writing**: the M4.1 hygiene commit, which is the last
   of the four M4.1 slices. `git log --oneline main..HEAD` is the authoritative
   list; this document deliberately no longer pins a hash that goes stale on the
   next commit.
 - **Uncommitted changes**: none.
-- **Continuous integration**: **green, on the second attempt, on a different
-  account.** On `UnityLoop-official/Argos` the job **did not start** — it
-  reported *"The job was not started because recent account payments have failed
-  or your spending limit needs to be increased"*. That was an account
-  billing/spending-limit condition, **not** a code failure and **not** a failing
-  build. The repository now also lives at `Daniele-Cangi/Argos`, where Actions
-  runs, and the full workflow passed at `26559f5`: every step green — sync,
-  ruff, format check, mypy, tests, branch-coverage thresholds. See section 12
-  for what that does and does not establish.
+- **Continuous integration**: **green.** GitHub Actions run **`32195822692`**
+  completed successfully on pull request #1. Every step passed: checkout,
+  `uv sync --all-groups`, Ruff, format check, mypy, pytest, and the
+  branch-coverage thresholds. Section 12 records the numbers and states exactly
+  what a green pipeline does and does not establish.
 - **Open TODOs**: none in source. `docs/BACKLOG.md` carries every deferred item
   with its reasoning, including one (`~/.cache/argos-sec-probe/e.sqlite3`) that
   is an owner cleanup on a different machine.
@@ -313,20 +312,50 @@ in 76.94 s) and the coverage gate (PASS). The clone carries
 their recorded hashes under exactly the configuration that corrupted them
 before `.gitattributes` was scoped.
 
-**On GitHub Actions**, at `26559f5`, on `ubuntu-latest` and **Python 3.12.13** —
-a different operating-system image and a different patch release from the local
-run, from a clean `actions/checkout` and a fresh `uv sync --all-groups`. Every
-step passed: ruff (all checks passed), format check (180 files already
-formatted), **mypy strict — no issues found in 58 source files**, **1,580 passed
-in 36.85 s**, and the branch-coverage thresholds (1,580 passed in 126.39 s).
+**On GitHub Actions**, run **`32195822692`**, at commit `26559f5`, on
+`ubuntu-latest` and **Python 3.12.13** — a different operating-system image and
+a different patch release from the local run, from a clean `actions/checkout`
+and a fresh `uv sync --all-groups`. Every step passed:
 
-**What that establishes, and what it does not.** It establishes that the gates
-reproduce on a machine this session does not control, on a Python patch release
-that has never run here, from a checkout that shares nothing with the working
-tree — which is precisely the claim that could not be made while the job was
-refusing to start. It establishes **nothing** about the independent
-architecture, security and testing review: a passing pipeline is not a reviewer,
-and the checkbox in `docs/OWNER_REVIEW_GATE.md` stays unticked.
+| Step | Result |
+|---|---|
+| Checkout | clean, `actions/checkout@v4` |
+| `uv sync --all-groups` | success, CPython 3.12.13 |
+| Ruff | all checks passed |
+| Format check | 180 files already formatted |
+| Mypy strict | **no issues found in 58 source files** |
+| Pytest | **1,580 passed in 36.85 s** |
+| Branch coverage thresholds | pass, 1,580 passed in 126.39 s |
+
+Those are the figures for `26559f5`, the commit CI ran. The branch has since
+gained two tests — the missing backslash case and the guard on it, both
+described below — so the current count is **1,582**.
+
+**What that establishes, and what it does not.** A green pipeline is
+**independent execution**: the gates reproduce on a machine this session does
+not control, on a Python patch release that has never run here, from a checkout
+that shares nothing with the working tree. It is **not an independent
+architectural or security review**. No reviewer read this code. The checkbox in
+`docs/OWNER_REVIEW_GATE.md` stays unticked, and running CI again will not tick
+it.
+
+### One finding from the pull-request reviewer
+
+The automated reviewer on pull request #1 raised one issue, reproduced before
+being acted on and confirmed real: in `tests/test_raw_archive.py`, the hostile
+`source` value written `"a\b"` is not `a`-backslash-`b`. Python reads `\b` as
+U+0008 BACKSPACE, so the **Windows path separator that the test's own docstring
+named was never exercised** — while the test passed, for a real reason, because
+the pattern rejects a backspace too.
+
+That is the *"claim outruns its assertion"* pattern this repository has now
+recorded five times, and the same shape as F7: a test passing without exercising
+the property it names. Both spellings are now present as separate cases, and a
+guard test asserts the characters directly (`chr(92)`, length 3, and the two
+values being distinct). The guard is **mutation-tested**: collapsing the
+spelling back makes it fail with `assert '\\' in 'a\x08'` while the other 40
+tests in the file still pass — which is precisely why the original defect went
+unnoticed.
 
 ### Confirmed bugs, fixed
 
@@ -496,9 +525,12 @@ Architecture, security and testing were re-reviewed after the corrections.
   not own, which was a genuine unauthorized-modification path requiring only
   that an operator point the tool at the wrong file. No new network or execution
   surface; the boundary scans pass unchanged; no dependency added.
-- **Testing (self-review) — 1,580 tests.** The three findings worth recording:
-  the late-event test was a tautology and is replaced; the coverage gate again
-  caught a module the happy path never reached; and F1's determinism defect was
-  invisible to the whole suite because every test ran at the same ambient
-  precision, which is the general lesson — a suite that never varies a global
-  cannot see a dependency on it.
+- **Testing (self-review) — 1,582 tests.** Four findings worth recording: the
+  late-event test was a tautology and is replaced; the hostile-`source` list
+  named a backslash it never contained; the coverage gate again caught a module
+  the happy path never reached; and F1's determinism defect was invisible to the
+  whole suite because every test ran at the same ambient precision. The general
+  lesson is the same one in three of those four — a suite that never varies a
+  global cannot see a dependency on it, and a test that never contains the
+  character it names cannot refuse it. Both were found by reading, not by a red
+  test.

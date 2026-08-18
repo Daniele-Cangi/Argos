@@ -15,15 +15,15 @@ with each slice, and `git log --oneline main..HEAD` is authoritative.
 - [x] M0-M4 marked complete with evidence. `docs/STATUS.md` carries a criterion
       table per milestone; `docs/HANDOFF_M4.md` section 5 links M3 and M4 to the
       test that closes each.
-- [x] All CI/local quality gates pass. ruff, ruff format, mypy strict on 57
-      source files, **1,580 tests**; the coverage gate enforces
+- [x] All CI/local quality gates pass. ruff, ruff format, mypy strict on **58
+      source files**, **1,582 tests**; the coverage gate enforces
       `docs/13_TEST_STRATEGY.md`'s per-area branch thresholds and passes.
-      **Reproduced independently on CI**: green at `26559f5` on
-      `ubuntu-latest` / Python 3.12.13, every step passing. On
-      `UnityLoop-official/Argos` the job had not started at all, because of an
-      account billing/spending-limit condition rather than any code failure;
-      it runs on `Daniele-Cangi/Argos`. A passing pipeline is not a reviewer —
-      the review box below stays unticked regardless.
+      **Reproduced on CI**: GitHub Actions run `32195822692`, commit
+      `26559f5`, `ubuntu-latest` / Python 3.12.13 — checkout, uv sync, Ruff,
+      format, mypy strict (58 source files), pytest (1,580 tests) and the
+      branch-coverage thresholds all passed. That is **independent
+      execution**, not an independent architectural or security review; the
+      review box below stays unticked regardless of how often CI is green.
 - [x] No execution, wallet, private key, authenticated channel, or order code.
       Enforced mechanically by `tests/test_boundaries.py` (declared-name and
       endpoint-literal scans) and by the configuration validator, not by review.
@@ -51,7 +51,16 @@ with each slice, and `git log --oneline main..HEAD` is authoritative.
       is left unticked deliberately: an independent pass is the one thing this
       gate asks for that has not been obtained, and ticking it would be the
       claim the whole repository's discipline exists to prevent.
-- [x] `HANDOFF_M4.md` is complete. All eleven sections per `docs/10_HANDOFF.md`.
+
+      **A green CI run does not tick this box.** CI is independent
+      *execution* — it proves the gates reproduce on a machine nobody here
+      controls. It reads nothing, judges nothing, and has no opinion about the
+      architecture or the threat model. The one automated reviewer that did
+      read the diff found a real defect on its first pass
+      (`docs/HANDOFF_M4.md` section 12), which is evidence that reading this
+      code finds things, not evidence that it has been reviewed.
+- [x] `HANDOFF_M4.md` is complete. All eleven sections `docs/10_HANDOFF.md`
+      specifies, plus a twelfth recording the M4.1 hardening pass.
 
 ## Questions for Daniele and Nexus
 

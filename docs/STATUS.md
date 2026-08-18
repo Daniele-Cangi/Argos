@@ -8,7 +8,10 @@ Last updated: 2026-08-18
   Stopped at the owner gate.** The hardening pass fixed four confirmed defects
   and characterized five findings that need an owner decision without choosing
   one; its full record is `docs/HANDOFF_M4.md` section 12, which is not
-  repeated here. Suite now **1,580 tests**. M0 and M1 are
+  repeated here. Suite now **1,582 tests** on **58 source files**, and the
+  gates are reproduced on GitHub Actions (run `32195822692`) as well as
+  locally. The canonical repository is `Daniele-Cangi/Argos` and the open
+  review surface is pull request #1, which must not be merged. M0 and M1 are
   closed. **M2 is functionally complete and is closed on evidence rather than
   on an independent verdict** — see "M2 closure" below, which does not claim
   more than that, and "M3 readiness audit" for what was re-derived from `main`
@@ -38,8 +41,11 @@ needs no new code and is filed in `docs/BACKLOG.md` as the first M4 carry-over.
 
 ## M4 — baseline probability and evaluation (2026-08-18)
 
-Quality gate: PASS — ruff, ruff format, mypy strict on 57 source files,
-**1,536 tests** at M4 close (up from 1,415 at M3).
+Quality gate at M4 close, and left as the dated record it is: PASS — ruff,
+ruff format, mypy strict on **57 source files**, **1,536 tests** (up from 1,415
+at M3). Both figures describe 2026-08-18, before the M4.1 pass added
+`argos/evaluation/numeric.py` and its tests; the current figures are in the
+"Current state" bullet above.
 
 **M4 closes with a real evaluation, not a constructed one**, and that was not
 guaranteed when the milestone started. The market ARGOS captured 40 seconds of

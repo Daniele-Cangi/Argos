@@ -239,10 +239,51 @@ def test_rewriting_a_payload_restores_a_lost_sidecar(tmp_path: Path) -> None:
 # --- the stored location is join-safe (M2 closure security review, S2) ------------
 
 
-@pytest.mark.parametrize(
-    "hostile_source",
-    ["../elsewhere", "/etc", "a/b", "a\b", ".", "..", "a b", "A", ""],
-)
+# The Windows separator and the control character are spelled deliberately and
+# kept apart. `"a\b"` is *not* `a`-backslash-`b`: Python reads `\b` as U+0008
+# BACKSPACE, so for as long as this list held only that spelling, the backslash
+# the docstring below names was never exercised at all -- and nothing failed,
+# because the pattern rejects a backspace too. Found by review, not by a red
+# test. `test_the_hostile_source_list_really_contains_a_backslash` is what stops
+# the two collapsing back into one.
+WINDOWS_SEPARATOR_SOURCE = "a\\b"  # three characters: a, backslash, b
+BACKSPACE_SOURCE = "a\b"  # two characters: a, U+0008
+
+HOSTILE_SOURCES = [
+    "../elsewhere",
+    "/etc",
+    "a/b",
+    WINDOWS_SEPARATOR_SOURCE,
+    BACKSPACE_SOURCE,
+    ".",
+    "..",
+    "a b",
+    "A",
+    "",
+]
+
+
+def test_the_hostile_source_list_really_contains_a_backslash() -> None:
+    r"""The guard on the case above, asserted rather than trusted to a comment.
+
+    A reviewer collapsing `"a\\b"` back to `"a\b"` -- the exact edit that
+    produced the original defect -- makes this fail, where the parametrized
+    test below would keep passing. The assertions are on the *characters*, so
+    they cannot themselves be satisfied by the wrong spelling.
+    """
+    assert "\\" in WINDOWS_SEPARATOR_SOURCE, "the Windows case must hold a literal backslash"
+    assert len(WINDOWS_SEPARATOR_SOURCE) == 3
+    assert list(WINDOWS_SEPARATOR_SOURCE) == ["a", chr(92), "b"]
+
+    assert "\\" not in BACKSPACE_SOURCE, "the control-character case must not hold a backslash"
+    assert list(BACKSPACE_SOURCE) == ["a", chr(8)]
+
+    assert WINDOWS_SEPARATOR_SOURCE != BACKSPACE_SOURCE
+    assert HOSTILE_SOURCES.count(WINDOWS_SEPARATOR_SOURCE) == 1
+    assert HOSTILE_SOURCES.count(BACKSPACE_SOURCE) == 1
+
+
+@pytest.mark.parametrize("hostile_source", HOSTILE_SOURCES)
 def test_a_hostile_source_can_never_reach_a_stored_location(hostile_source: str) -> None:
     """`archive_relative_location` composes a value that now lives in a durable
     record and that a consumer will join back onto an archive root, so a
