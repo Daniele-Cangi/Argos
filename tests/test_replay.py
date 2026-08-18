@@ -313,28 +313,28 @@ async def test_rejections_are_replayed_as_arrivals_and_tallied_by_reason() -> No
     assert result.state_hash == clean.state_hash
 
 
-async def test_a_late_arrival_is_counted_and_still_applied() -> None:
-    """ADR-0003 forbids reordering late data into the past, so the watermark
-    marks and nothing else happens.
+async def test_widening_the_tolerance_never_changes_the_reconstructed_state() -> None:
+    """The half of the mark-only policy this capture *can* evidence.
 
-    Driven with a deliberately huge `allowed_lateness` and then with none, over
-    the same capture, so the difference in counts is attributable to the policy
-    alone -- and the state hash is identical either way, because marking an
-    event late does not change what it does to the book.
+    The recorded capture contains no out-of-order arrival, so nothing in it is
+    ever late and this file cannot prove the classification. It can prove the
+    other half: the tolerance is a label, and the reconstructed book is
+    identical whatever it is set to. The classification itself is evidenced on a
+    genuinely out-of-order capture in `tests/test_replay_late_events.py`, which
+    replaced an assertion here that read `late >= 0` and was true of every
+    possible run.
     """
     store = await _captured()
     strict = _replay(store, allowed_lateness=timedelta(0), replay_run_id="strict")
     lenient = _replay(store, allowed_lateness=timedelta(days=1), replay_run_id="lenient")
 
     assert strict.state_hash == lenient.state_hash
-    assert lenient.dispatcher.counts.late == 0
-    assert strict.dispatcher.counts.late >= 0
-    assert (
-        strict.dispatcher.counts.on_time
-        + strict.dispatcher.counts.late
-        + strict.dispatcher.counts.undatable
-        == lenient.dispatcher.counts.on_time + lenient.dispatcher.counts.undatable
+    assert strict.dispatcher.counts.late == 0, (
+        "this capture is in order; a late event here would mean the fixture "
+        "changed, not that the policy fired"
     )
+    assert lenient.dispatcher.counts.late == 0
+    assert strict.dispatcher.counts.on_time == lenient.dispatcher.counts.on_time
 
 
 async def test_the_late_event_policy_is_recorded_in_the_manifest() -> None:
