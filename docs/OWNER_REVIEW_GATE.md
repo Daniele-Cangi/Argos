@@ -18,9 +18,12 @@ with each slice, and `git log --oneline main..HEAD` is authoritative.
 - [x] All CI/local quality gates pass. ruff, ruff format, mypy strict on 57
       source files, **1,580 tests**; the coverage gate enforces
       `docs/13_TEST_STRATEGY.md`'s per-area branch thresholds and passes.
-      **On one machine only**: the GitHub Actions job did not start, because
-      of an account billing/spending-limit condition rather than any code
-      failure, so no independent CI reproduction exists.
+      **Reproduced independently on CI**: green at `26559f5` on
+      `ubuntu-latest` / Python 3.12.13, every step passing. On
+      `UnityLoop-official/Argos` the job had not started at all, because of an
+      account billing/spending-limit condition rather than any code failure;
+      it runs on `Daniele-Cangi/Argos`. A passing pipeline is not a reviewer —
+      the review box below stays unticked regardless.
 - [x] No execution, wallet, private key, authenticated channel, or order code.
       Enforced mechanically by `tests/test_boundaries.py` (declared-name and
       endpoint-literal scans) and by the configuration validator, not by review.

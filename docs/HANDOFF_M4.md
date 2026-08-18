@@ -262,13 +262,15 @@ Prioritized, and deliberately not started.
   list; this document deliberately no longer pins a hash that goes stale on the
   next commit.
 - **Uncommitted changes**: none.
-- **Continuous integration**: **the GitHub Actions job did not start.** It
+- **Continuous integration**: **green, on the second attempt, on a different
+  account.** On `UnityLoop-official/Argos` the job **did not start** — it
   reported *"The job was not started because recent account payments have failed
-  or your spending limit needs to be increased"*. That is an account
-  billing/spending-limit condition, **not** a code failure and **not** a
-  successful independent CI run. Every gate result quoted in this document was
-  produced on one machine (section 12), and an independent reproduction on CI
-  has not happened.
+  or your spending limit needs to be increased"*. That was an account
+  billing/spending-limit condition, **not** a code failure and **not** a failing
+  build. The repository now also lives at `Daniele-Cangi/Argos`, where Actions
+  runs, and the full workflow passed at `26559f5`: every step green — sync,
+  ruff, format check, mypy, tests, branch-coverage thresholds. See section 12
+  for what that does and does not establish.
 - **Open TODOs**: none in source. `docs/BACKLOG.md` carries every deferred item
   with its reasoning, including one (`~/.cache/argos-sec-probe/e.sqlite3`) that
   is an owner cleanup on a different machine.
@@ -286,12 +288,15 @@ characterized the rest without choosing. Nothing here expands a milestone.
 
 ### Verification environment
 
-Every gate below ran on **one machine**, which is the material limitation:
+Two independent environments, which is what makes the numbers below more than a
+local claim.
+
+**Locally**, and the developer machine:
 
 | | |
 |---|---|
 | OS | Ubuntu 24.04 (WSL 1) on Windows 11 |
-| Python | 3.12.3 — the declared floor, and the version CI pins |
+| Python | 3.12.3 — the declared floor |
 | uv | 0.12.5 |
 | SQLite | 3.45.1 |
 | Commit verified | `3ebb592`, the M4.1 hygiene commit |
@@ -307,6 +312,21 @@ in 76.94 s) and the coverage gate (PASS). The clone carries
 `tests/test_fixtures.py` passes there, 19 tests, 9 of 9 raw fixtures matching
 their recorded hashes under exactly the configuration that corrupted them
 before `.gitattributes` was scoped.
+
+**On GitHub Actions**, at `26559f5`, on `ubuntu-latest` and **Python 3.12.13** —
+a different operating-system image and a different patch release from the local
+run, from a clean `actions/checkout` and a fresh `uv sync --all-groups`. Every
+step passed: ruff (all checks passed), format check (180 files already
+formatted), **mypy strict — no issues found in 58 source files**, **1,580 passed
+in 36.85 s**, and the branch-coverage thresholds (1,580 passed in 126.39 s).
+
+**What that establishes, and what it does not.** It establishes that the gates
+reproduce on a machine this session does not control, on a Python patch release
+that has never run here, from a checkout that shares nothing with the working
+tree — which is precisely the claim that could not be made while the job was
+refusing to start. It establishes **nothing** about the independent
+architecture, security and testing review: a passing pipeline is not a reviewer,
+and the checkbox in `docs/OWNER_REVIEW_GATE.md` stays unticked.
 
 ### Confirmed bugs, fixed
 
