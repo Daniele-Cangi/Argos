@@ -146,6 +146,39 @@ The command prints the state hash, its encoding version, both count sets
 (what the capture recorded, and what the dispatcher did with it) and a digest
 per reconstructed book, and writes a `replay_manifest.v1` beside the database.
 
+### Baseline evaluation (M4)
+
+Scores market baselines from a stored capture against a recorded settlement.
+Reads only, fetches nothing: an evaluation that reached the network could give a
+different answer tomorrow from the same arguments.
+
+```bash
+uv run argos evaluate baseline <capture_run_id> \
+    --token-id <token> --db events.sqlite3 \
+    --resolution tests/fixtures/clob/market_resolved.raw.json
+```
+
+`--resolution` is a **path to a recorded payload**, not a URL. Two shapes are
+accepted: the CLOB market record, which states the winner outright via a
+per-token `winner` flag, and the Gamma market record, which requires inferring
+it from `outcomePrices`. The CLOB shape is tried first. If neither yields a
+resolution, *both* refusal reasons are printed — "this is not a CLOB record" and
+"this is not a resolved Gamma record" are different problems with different
+fixes.
+
+**`closed == true` does not mean resolved.** Measured over 900 closed markets,
+93.2% carry a fractional `outcomePrices` that is a last price rather than a
+settlement, and 5.1% carry `["0","0"]` with no determinable outcome
+(`docs/research/m4-gamma-resolution.md`). Only an exact 1/0 pair is accepted, and
+everything else is refused with a counted reason.
+
+Scores are **uncalibrated market baselines, never ARGOS probabilities**
+(ADR-0006): the record populates `raw_score` and leaves `p_yes` null, and a
+`p_yes` without a calibration version is refused by a validator. The report's
+`limitations` field is required to be non-empty and is printed in the human
+output, not only under `--json` — a report whose caveats are one flag away is a
+report whose caveats get dropped.
+
 ## Configuration
 
 Settings come from `ARGOS_*` environment variables; `.env.example` lists them.

@@ -745,16 +745,42 @@ capture-loop slice.
       sleep and that a millisecond wait returns is not, because nothing asserts
       *how long* anything took. Closed by `tests/test_replay_pacing.py`.
 
-## Now — M4
+## M4 — closed 2026-08-18
 
-- [ ] Baseline quotes and forecasts (`MarketBaselineForecastV1`).
-- [ ] Resolution normalization (`ResolutionV1`) from public lifecycle data.
-- [ ] Proper scores and calibration report (`ForecastEvaluationV1`).
-- [ ] A `last_trade_price` payload model. Observed live on 2026-08-15 and
-      rejected as `unknown_event_type` today; `docs/research/m2-clob-websocket.md`
-      names it the M4-relevant event type. The M3 dispatcher counts it as
-      `unhandled_payload`, so its arrival is already visible rather than silent.
-- [ ] M4 handoff.
+- [x] Baseline quotes and forecasts (`MarketBaselineForecastV1`). Scores, never
+      probabilities: `raw_score` populated, `p_yes` null, and a `p_yes` without a
+      calibration version refused by a validator rather than by convention.
+- [x] Resolution normalization (`ResolutionV1`) from public lifecycle data, on
+      **two** sources. The CLOB states the winner; Gamma requires inferring it
+      from a price and usually cannot. Both refuse far more than they accept.
+- [x] Proper scores and calibration report (`ForecastEvaluationV1`). Log-loss
+      clipping declared on every record and counted per forecast; every
+      calibration bin reports its count including the empty ones.
+- [x] M4 handoff (`docs/HANDOFF_M4.md`, all eleven sections).
+
+### Carried from M4
+
+- [ ] **The only thing between this machinery and a result: a real sample.**
+      Ten to thirty liquid markets resolving within a week, captured
+      continuously, then evaluated. It needs no new code. The current evaluation
+      is one market, one 40-second window, and one constant score — the top of
+      book never moved (0.28/0.29 across all 38 states), so its effective sample
+      size is 1 and midpoint and persistence agree perfectly as an artifact.
+- [ ] A `last_trade_price` payload model. Observed live on 2026-08-15;
+      `docs/research/m2-clob-websocket.md` names it the M4-relevant event type.
+      The M3 dispatcher counts it as `unhandled_payload`, so its arrival is
+      already visible rather than silent, and wiring it adds the second real
+      baseline.
+- [ ] A category cohort dimension. `docs/07_MILESTONES.md` asks for category,
+      spread bucket and time-to-resolution "when data permits". Spread bucket and
+      time-to-resolution ship; category needs Gamma metadata, and Gamma does not
+      cover the one market ARGOS has captured.
+- [ ] The `category/base-rate` baseline from `docs/05_RESEARCH_PROTOCOL.md`. Not
+      implemented because it needs resolved data grouped by category, and the
+      qualifier "when enough resolved data exists" is the operative part.
+- [ ] `ResolutionV1.resolved_at` is `None` on the CLOB path: that record states
+      the winner but not when. Every time-to-resolution cohort therefore lands in
+      the `unknown` bucket, which is reported rather than hidden.
 
 ## Explicitly not in backlog before owner gate
 
