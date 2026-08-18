@@ -22,6 +22,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
+from argos.evaluation.numeric import evaluation_context, require_bin_count
 from argos.evaluation.scoring import ForecastEvaluationV1
 
 __all__ = [
@@ -120,9 +121,17 @@ def calibration_report(
     method: str,
     bin_count: int = DEFAULT_BIN_COUNT,
 ) -> CalibrationReport:
-    """Bin scored forecasts and summarize, reporting empty bins as empty."""
+    """Bin scored forecasts and summarize, reporting empty bins as empty.
+
+    Every arithmetic step runs inside the pinned evaluation context. Reproduced
+    before it did: the same inputs produced three different serialized reports
+    under ambient precisions 6, 28 and 50, because a bin's mean score is a
+    division and division reads ``decimal.getcontext()``.
+    """
+    require_bin_count(bin_count)
     scored: list[ForecastEvaluationV1] = [e for e in evaluations if e.forecast_method == method]
-    edges = [Decimal(index) / bin_count for index in range(bin_count + 1)]
+    with evaluation_context():
+        edges = [Decimal(index) / bin_count for index in range(bin_count + 1)]
 
     bins: list[CalibrationBin] = []
     weighted_gap = Decimal(0)
@@ -137,9 +146,10 @@ def calibration_report(
             if (lower <= e.score < upper) or (index == bin_count - 1 and e.score == upper)
         ]
         if members:
-            mean_score = sum((e.score for e in members), Decimal(0)) / len(members)
-            observed = Decimal(sum(e.outcome_yes for e in members)) / len(members)
-            weighted_gap += len(members) * abs(mean_score - observed)
+            with evaluation_context():
+                mean_score = sum((e.score for e in members), Decimal(0)) / len(members)
+                observed = Decimal(sum(e.outcome_yes for e in members)) / len(members)
+                weighted_gap += len(members) * abs(mean_score - observed)
         else:
             mean_score = None
             observed = None
@@ -155,13 +165,17 @@ def calibration_report(
 
     count = len(scored)
     statuses = {e.calibration_status for e in scored}
+    with evaluation_context():
+        expected_calibration_error = (weighted_gap / count) if count else None
+        mean_brier = (sum((e.brier_score for e in scored), Decimal(0)) / count) if count else None
+        mean_log_loss = (sum((e.log_loss for e in scored), Decimal(0)) / count) if count else None
     return CalibrationReport(
         method=method,
         bins=tuple(bins),
         sample_count=count,
-        expected_calibration_error=(weighted_gap / count) if count else None,
-        mean_brier=(sum((e.brier_score for e in scored), Decimal(0)) / count) if count else None,
-        mean_log_loss=(sum((e.log_loss for e in scored), Decimal(0)) / count) if count else None,
+        expected_calibration_error=expected_calibration_error,
+        mean_brier=mean_brier,
+        mean_log_loss=mean_log_loss,
         log_loss_epsilon=scored[0].log_loss_epsilon if scored else None,
         clipped_count=sum(1 for e in scored if e.log_loss_was_clipped),
         # A mixed set is reported as mixed rather than as whichever came first:
@@ -214,8 +228,13 @@ def cohort_report(
     method: str,
     dimension: str,
     key_of: dict[str, str],
+    bin_count: int = DEFAULT_BIN_COUNT,
 ) -> CohortReport:
     """Group scored forecasts by a caller-supplied slice key and report each.
+
+    ``bin_count`` is threaded through rather than defaulted per slice: a cohort
+    table whose slices were binned differently from the headline report, or from
+    each other, would not be comparable with either.
 
     ``key_of`` maps ``evaluation_id`` to a slice name. Supplied by the caller
     rather than computed here because the cohort dimensions
@@ -232,7 +251,7 @@ def cohort_report(
     return CohortReport(
         dimension=dimension,
         slices=tuple(
-            (name, calibration_report(members, method=method))
+            (name, calibration_report(members, method=method, bin_count=bin_count))
             for name, members in sorted(grouped.items())
         ),
     )

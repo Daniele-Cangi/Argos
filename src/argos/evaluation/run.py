@@ -32,6 +32,7 @@ from argos.evaluation.calibration import (
     cohort_report,
     spread_bucket,
 )
+from argos.evaluation.numeric import require_bin_count, require_epsilon
 from argos.evaluation.report import EvaluationReportV1
 from argos.evaluation.scoring import (
     DEFAULT_LOG_LOSS_EPSILON,
@@ -79,6 +80,8 @@ def evaluate_capture(
     rather than taken on trust, because getting it backwards would invert every
     score in the report and nothing else would look wrong.
     """
+    require_epsilon(epsilon)
+    require_bin_count(bin_count)
     if resolution.winning_token_id is None:
         raise ValueError(
             "the resolution names no winning token, so no forecast about a "
@@ -182,6 +185,7 @@ def evaluate_capture(
                         method=method.value,
                         dimension="spread_bucket",
                         key_of=spread_by_evaluation,
+                        bin_count=bin_count,
                     ).as_record()
                     for method in methods
                 },
@@ -191,6 +195,7 @@ def evaluate_capture(
                         method=method.value,
                         dimension="time_to_resolution",
                         key_of=_time_to_resolution_keys(forecasts, evaluations, resolution),
+                        bin_count=bin_count,
                     ).as_record()
                     for method in methods
                 },

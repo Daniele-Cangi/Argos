@@ -20,6 +20,14 @@ from argos.evaluation.calibration import (
     cohort_report,
     spread_bucket,
 )
+from argos.evaluation.numeric import (
+    EVALUATION_DECIMAL_CONTEXT,
+    EVALUATION_PRECISION,
+    MAX_LOG_LOSS_EPSILON,
+    evaluation_context,
+    require_bin_count,
+    require_epsilon,
+)
 from argos.evaluation.report import EvaluationReportV1
 from argos.evaluation.run import EvaluationResult, evaluate_capture
 from argos.evaluation.scoring import (
@@ -34,7 +42,10 @@ from argos.evaluation.scoring import (
 __all__ = [
     "DEFAULT_BIN_COUNT",
     "DEFAULT_LOG_LOSS_EPSILON",
+    "EVALUATION_DECIMAL_CONTEXT",
+    "EVALUATION_PRECISION",
     "EVALUATOR_VERSION",
+    "MAX_LOG_LOSS_EPSILON",
     "CalibrationBin",
     "CalibrationReport",
     "CohortReport",
@@ -45,7 +56,10 @@ __all__ = [
     "calibration_report",
     "cohort_report",
     "evaluate_capture",
+    "evaluation_context",
     "log_loss",
+    "require_bin_count",
+    "require_epsilon",
     "score_forecast",
     "spread_bucket",
 ]

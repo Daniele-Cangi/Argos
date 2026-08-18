@@ -33,6 +33,7 @@ from pydantic import Field, field_validator, model_validator
 from argos.clock import ensure_utc
 from argos.domain.orderbook import MAX_PRICE, MIN_PRICE
 from argos.domain.versioning import VersionedModel
+from argos.evaluation.numeric import evaluation_context, require_epsilon
 from argos.resolution.gamma_resolution import WinningOutcome
 
 __all__ = [
@@ -55,9 +56,16 @@ default nobody reads.
 
 
 def brier_score(score: Decimal, outcome: int) -> Decimal:
-    """``(score - outcome)²``. Bounded on [0, 1]; no clipping needed."""
-    difference = score - outcome
-    return difference * difference
+    """``(score - outcome)²``. Bounded on [0, 1]; no clipping needed.
+
+    Computed inside the pinned evaluation context, like every other number that
+    reaches a stored record: subtraction and multiplication both read
+    ``decimal.getcontext()``, so an unpinned Brier score is a function of
+    whatever last touched the process context.
+    """
+    with evaluation_context():
+        difference = score - outcome
+        return difference * difference
 
 
 def log_loss(score: Decimal, outcome: int, *, epsilon: Decimal) -> tuple[Decimal, bool]:
@@ -68,12 +76,18 @@ def log_loss(score: Decimal, outcome: int, *, epsilon: Decimal) -> tuple[Decimal
     say how much of its own number came from the clip rather than from the
     forecasts. A log loss whose clipping rate is unknown is a log loss whose
     worst cases are unknown.
+
+    ``epsilon`` is validated here rather than only on the record it lands on, so
+    a degenerate value is refused *before* it produces a confident-looking
+    number — see :func:`argos.evaluation.numeric.require_epsilon`.
     """
-    low, high = epsilon, Decimal(1) - epsilon
-    clipped = score < low or score > high
-    bounded = min(max(score, low), high)
-    realized = bounded if outcome == 1 else Decimal(1) - bounded
-    return -_ln(realized), clipped
+    require_epsilon(epsilon)
+    with evaluation_context():
+        low, high = epsilon, Decimal(1) - epsilon
+        clipped = score < low or score > high
+        bounded = min(max(score, low), high)
+        realized = bounded if outcome == 1 else Decimal(1) - bounded
+        return -_ln(realized), clipped
 
 
 def _ln(value: Decimal) -> Decimal:
@@ -83,6 +97,10 @@ def _ln(value: Decimal) -> Decimal:
     exact arithmetic the rest of this repository uses at boundaries. Converting
     to `float` here would reintroduce, in the metric itself, the rounding that
     `docs/04_DATA_CONTRACTS.md` keeps out of every price.
+
+    Called only from inside :func:`evaluation_context`; ``ln`` reads the ambient
+    context for its precision, which is the single largest source of the
+    divergence this module's pinning closes.
     """
     return value.ln()
 
@@ -138,7 +156,8 @@ class ForecastEvaluationV1(VersionedModel):
             raise ValueError(
                 f"brier_score {self.brier_score} disagrees with its own inputs ({expected_brier})"
             )
-        expected_absolute = abs(self.score - self.outcome_yes)
+        with evaluation_context():
+            expected_absolute = abs(self.score - self.outcome_yes)
         if self.absolute_error != expected_absolute:
             raise ValueError("absolute_error disagrees with its own inputs")
         expected_loss, expected_clip = log_loss(
@@ -173,7 +192,10 @@ def score_forecast(
     not by a check somebody has to remember.
     """
     outcome = 1 if winning_outcome is WinningOutcome.YES else 0
+    require_epsilon(epsilon)
     loss, clipped = log_loss(score, outcome, epsilon=epsilon)
+    with evaluation_context():
+        absolute_error = abs(score - outcome)
     return ForecastEvaluationV1(
         evaluation_id=f"evaluation-{forecast_method}-{token_id}-{resolution_id}",
         forecast_method=forecast_method,
@@ -186,7 +208,7 @@ def score_forecast(
         log_loss=loss,
         log_loss_epsilon=epsilon,
         log_loss_was_clipped=clipped,
-        absolute_error=abs(score - outcome),
+        absolute_error=absolute_error,
         calibration_status=calibration_status,
         evaluator_version=EVALUATOR_VERSION,
         created_at=created_at,
