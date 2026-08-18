@@ -21,6 +21,7 @@ from argos.evaluation.calibration import (
     spread_bucket,
 )
 from argos.evaluation.report import EvaluationReportV1
+from argos.evaluation.run import EvaluationResult, evaluate_capture
 from argos.evaluation.scoring import (
     DEFAULT_LOG_LOSS_EPSILON,
     EVALUATOR_VERSION,
@@ -38,10 +39,12 @@ __all__ = [
     "CalibrationReport",
     "CohortReport",
     "EvaluationReportV1",
+    "EvaluationResult",
     "ForecastEvaluationV1",
     "brier_score",
     "calibration_report",
     "cohort_report",
+    "evaluate_capture",
     "log_loss",
     "score_forecast",
     "spread_bucket",
