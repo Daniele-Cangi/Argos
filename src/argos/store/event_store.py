@@ -480,6 +480,15 @@ def open_sqlite_event_store(path: str | Path) -> SQLiteEventStore:
     that would reproduce).
     """
     connection = sqlite3.connect(str(path), isolation_level=None)
+
+    # Before anything that writes. Reproduced against this store before the
+    # check moved here: opening a database stamped for another application
+    # *refused* it, and by then had already switched its journal mode to WAL,
+    # created `capture_run`, `observation`, `delivery`, `rejection` and their
+    # indexes inside it, and left `-wal` and `-shm` files beside it. Refusing
+    # after mutating is not refusing.
+    _refuse_a_foreign_application(connection)
+
     journal_mode = _pragma_result(connection, "PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA synchronous=FULL")
     connection.execute("PRAGMA foreign_keys=ON")
@@ -508,6 +517,69 @@ def open_sqlite_event_store(path: str | Path) -> SQLiteEventStore:
         connection.close()
         raise StorageError("sqlite refused foreign_keys=ON", in_effect=str(foreign_keys))
     return SQLiteEventStore(connection)
+
+
+def _normalize_ddl(sql: str) -> str:
+    """Compare stored DDL by meaning, not by whitespace.
+
+    SQLite keeps a ``CREATE`` statement verbatim except that it strips
+    ``IF NOT EXISTS``, so the only normalization needed is that clause and
+    whitespace. Comparing the *whole* statement rather than probing for
+    individual clauses is what makes this check total: a weakened ``UNIQUE``, a
+    dropped foreign key, a removed ``CHECK``, a changed column type and a
+    reordered column are all one comparison.
+    """
+    return " ".join(sql.replace("IF NOT EXISTS ", "").split())
+
+
+def _expected_objects() -> dict[str, str]:
+    """The normalized DDL this module would create, derived from `_SCHEMA_SQL`.
+
+    Built by running the real schema into a scratch in-memory database rather
+    than by writing the expected text out a second time. A second copy is a
+    second thing to keep in step, and the one it would have to stay in step with
+    is the DDL right above it.
+    """
+    reference = sqlite3.connect(":memory:")
+    try:
+        reference.executescript(_SCHEMA_SQL)
+        return {
+            name: _normalize_ddl(sql)
+            for name, sql in reference.execute(
+                "SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL"
+            ).fetchall()
+        }
+    finally:
+        reference.close()
+
+
+_EXPECTED_OBJECTS: dict[str, str] = _expected_objects()
+"""Computed once at import from `_SCHEMA_SQL` itself, so it cannot drift from it."""
+
+
+def _refuse_a_foreign_application(connection: sqlite3.Connection) -> None:
+    """Refuse a database stamped for another application, before touching it.
+
+    Read-only: `PRAGMA application_id` without a value assigns nothing, and no
+    other statement runs before this. That ordering is the whole point — the
+    previous version refused the same database *after* rewriting its journal
+    mode and creating four tables and three indexes in it.
+
+    An unstamped database (``application_id == 0``) is not judged here: it may
+    be an empty file about to become an ARGOS store, or an ARGOS store written
+    before stamping existed. The shape check decides that case, after the schema
+    is applied, and only ever adopts a database whose shape is already exactly
+    right.
+    """
+    application_id = _pragma_result(connection, "PRAGMA application_id")
+    if application_id not in (0, ARGOS_APPLICATION_ID):
+        connection.close()
+        raise StorageError(
+            "database is stamped as belonging to another application; refused "
+            "before any pragma, table or index was written to it",
+            application_id=application_id,
+            expected=ARGOS_APPLICATION_ID,
+        )
 
 
 @contextmanager
@@ -978,6 +1050,60 @@ def _verify_schema_identity(connection: sqlite3.Connection) -> None:
                 expected=list(expected_columns),
                 found=list(actual),
             )
+
+    # Column names were never enough, and the gap was measured rather than
+    # suspected: databases with correct column names but no `UNIQUE
+    # (observation_id)`, no `UNIQUE (capture_run_id, ingest_sequence)` on either
+    # ledger, no `delivery -> observation` foreign key, and neither `CHECK`
+    # constraint were all **accepted** as ARGOS event stores. Every one of those
+    # is a property this module's own correctness rests on: idempotent insert is
+    # the unique index, "one record per arrival" is the composite key, and the
+    # disposition/completion vocabularies are the checks.
+    #
+    # `CREATE TABLE IF NOT EXISTS` leaves a pre-existing table alone, so a store
+    # can carry our column names and none of our constraints. Comparing the
+    # whole stored DDL catches all of it at once, including a changed type or a
+    # reordered column, which a clause-by-clause probe would not.
+    stored = {
+        name: _normalize_ddl(sql)
+        for name, sql in connection.execute(
+            "SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL"
+        ).fetchall()
+    }
+    for name, expected_ddl in _EXPECTED_OBJECTS.items():
+        found_ddl = stored.get(name)
+        if found_ddl is None:
+            raise StorageError("database is missing an event-store object", object_name=name)
+        if found_ddl != expected_ddl:
+            raise StorageError(
+                "database carries an event-store object whose definition differs "
+                "from this build's; a table with the right columns and the wrong "
+                "constraints is not this store",
+                object_name=name,
+                expected=expected_ddl,
+                found=found_ddl,
+            )
+
+    # Foreign keys are checked as *enforced*, not merely as declared: SQLite
+    # honours them per connection and defaults them off, so a declared reference
+    # with `foreign_keys` disabled is a constraint that does not constrain.
+    delivery_foreign_keys = {
+        (row[2], row[3], row[4])
+        for row in connection.execute("PRAGMA foreign_key_list(delivery)").fetchall()
+    }
+    if ("observation", "observation_id", "observation_id") not in delivery_foreign_keys:
+        raise StorageError(
+            "delivery does not reference observation; a delivery row could then "
+            "name an observation the store does not hold",
+            found=sorted(delivery_foreign_keys),
+        )
+    # Kept behind the whole-DDL comparison above, which now catches every
+    # weakening that changes the stored definition. This check is not therefore
+    # redundant: it verifies what SQLite *does* -- `PRAGMA index_list` reports
+    # the index as actually built -- rather than what the schema *says*. The two
+    # disagreeing, on a SQLite version that accepted our DDL and built something
+    # else, is the one case only this check can see.
+    #
     # Checked as *properties* rather than by name or by DDL text. A missing
     # index is recreated by the `CREATE UNIQUE INDEX IF NOT EXISTS` above, which
     # is a genuine self-heal — recreating a unique index over data that violated
@@ -1008,13 +1134,10 @@ def _verify_schema_identity(connection: sqlite3.Connection) -> None:
                 ),
             )
 
+    # A foreign stamp was already refused before any write, in
+    # `_refuse_a_foreign_application`. What remains here is the stamping of a
+    # database whose shape has just been proven correct.
     application_id = _pragma_result(connection, "PRAGMA application_id")
-    if application_id not in (0, ARGOS_APPLICATION_ID):
-        raise StorageError(
-            "database is stamped as belonging to another application",
-            application_id=application_id,
-            expected=ARGOS_APPLICATION_ID,
-        )
     user_version = _pragma_result(connection, "PRAGMA user_version")
     if application_id == ARGOS_APPLICATION_ID and user_version != EVENT_STORE_SCHEMA_VERSION:
         raise StorageError(

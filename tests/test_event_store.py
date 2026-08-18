@@ -38,6 +38,7 @@ from argos.errors import (
 )
 from argos.store.event_store import (
     _EXPECTED_INDEXES,
+    _EXPECTED_OBJECTS,
     _EXPECTED_TABLES,
     _SCHEMA_SQL,
     ARGOS_APPLICATION_ID,
@@ -782,8 +783,11 @@ def test_an_index_of_the_right_name_and_the_wrong_nature_is_refused(tmp_path: Pa
 
     with pytest.raises(StorageError) as caught:
         open_sqlite_event_store(path)
-    assert caught.value.context["index"] == "capture_run_open_once"
-    assert caught.value.context["found"] == "unique=0, partial=0"
+    # Since M4.1 the whole-DDL comparison catches this first and names the
+    # object rather than the index property. The assertion moved with the
+    # mechanism rather than being relaxed: it still pins that this exact
+    # weakening is refused, and that the refusal identifies which object.
+    assert caught.value.context["object_name"] == "capture_run_open_once"
 
 
 def test_a_schema_that_cannot_be_applied_stays_inside_the_taxonomy(tmp_path: Path) -> None:
@@ -800,3 +804,139 @@ def test_a_schema_that_cannot_be_applied_stays_inside_the_taxonomy(tmp_path: Pat
 
     with pytest.raises(StorageError):
         open_sqlite_event_store(path)
+
+
+# --- constraint verification, not only column names (M4.1 F6) ---------------------
+
+
+def _weakened(source: str, needle: str, replacement: str) -> str:
+    weakened = source.replace(needle, replacement)
+    assert weakened != source, f"pattern not found: {needle!r}"
+    return weakened
+
+
+WEAKENINGS: dict[str, tuple[str, str]] = {
+    "unique_observation_id": (",\n    UNIQUE (observation_id)\n", "\n"),
+    "unique_delivery_arrival": (
+        "    source_frame_offset INTEGER NOT NULL,\n    UNIQUE (capture_run_id, ingest_sequence)\n",
+        "    source_frame_offset INTEGER NOT NULL\n",
+    ),
+    "unique_rejection_arrival": (
+        "    record TEXT NOT NULL,\n    UNIQUE (capture_run_id, ingest_sequence)\n)",
+        "    record TEXT NOT NULL\n)",
+    ),
+    "delivery_foreign_key": (
+        "observation_id TEXT NOT NULL REFERENCES observation (observation_id),",
+        "observation_id TEXT NOT NULL,",
+    ),
+    "disposition_check": (
+        "disposition TEXT NOT NULL CHECK (disposition IN ('accepted_new', 'duplicate')),",
+        "disposition TEXT NOT NULL,",
+    ),
+    "completion_status_check": (
+        "completion_status TEXT CHECK (\n"
+        "        completion_status IS NULL OR completion_status IN ('completed', 'failed')\n"
+        "    )",
+        "completion_status TEXT",
+    ),
+    "open_once_not_unique": (
+        "CREATE UNIQUE INDEX IF NOT EXISTS capture_run_open_once\n"
+        "    ON capture_run (capture_run_id) WHERE ended_at IS NULL;",
+        "CREATE INDEX IF NOT EXISTS capture_run_open_once\n    ON capture_run (capture_run_id);",
+    ),
+}
+
+
+@pytest.mark.parametrize("weakening", sorted(WEAKENINGS))
+def test_a_store_with_the_right_columns_and_the_wrong_constraints_is_refused(
+    tmp_path: Path, weakening: str
+) -> None:
+    """Column names were never enough, and the gap was measured.
+
+    Before this check, every one of these was **accepted** as an ARGOS event
+    store: no `UNIQUE (observation_id)`, no `UNIQUE (capture_run_id,
+    ingest_sequence)` on either ledger, no `delivery -> observation` foreign key,
+    and neither `CHECK`. Each is a property this module's own correctness rests
+    on -- idempotent insert *is* the unique index, "one record per arrival" *is*
+    the composite key -- and `CREATE TABLE IF NOT EXISTS` leaves a pre-existing
+    table alone, so a database can carry our column names and none of it.
+    """
+    needle, replacement = WEAKENINGS[weakening]
+    path = tmp_path / f"{weakening}.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.executescript(_weakened(_SCHEMA_SQL, needle, replacement))
+    connection.execute(f"PRAGMA application_id = {ARGOS_APPLICATION_ID}")
+    connection.execute(f"PRAGMA user_version = {EVENT_STORE_SCHEMA_VERSION}")
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(StorageError):
+        open_sqlite_event_store(path)
+
+
+def test_a_correctly_shaped_store_is_still_accepted(tmp_path: Path) -> None:
+    """The guard above is only worth having if it is not simply refusing
+    everything -- a check that never passes is indistinguishable from a broken
+    open."""
+    path = tmp_path / "genuine.sqlite3"
+    store = open_sqlite_event_store(path)
+    store.open_capture_run("run", started_at=START)
+    store.close()
+    reopened = open_sqlite_event_store(path)
+    assert reopened.get_capture_run("run") is not None
+    reopened.close()
+
+
+def test_refusing_a_foreign_database_changes_not_one_byte_of_it(tmp_path: Path) -> None:
+    """Refusing after mutating is not refusing.
+
+    Reproduced before the check moved ahead of every write: opening a database
+    stamped for another application refused it, and by then had switched its
+    journal mode to WAL, created `capture_run`, `observation`, `delivery`,
+    `rejection` and three indexes inside it, and left `-wal` and `-shm` files
+    beside it.
+    """
+    path = tmp_path / "someone_elses.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.execute("PRAGMA application_id = 559038737")
+    connection.execute("CREATE TABLE unrelated (x INTEGER)")
+    connection.execute("INSERT INTO unrelated VALUES (1)")
+    connection.commit()
+    connection.close()
+
+    before_bytes = path.read_bytes()
+    before_siblings = sorted(p.name for p in tmp_path.iterdir())
+    probe = sqlite3.connect(path)
+    before_state = {
+        "application_id": probe.execute("PRAGMA application_id").fetchone()[0],
+        "user_version": probe.execute("PRAGMA user_version").fetchone()[0],
+        "journal_mode": probe.execute("PRAGMA journal_mode").fetchone()[0],
+        "objects": sorted(r[0] for r in probe.execute("SELECT name FROM sqlite_master")),
+    }
+    probe.close()
+
+    with pytest.raises(StorageError) as caught:
+        open_sqlite_event_store(path)
+    assert caught.value.context["application_id"] == 559038737
+
+    probe = sqlite3.connect(path)
+    after_state = {
+        "application_id": probe.execute("PRAGMA application_id").fetchone()[0],
+        "user_version": probe.execute("PRAGMA user_version").fetchone()[0],
+        "journal_mode": probe.execute("PRAGMA journal_mode").fetchone()[0],
+        "objects": sorted(r[0] for r in probe.execute("SELECT name FROM sqlite_master")),
+    }
+    probe.close()
+
+    assert path.read_bytes() == before_bytes
+    assert after_state == before_state
+    assert sorted(p.name for p in tmp_path.iterdir()) == before_siblings
+
+
+def test_the_expected_ddl_is_derived_from_the_schema_rather_than_written_twice() -> None:
+    """A second copy of the expected DDL would be a second thing to keep in
+    step, and the one it would have to stay in step with is the schema itself."""
+    assert set(_EXPECTED_OBJECTS) >= set(_EXPECTED_TABLES) | set(_EXPECTED_INDEXES)
+    for name, ddl in _EXPECTED_OBJECTS.items():
+        assert "IF NOT EXISTS" not in ddl, name
+        assert "  " not in ddl, f"{name} is not whitespace-normalized"
