@@ -106,7 +106,15 @@ def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
     # Imported for the side effect that matters here: defining the classes is
     # what registers them. `importlib` rather than a bare `import ... # noqa`
     # so the intent is stated in code rather than in a lint suppression.
-    for package in ("argos.compiler", "argos.config", "argos.domain", "argos.replay"):
+    for package in (
+        "argos.baselines",
+        "argos.compiler",
+        "argos.config",
+        "argos.domain",
+        "argos.evaluation",
+        "argos.replay",
+        "argos.resolution",
+    ):
         importlib.import_module(package)
 
     shipped = {
@@ -116,14 +124,19 @@ def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
     }
     assert shipped == {
         "compiled_market_contract.v1": "CompiledMarketContractV1",
+        "evaluation_report.v1": "EvaluationReportV1",
+        "forecast_evaluation.v1": "ForecastEvaluationV1",
+        "market_baseline_forecast.v1": "MarketBaselineForecastV1",
         "market_audit.v1": "MarketAuditV1",
         "market_definition.v1": "MarketDefinitionV1",
+        "market_quote.v1": "MarketQuoteV1",
         "observation_envelope.v1": "ObservationEnvelopeV1",
         "order_book_snapshot.v1": "OrderBookSnapshotV1",
         "price_change.v1": "PriceChangeV1",
         "quarantined_market.v1": "QuarantinedMarketV1",
         "rejected_observation.v1": "RejectedObservationV1",
         "replay_manifest.v1": "ReplayManifestV1",
+        "resolution.v1": "ResolutionV1",
         "run_manifest.v5": "RunManifest",
         "source_provenance.v1": "SourceProvenanceV1",
         "ws_book_snapshot.v1": "WsBookSnapshotV1",

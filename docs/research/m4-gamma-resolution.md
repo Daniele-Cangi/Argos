@@ -89,6 +89,27 @@ offset 2250 for this query, reached without any warning in the response body of
 the preceding page. Any future sampling code must treat a 422 as "the window
 ended", not as a failure — and must not assume it can walk the whole history.
 
+## The displayed price is the midpoint
+
+`docs/05_RESEARCH_PROTOCOL.md` lists "market displayed-price proxy according to
+a documented method" and "midpoint when both sides exist" as **two** of the five
+baselines to evaluate. On this source they are one.
+
+Measured over the 100 highest-24h-volume open markets: of the 91 that report
+both `bestBid` and `bestAsk`, **91 have `outcomePrices[0]` exactly equal to
+`(bestBid + bestAsk) / 2`**. Zero disagreements, including markets whose
+`lastTradePrice` differs from both.
+
+So implementing "displayed-price proxy" as a baseline separate from midpoint
+would be implementing the same number twice and then reporting the two as
+independent baselines that agree — which is not a finding, it is an artifact.
+ARGOS implements midpoint and records that the displayed price is that same
+quantity on this source.
+
+The nine markets without both sides are the reason a midpoint baseline must be
+able to **abstain**: there is no midpoint of a one-sided book, and substituting
+the side that exists would invent a price the market never showed.
+
 ## Recorded fixtures
 
 | Fixture | Why |
