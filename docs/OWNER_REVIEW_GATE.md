@@ -14,7 +14,7 @@ than asserting the box.
       table per milestone; `docs/HANDOFF_M4.md` section 5 links M3 and M4 to the
       test that closes each.
 - [x] All CI/local quality gates pass. ruff, ruff format, mypy strict on 57
-      source files, **1,513 tests**; the coverage gate enforces
+      source files, **1,536 tests**; the coverage gate enforces
       `docs/13_TEST_STRATEGY.md`'s per-area branch thresholds and passes.
 - [x] No execution, wallet, private key, authenticated channel, or order code.
       Enforced mechanically by `tests/test_boundaries.py` (declared-name and

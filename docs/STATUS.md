@@ -153,11 +153,22 @@ untrusted source text and route it through the existing
 `neutralize_and_bound`; `ResolutionV1.resolution_source` is the only free-text
 field either produces, and it is bounded at 200 characters.
 
-**Testing — 1,513 tests, and the two defects above are the honest headline.**
-Both were found by reading output, not by a failing assertion, which is the
-third time this repository has recorded that pattern. The coverage gate holds
-its per-area thresholds. What it cannot check, and what the constant-score
-finding shows, is whether a test exercises a property or merely reaches a line.
+**Testing — 1,536 tests, and three findings worth the space.**
+
+The two defects above were found by reading output, not by a failing assertion,
+which is the third time this repository has recorded that pattern.
+
+The third came from the coverage gate itself, and it earned its keep twice in
+two days. It caught `argos/evaluation/run.py` at **77.78%** against its 90%
+floor and `clob_resolution.py` at 70% — because the real end-to-end evaluation
+exercises exactly one happy path (one market, one token, a two-sided book at
+every state), so the abstention path, the time-to-resolution buckets and *every
+refusal the CLOB normalizer can produce* had never run. A module whose only test
+is its happy path is a module whose refusals have never run, and refusals are
+most of what those two modules do. 23 tests close it; the gate now passes.
+
+What no coverage number can check, and what the constant-score finding shows, is
+whether a test exercises a property or merely reaches a line.
 
 **Documentation — complete.** `docs/RUNBOOK.md` gains the evaluation command
 and states the `closed != resolved` finding where an operator will meet it;
