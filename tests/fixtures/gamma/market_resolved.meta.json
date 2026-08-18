@@ -1,0 +1,11 @@
+{
+ "byte_length": 4128,
+ "note": "A market Gamma reports as resolved: closed=true and outcomePrices exactly [\"1\",\"0\"] or [\"0\",\"1\"], with umaResolutionStatuses ending in \"resolved\". This is the only shape ARGOS treats as a determined outcome.",
+ "parser_version": "gamma-market-normalizer/1",
+ "payload_kind": "gamma.markets.by_id",
+ "raw_sha256": "7c08a12b1bb63b0f7ab3b6326d2a7944569825fca81e441a87c8f773b39ddd22",
+ "redaction": "none - the endpoint is public and unauthenticated, and no request carried credentials",
+ "retrieved_at": "2026-08-18T02:24:07Z",
+ "source": "gamma",
+ "source_endpoint": "https://gamma-api.polymarket.com/markets/842093"
+}

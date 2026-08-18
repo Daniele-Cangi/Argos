@@ -736,11 +736,14 @@ capture-loop slice.
       against the store. Measured at M3 scale it is irrelevant; a capture two
       orders of magnitude larger may want a batched read *behind the same port*,
       never a query from `argos.replay`.
-- [ ] `RealTimePacer` is not exercised by any test, deliberately: waiting out a
-      capture's real inter-arrival gaps is the flaky timing test
-      `docs/13_TEST_STRATEGY.md` forbids. Its behaviour is one `time.sleep`
-      call, and that is the whole of it — recorded so "untested" is a choice on
-      the record rather than a gap nobody noticed.
+- [x] ~~`RealTimePacer` is not exercised by any test, deliberately.~~
+      **That claim was an overstatement, and the coverage gate caught it**:
+      `argos/replay/pacing.py` measured 78.26% against its 90% floor within
+      hours of the threshold being enforced. Waiting out a capture's real
+      inter-arrival gaps would indeed be the flaky timing test
+      `docs/13_TEST_STRATEGY.md` forbids; asserting that `wait(0)` does not
+      sleep and that a millisecond wait returns is not, because nothing asserts
+      *how long* anything took. Closed by `tests/test_replay_pacing.py`.
 
 ## Now — M4
 

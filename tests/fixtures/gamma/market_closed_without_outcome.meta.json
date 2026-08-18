@@ -1,0 +1,11 @@
+{
+ "byte_length": 2835,
+ "note": "A closed market whose outcomePrices are [\"0\",\"0\"] - closed, with no determinable winning outcome. 5.1% of a 900-market closed sample. ARGOS must classify this as unknown and never score it.",
+ "parser_version": "gamma-market-normalizer/1",
+ "payload_kind": "gamma.markets.by_id",
+ "raw_sha256": "b1ae95249f558d45c382523add940eb4ecc8a656bc859e9e6f600c59ab6f2b64",
+ "redaction": "none - the endpoint is public and unauthenticated, and no request carried credentials",
+ "retrieved_at": "2026-08-18T02:24:08Z",
+ "source": "gamma",
+ "source_endpoint": "https://gamma-api.polymarket.com/markets/12"
+}
