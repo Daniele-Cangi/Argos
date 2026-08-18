@@ -4,8 +4,10 @@ Structure follows `docs/10_HANDOFF.md` exactly.
 
 ## 1. Executive state
 
-- **Commit**: `42a49ae` on branch `m3-deterministic-replay`.
-- **Milestones completed**: M0, M1, M2, M3, M4.
+- **Commit**: see section 11; the branch head moves with each hardening
+  slice, so it is stated once, where the git state is.
+- **Milestones completed**: M0, M1, M2, M3, M4, plus an M4.1 owner-gate
+  hardening pass (section 12).
 - **What works.** ARGOS discovers public Polymarket markets and compiles their
   rules into a reviewable contract; captures the public CLOB market WebSocket
   into an idempotent, append-only SQLite event store with a content-addressed
@@ -253,14 +255,221 @@ Prioritized, and deliberately not started.
 
 ## 11. Git status
 
-- **Branch**: `m3-deterministic-replay`, ahead of `main`. Not pushed.
-- **Uncommitted changes**: none at `42a49ae`; this document is the next commit.
+- **Branch**: `m3-deterministic-replay`, ahead of `main`. Pushed to `origin`;
+  **pull request #3 is open and must not be merged** without owner review.
+- **Head at the time of writing**: the M4.1 hygiene commit, which is the last
+  of the four M4.1 slices. `git log --oneline main..HEAD` is the authoritative
+  list; this document deliberately no longer pins a hash that goes stale on the
+  next commit.
+- **Uncommitted changes**: none.
+- **Continuous integration**: **the GitHub Actions job did not start.** It
+  reported *"The job was not started because recent account payments have failed
+  or your spending limit needs to be increased"*. That is an account
+  billing/spending-limit condition, **not** a code failure and **not** a
+  successful independent CI run. Every gate result quoted in this document was
+  produced on one machine (section 12), and an independent reproduction on CI
+  has not happened.
 - **Open TODOs**: none in source. `docs/BACKLOG.md` carries every deferred item
-  with its reasoning, including four that are closed-with-evidence and one
-  (`~/.cache/argos-sec-probe/e.sqlite3`) that is an owner cleanup on a different
-  machine.
-- **Local-only generated artifacts**: `.data/` (captures), `.venv/`,
-  `.hypothesis/`, `.mypy_cache/`, `.pytest_cache/`, `__pycache__/` — all
-  gitignored. No generated capture data is committed. The committed fixtures are
-  recorded source payloads with provenance sidecars, hash-checked by
+  with its reasoning, including one (`~/.cache/argos-sec-probe/e.sqlite3`) that
+  is an owner cleanup on a different machine.
+- **Local-only generated artifacts**: `.data/`, `.venv/`, `.hypothesis/`,
+  `.mypy_cache/`, `.pytest_cache/`, `__pycache__/` — all gitignored. No
+  generated capture data is committed. The committed fixtures are recorded
+  source payloads with provenance sidecars, hash-checked by
   `tests/test_fixtures.py`.
+
+## 12. M4.1 owner-gate hardening
+
+A review pass over the M4 package. It fixed only defects whose correct
+resolution was already determined by an accepted invariant or ADR, and
+characterized the rest without choosing. Nothing here expands a milestone.
+
+### Verification environment
+
+Every gate below ran on **one machine**, which is the material limitation:
+
+| | |
+|---|---|
+| OS | Ubuntu 24.04 (WSL 1) on Windows 11 |
+| Python | 3.12.3 — the declared floor, and the version CI pins |
+| uv | 0.12.5 |
+| SQLite | 3.45.1 |
+| Commit | the M4.1 hygiene commit; see section 11 |
+| Suite | **1,580 tests**, all passing |
+| Coverage gate | PASS against every per-area threshold in `docs/13_TEST_STRATEGY.md` |
+| Fixture integrity under `core.autocrlf=true` | PASS — verified on a genuinely fresh clone, 9 of 9 raw fixtures matching their recorded hashes |
+
+### Confirmed bugs, fixed
+
+| Finding | What was measured | Correction, and what determined it |
+|---|---|---|
+| **F1** ambient `Decimal` context reached stored evaluation records | The same inputs produced **three different serialized artifacts** at ambient precisions 6, 28 and 50 (`mean_score` `0.123457` vs `0.123456789`), propagating into every mean, the ECE and every cohort slice | Pinned `EVALUATION_DECIMAL_CONTEXT`. Determined by `docs/DECISION_LOG.md` 2026-08-12, which closed this exact class once already in `CANONICAL_DECIMAL_CONTEXT` |
+| **F1b** degenerate log-loss epsilon accepted | `epsilon = 0.5` collapses the clipping interval to a point so every forecast scores `ln 2`; `epsilon = 0.9` inverts it so every score is *replaced*. Both were accepted silently | Refused in `(0, 0.5)` at the public boundary, before any arithmetic |
+| **F1c** non-positive `bin_count` | `0` raised a bare `decimal.InvalidOperation` outside the ARGOS taxonomy; `-3` was accepted and produced a report with **zero bins** whose ECE was computed over nothing | Refused as `ContractViolationError`. Determined by the taxonomy rule this repository has applied five times |
+| **F6** store identity verified column names only | Six of seven weakened databases were **accepted**: no `UNIQUE (observation_id)`, no `UNIQUE (capture_run_id, ingest_sequence)` on either ledger, no `delivery -> observation` foreign key, neither `CHECK` | Whole-DDL comparison against the schema this build would create, plus foreign-key enforcement. Determined by ADR-0011's "append-only is enforced mechanically, not by convention" |
+| **F6b** a refused open mutated the database first | Opening a foreign-stamped file refused it *after* switching its journal mode to WAL, creating four tables and three indexes inside it, and leaving `-wal`/`-shm` beside it | The stamp check moved ahead of every write. A regression test compares bytes, pragmas, object list and directory contents across the refused open |
+| **F7** the late-arrival test was a tautology | `assert late >= 0`, on a capture containing **zero** out-of-order arrivals | Replaced with eleven tests on a genuinely out-of-order capture built from unedited real frames. Determined by `docs/13_TEST_STRATEGY.md` and the explicit prohibition on such assertions |
+
+### Findings characterized, not decided
+
+Each is reproduced, and each needs an owner or architectural choice that no
+accepted ADR forces. **No policy has been silently adopted for any of them.**
+
+#### F2 — the evaluator walks its own replay loop
+
+`evaluate_capture()` calls `read_capture_arrivals()` directly; it does not
+compose `ReplaySession` or `replay_capture`.
+
+*Reproduction.* Redelivering every frame of the recorded capture doubles
+`forecast_count` 76 → 152 and `scored_count` 75 → 151 while the state hash is
+**unchanged** (`2a7fcb6a…`). A duplicate delivery, an unhandled payload, and an
+arrival for a different token all emit a forecast from an unchanged book.
+
+*Affected.* `src/argos/evaluation/run.py`; `EvaluationReportV1.forecast_count`,
+`scored_count`, `calibration`, `cohorts`.
+
+*Options.* **(a)** Emit one forecast per arrival — current behaviour; the
+metrics then weight a market by how chatty its feed was, and a resend inflates
+them. **(b)** Emit one forecast per *state change* of the target book; counts
+become a property of the market rather than of the transport, and the
+autocorrelation limitation shrinks but does not vanish. **(c)** Emit per arrival
+and record which arrivals changed state, deciding at report time.
+
+*Invariants.* All three preserve determinism (ADR-0012) and invariant 14. (b)
+and (c) change every recorded count and therefore every stored evaluation
+artifact. (a) is what the shipped numbers were produced under.
+
+*Second question, separable.* Whether the evaluator should compose
+`ReplaySession` rather than re-walking arrivals. Composing it would put the
+scheduler's clock, pacing and counters on the evaluation path; re-walking keeps
+them out but means two code paths read the same arrivals. Neither is forced by
+ADR-0012, which is about replay determinism and is satisfied by both.
+
+#### F3 — a non-final resolution can be scored
+
+*Reproduction.* A `ResolutionV1` with `resolution_status` `proposed`, `disputed`
+or `unknown` and a populated winning token scores all 75 forecasts, exactly as a
+`final` one does. The status does not appear in `EvaluationReportV1` at all.
+
+*Why it matters more than it looks.* `proposed` is the **modal** real-world
+state: 458 of 500 recently-closed markets carry only `["proposed"]`
+(`docs/research/m4-gamma-resolution.md`). A finality filter would exclude most
+of the available sample; no filter scores outcomes that can still be disputed.
+
+*Affected.* `src/argos/evaluation/run.py`, `src/argos/evaluation/report.py`,
+`ResolutionV1.resolution_status`.
+
+*Options.* **(a)** Score any determined outcome, current behaviour. **(b)** Score
+only `final`. **(c)** Score any, and record the status distribution on the
+report so a reader can weight it. **(d)** Make finality a caller parameter with
+no default.
+
+*Invariants.* All preserve "unresolved markets are not scored as negatives" —
+an undetermined market still produces a `ResolutionRefusal` and never reaches
+scoring. (a) as it stands does *not* satisfy `.claude/rules/scientific-claims.md`
+fully, because the report omits a fact a reader needs; (c) is the minimum that
+does, and is a reporting change rather than a policy one.
+
+#### F4 — forecasts made after resolution enter the headline metrics
+
+*Reproduction.* With `resolved_at` set before every arrival, all 75 forecasts
+still contribute to `scored_count`, `mean_brier` (0.081225), `mean_log_loss`,
+the ECE (0.285) and the calibration bins. Only the `time_to_resolution` cohort
+marks them, in an `after_resolution` bucket.
+
+*Affected.* `src/argos/evaluation/run.py` (`_lead_bucket`), the calibration and
+cohort reports.
+
+*Options.* **(a)** Retain and mark, current behaviour. **(b)** Exclude from
+headline metrics and report separately. **(c)** Refuse the evaluation outright
+when any forecast post-dates the resolution, treating it as a join error.
+
+*Invariants.* `docs/05_RESEARCH_PROTOCOL.md`'s leakage rules forbid a forecast
+seeing information after its cutoff; a forecast made after settlement is not
+leakage by that definition, but it is not evidence about forecasting either.
+(b) and (c) change recorded metrics. Note the CLOB resolution path leaves
+`resolved_at` as `None`, so today every forecast lands in `unknown` and this
+question is latent rather than active.
+
+#### F5 — the evaluation artifact does not bind its own inputs
+
+*Reproduction.* `EvaluationReportV1` binds `source_capture_run_ids`,
+`source_state_hash`, `config_fingerprint`, `evaluator_version`,
+`log_loss_epsilon`, `calibration_bin_count` and `code_revision`. It binds
+**none** of: the resolution id, the resolution's source payload hash, the
+evaluated token, the replay manifest, the forecast-emission policy, the ordered
+forecast records, or the ordered evaluation records.
+
+*What that means concretely.* Two evaluations of the same capture against two
+*different* resolutions, or for two different tokens, produce reports that are
+indistinguishable except by their run id and their numbers. The 75 individual
+`ForecastEvaluationV1` records exist in memory and are never persisted, so the
+report cannot be re-derived from what it stores.
+
+*Affected.* `src/argos/evaluation/report.py`, `src/argos/evaluation/run.py`.
+
+*Options.* **(a)** Add the identifying fields (token, resolution id, resolution
+payload hash, methods, emission policy) — a schema change, no new concept.
+**(b)** Also persist the ordered forecast and evaluation records, making the
+report self-contained and much larger. **(c)** Derive an `evaluation_id` from
+the inputs the way `observation_id` is derived (ADR-0010), so two evaluations of
+different things cannot collide.
+
+*Invariants.* Core invariant 13 ("every run records configuration, code
+revision, schema versions, and data provenance") is **not** currently satisfied
+for an evaluation run: the resolution is data provenance and is unrecorded. This
+is the one item here where an invariant already points at a direction; it does
+not, on its own, choose between (a), (b) and (c).
+
+#### F8 — `last_trade_price` never reaches the evaluation
+
+*The complete path, and where it stops.* The transport yields the frame
+unchanged (`argos.sources.clob_ws` decodes nothing). `argos.ingestion.capture._consume_event`
+dispatches exactly two event types, `price_change` and `book`; **everything else
+becomes an `UNKNOWN_EVENT_TYPE` rejection there.** That is the first and only
+rejection point: it never reaches normalization, the store, the dispatcher,
+replay, `MarketQuoteV1`, or a baseline.
+
+*Downstream state, for context.* No `last_trade_price` payload model is
+registered. `argos.projections.dispatch._HANDLER_FOR` keys three models and
+would count an unregistered one as `unhandled_payload`. `MarketQuoteV1` already
+*has* a `last_trade_price` field and `BaselineMethod.LAST_TRADE` already exists;
+nothing supplies either, so that baseline abstains on every arrival today.
+
+*Integration points, exactly.* (1) a `last_trade_price.vN` `VersionedModel` in
+`argos.domain`; (2) a normalizer in `argos.ingestion`; (3) a branch in
+`_consume_event`; (4) a handler in `_HANDLER_FOR`; (5) a decision about whether
+a trade belongs in `BookState` — it is not a resting order, so it likely does
+not, which then requires a place to carry it into `quote_from_book_state`.
+
+*Why it is not implemented in this pass.* Point (5) can change projected state,
+and therefore `state_hash.v1`, the golden replay hash, and every stored
+evaluation artifact bound to it. That is milestone work, not hardening.
+
+*Classification.* Deferred deliverable. It was observed live on 2026-08-15 and
+`docs/research/m2-clob-websocket.md` already names it the M4-relevant event
+type.
+
+### Self-reviews
+
+Architecture, security and testing were re-reviewed after the corrections.
+**They are SELF-REVIEWS** — performed by the author of the code — and they do
+**not** satisfy the independent-review checkbox in
+`docs/OWNER_REVIEW_GATE.md`, which remains unticked.
+
+- **Architecture (self-review) — APPROVE.** `argos.evaluation.numeric` sits
+  below the rest of the package and is imported by it, not the reverse. The
+  event-store change is inside `argos.store` and adds no import. F2's second
+  replay loop is left as an open architectural question rather than resolved by
+  fiat.
+- **Security (self-review) — PASS, one improvement, no new findings.** The
+  improvement is real: a refused open no longer writes to a database ARGOS does
+  not own, which was a genuine unauthorized-modification path requiring only
+  that an operator point the tool at the wrong file. No new network or execution
+  surface; the boundary scans pass unchanged; no dependency added.
+- **Testing (self-review) — 1,580 tests.** The three findings worth recording:
+  the late-event test was a tautology and is replaced; the coverage gate again
+  caught a module the happy path never reached; and F1's determinism defect was
+  invisible to the whole suite because every test ran at the same ambient
+  precision, which is the general lesson — a suite that never varies a global
+  cannot see a dependency on it.

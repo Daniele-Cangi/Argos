@@ -4,8 +4,10 @@ Claude must stop implementation when this gate is reached.
 
 ## Required repository state
 
-Checked 2026-08-18 at `42a49ae`. Every box below names what was verified rather
-than asserting the box.
+Checked 2026-08-18, and re-checked after the M4.1 hardening pass
+(`docs/HANDOFF_M4.md` section 12). Every box below names what was verified
+rather than asserting the box; the commit is not pinned here because it moves
+with each slice, and `git log --oneline main..HEAD` is authoritative.
 
 - [x] Clean working tree or clearly documented local-only artifacts. Working
       tree clean; `.data/`, `.venv/` and the caches are gitignored, and no
@@ -14,8 +16,11 @@ than asserting the box.
       table per milestone; `docs/HANDOFF_M4.md` section 5 links M3 and M4 to the
       test that closes each.
 - [x] All CI/local quality gates pass. ruff, ruff format, mypy strict on 57
-      source files, **1,536 tests**; the coverage gate enforces
+      source files, **1,580 tests**; the coverage gate enforces
       `docs/13_TEST_STRATEGY.md`'s per-area branch thresholds and passes.
+      **On one machine only**: the GitHub Actions job did not start, because
+      of an account billing/spending-limit condition rather than any code
+      failure, so no independent CI reproduction exists.
 - [x] No execution, wallet, private key, authenticated channel, or order code.
       Enforced mechanically by `tests/test_boundaries.py` (declared-name and
       endpoint-literal scans) and by the configuration validator, not by review.

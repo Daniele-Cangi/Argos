@@ -4,7 +4,11 @@ Last updated: 2026-08-18
 
 ## Current state
 
-- Current milestone: **M4 — complete. Stopped at the owner gate.** M0 and M1 are
+- Current milestone: **M4 — complete, plus an M4.1 owner-gate hardening pass.
+  Stopped at the owner gate.** The hardening pass fixed four confirmed defects
+  and characterized five findings that need an owner decision without choosing
+  one; its full record is `docs/HANDOFF_M4.md` section 12, which is not
+  repeated here. Suite now **1,580 tests**. M0 and M1 are
   closed. **M2 is functionally complete and is closed on evidence rather than
   on an independent verdict** — see "M2 closure" below, which does not claim
   more than that, and "M3 readiness audit" for what was re-derived from `main`
@@ -35,7 +39,7 @@ needs no new code and is filed in `docs/BACKLOG.md` as the first M4 carry-over.
 ## M4 — baseline probability and evaluation (2026-08-18)
 
 Quality gate: PASS — ruff, ruff format, mypy strict on 57 source files,
-**1,536 tests** (up from 1,415 at M3).
+**1,536 tests** at M4 close (up from 1,415 at M3).
 
 **M4 closes with a real evaluation, not a constructed one**, and that was not
 guaranteed when the milestone started. The market ARGOS captured 40 seconds of
@@ -153,7 +157,7 @@ untrusted source text and route it through the existing
 `neutralize_and_bound`; `ResolutionV1.resolution_source` is the only free-text
 field either produces, and it is bounded at 200 characters.
 
-**Testing — 1,536 tests, and three findings worth the space.**
+**Testing — 1,536 tests at M4 close, and three findings worth the space.**
 
 The two defects above were found by reading output, not by a failing assertion,
 which is the third time this repository has recorded that pattern.

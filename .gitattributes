@@ -1,21 +1,31 @@
-# Line endings are never translated in this repository.
+# Line endings, decided once so they cannot be decided again by accident.
 #
-# ARGOS hashes file bytes and checks the hash: every `tests/fixtures/**.raw.json`
-# and `docs/research/fixtures/**` payload carries a recorded `raw_sha256`, and
-# `tests/test_fixtures.py` fails when a fixture stops matching it. Git's default
+# ARGOS hashes file bytes and checks the hash: every recorded payload under
+# `tests/fixtures/` and `docs/research/fixtures/` carries a `raw_sha256`, and
+# `tests/test_fixtures.py` fails when one stops matching. Git's default
 # `core.autocrlf=true` on a Windows checkout rewrites LF to CRLF on the way to
 # the working tree, which changes those bytes and therefore that hash.
 #
-# This is not a cosmetic preference. Core invariant 7 says raw data is immutable
+# That is not a cosmetic preference. Core invariant 7 says raw data is immutable
 # and `.claude/rules/data-integrity.md` says raw source payloads are linked by
 # hash; a checkout that silently rewrites them breaks both before a single test
 # runs. Measured on a fresh clone with the Git-for-Windows default: all four
-# recorded fixtures failed their own integrity check. `book_yes.raw.json`
+# recorded fixtures failed their own integrity check — `book_yes.raw.json`
 # arrived as 7,532 bytes hashing 8f95c861... against the 7,174 bytes hashing
-# 510f03e4... that its own sidecar records, and the four `.meta.json` sidecars
-# were rewritten the same way.
-#
-# `* -text` rather than a fixture-only rule, deliberately: the guarantee has to
-# hold for a payload recorded next month by someone who did not read this file.
-# An opt-in list protects only the paths somebody remembered to list.
-* -text
+# 510f03e4... its sidecar records.
+
+# Source, documentation and configuration are normalized to LF in the
+# repository *and* checked out as LF on every platform. `eol=lf` rather than
+# leaving the working tree to the platform, because the working tree is what
+# formatters, type checkers and editors rewrite: a Windows checkout with CRLF
+# working files produces CRLF edits, and this repository has already lost a
+# commit's worth of diff to exactly that.
+* text=auto eol=lf
+
+# Recorded evidence is byte-exact and is never translated in either direction.
+# Scoped to the two fixture trees rather than applied repository-wide, so that
+# normalization still governs everything it should — but scoped by *directory*
+# rather than by extension, because the guarantee has to hold for a payload
+# recorded next month by someone who did not read this file.
+tests/fixtures/** -text
+docs/research/fixtures/** -text
