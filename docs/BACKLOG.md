@@ -696,40 +696,61 @@ capture-loop slice.
       reimplement decimal normalization** — with the `price_change`
       WebSocket delta model as the concrete next place this can reappear.
 
-## Now — M3
+## M3 — closed 2026-08-18 (ADR-0012)
 
-Blockers **R1-R4** at the top of this file close first; these are the milestone
-deliverables themselves (`docs/07_MILESTONES.md`, M3).
+- [x] Replay source and scheduler. `argos.replay.reader` merges both ledgers on
+      `ingest_sequence`; `argos.replay.session` is the only thing that moves a
+      `ReplayClock`.
+- [x] Event-time watermark policy. Observational: it marks a late event and
+      applies it in arrival order, never reordering, buffering or dropping
+      (ADR-0012 section 4). `allowed_lateness` defaults to zero because no
+      capture in this repository contains an out-of-order arrival.
+- [x] Golden replay and hash. `2a7fcb6a…` over 38 arrivals, anchored to three
+      snapshot-to-snapshot checkpoints the source itself asserted rather than
+      merely pinned.
+- [x] `VirtualPacer` for accelerated/stepwise replay pacing, living in
+      `argos.replay`, and never influencing the output hash — asserted over all
+      three modes.
+- [x] A dispatcher that live and replay both call.
+      `argos.projections.dispatch.ObservationDispatcher`, driven by
+      `run_capture` and by the replay scheduler, and compared directly: same
+      frames from a fake wire and from storage, identical state hash.
+- [x] Decide what a **duplicate delivery** means to a replayed projection.
+      Counted as an arrival, never re-applied, and the refusal lives in the
+      dispatcher rather than in each caller so the two cannot drift.
+- [x] Decide the replay order **across** capture runs. Refused: a replay is
+      scoped to exactly one `capture_run_id`, because a cross-run order would
+      have to be invented and ADR-0003's "stable tie-breaking" is a warning
+      against exactly that. Reopen with evidence, not by generalization.
 
-- [ ] Replay source and scheduler.
-- [ ] Event-time watermark policy.
-- [ ] Golden replay and hash.
-- [ ] `VirtualPacer` for accelerated/stepwise replay pacing (per ADR-0009's
-      consequences section), living in `argos.replay`, and never influencing the
-      output hash. Deliberately not built pre-M2 to avoid scope drift.
-- [ ] A dispatcher that live and replay both call. Named here because the M3
-      readiness audit found it does not exist in either direction: the capture
-      loop writes to the store and stops, and every projection this repository
-      has driven so far was driven by a test. "Live and replay use the same
-      domain handlers" (core invariant 5) is therefore currently true only
-      because there is one path, not because two paths share one.
-- [ ] Decide, explicitly, what a **duplicate delivery** means to a replayed
-      projection. `iter_deliveries` returns one row per arrival including
-      duplicates, and re-applying a `price_change` group is not a no-op in
-      general (a second `REMOVE` of a level records
-      `REMOVE_OF_ABSENT_LEVEL`). Skipping duplicates for *state* while counting
-      them for the *manifest* is the obvious answer and must be written down,
-      not inferred.
-- [ ] Decide, explicitly, the replay order **across** capture runs.
-      `ingest_sequence` is unique and contiguous within one run and carries no
-      meaning between runs, so "replay this database" needs a stated total
-      order or an explicit refusal to span runs.
+### Carried from M3
 
-## Later — M4
+- [ ] Multi-run replay, if a real need appears. It needs a stated total order
+      over runs; `started_at` is not one, because two captures can overlap.
+- [ ] `ObservationDispatcher` holds every applied `observation_id` in memory —
+      roughly 45 bytes each, about 4 MB/day/token at the volume ADR-0011
+      extrapolates. Fine at M3 scale; a session that outgrows it needs a bounded
+      structure, not a caller-side check.
+- [ ] The replay reader resolves one observation per delivery
+      (`get_observation` per row). Correct and deterministic, and an N+1 read
+      against the store. Measured at M3 scale it is irrelevant; a capture two
+      orders of magnitude larger may want a batched read *behind the same port*,
+      never a query from `argos.replay`.
+- [ ] `RealTimePacer` is not exercised by any test, deliberately: waiting out a
+      capture's real inter-arrival gaps is the flaky timing test
+      `docs/13_TEST_STRATEGY.md` forbids. Its behaviour is one `time.sleep`
+      call, and that is the whole of it — recorded so "untested" is a choice on
+      the record rather than a gap nobody noticed.
 
-- [ ] Baseline quotes and forecasts.
-- [ ] Resolution normalization.
-- [ ] Proper scores and calibration report.
+## Now — M4
+
+- [ ] Baseline quotes and forecasts (`MarketBaselineForecastV1`).
+- [ ] Resolution normalization (`ResolutionV1`) from public lifecycle data.
+- [ ] Proper scores and calibration report (`ForecastEvaluationV1`).
+- [ ] A `last_trade_price` payload model. Observed live on 2026-08-15 and
+      rejected as `unknown_event_type` today; `docs/research/m2-clob-websocket.md`
+      names it the M4-relevant event type. The M3 dispatcher counts it as
+      `unhandled_payload`, so its arrival is already visible rather than silent.
 - [ ] M4 handoff.
 
 ## Explicitly not in backlog before owner gate

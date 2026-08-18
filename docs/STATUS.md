@@ -1,10 +1,10 @@
 # ARGOS status
 
-Last updated: 2026-08-17
+Last updated: 2026-08-18
 
 ## Current state
 
-- Current milestone: **M3 — deterministic replay — starting**. M0 and M1 are
+- Current milestone: **M3 — deterministic replay — complete; M4 next**. M0 and M1 are
   closed. **M2 is functionally complete and is closed on evidence rather than
   on an independent verdict** — see "M2 closure" below, which does not claim
   more than that, and "M3 readiness audit" for what was re-derived from `main`
@@ -23,12 +23,11 @@ Last updated: 2026-08-17
 
 ## Current objective
 
-Close the four blockers the M3 readiness audit identified (`docs/BACKLOG.md`,
-**R1-R4**), then build M3: a replay source reading a capture in original ingest
-order, a `ReplayClock` moved only by the replay scheduler, an explicit
-watermark and late-event policy, one dispatcher that live and replay both call,
-a replay manifest with an output state hash, accelerated and stepwise modes,
-and a golden replay fixture with a deterministic regression test.
+Build M4: versioned market baseline forecast records, the quote representation
+`docs/04_DATA_CONTRACTS.md` specifies, resolution normalization from public
+lifecycle data, a proper scoring evaluator with calibration bins and cohort
+reports, an evaluation CLI, and the reproducibility and limitations report the
+owner gate needs.
 
 ## M3 readiness audit (2026-08-17)
 
@@ -175,6 +174,100 @@ fourth attempt at a delegation that has failed seven times in this milestone,
 and silence from it would again be indistinguishable from a clean result. The
 owner gate after M4 is where an independent pass genuinely belongs, and
 `docs/OWNER_REVIEW_GATE.md` already requires one.
+
+## M3 — deterministic replay (2026-08-18)
+
+Specified by **ADR-0012**, which decides the six things ADR-0003 deliberately
+left open: what a replay is scoped to, what happens to a duplicate arrival, what
+a watermark does to a late one, what the clock is advanced to, what the output
+hash covers, and whether pacing can reach it. Each of those has a defensible
+answer that produces a *different* hash from the other defensible answers, so
+leaving them implicit would have meant "identical input produces identical
+output hash" was satisfied by whatever the first implementation happened to do.
+
+Quality gate: PASS — ruff, ruff format, mypy strict on 49 source files,
+**1,415 tests** (up from 1,361 at M2 closure).
+
+### The exit criteria, and what closes each
+
+| Criterion | Evidence |
+|---|---|
+| Identical input + code + config produces an identical output hash across at least three runs | Three replays of the recorded capture produce one hash **and one set of counts** — the contract requires both, so both are compared (`tests/test_replay.py::test_three_replays_of_one_capture_agree_exactly`) |
+| Replay never reads the wall clock inside domain logic | The whole call is driven with a `ReplayClock` for the manifest's own timestamps too, so anything reaching for real time would leave a moment neither clock was ever set to. Plus the existing AST boundary scans |
+| Late and invalid event behaviour is deterministic and counted | A late arrival is marked and **still applied in arrival order**, and the state hash is identical whether the watermark called it late or not — marking changes counts, never state. Rejections are replayed as arrivals, tallied by reason, and reach no projection |
+| Changing a source event produces a predictable hash change | One price level's `size` is changed in the *source bytes* of the last recorded frame, so the change travels normalization, identity, storage and replay. The hash changes; every arrival and dispatch count stays identical, which is what makes the difference attributable to the book rather than to a different amount of input |
+| A live adapter can be replaced by a replay source without changing domain handlers | The capture loop and the replay scheduler drive the *same* `ObservationDispatcher`, and the two paths are compared directly: same frames, one from a fake wire and one from storage, identical state hash and identical dispatch counts |
+| Replay performance is measured but correctness takes precedence | Measured and printed, deliberately not asserted against a threshold — a wall-clock assertion in a unit suite is the flaky timing test `docs/13_TEST_STRATEGY.md` forbids |
+
+### The golden replay, and why it is anchored rather than merely pinned
+
+`GOLDEN_STATE_HASH = 2a7fcb6a…` over 38 arrivals (4 `book` snapshots, 34
+`price_change` deltas; 38 on time, 0 late, 0 undatable, 0 duplicates, 0
+rejections). A stable hash of the *wrong* state would still be stable, so the
+value is anchored to something the source itself asserted: the capture carries
+four full `book` snapshots with deltas between them, giving **three independent
+checkpoints** where the state built from deltas alone must already equal the
+book the source is about to restate. All three hold, checked *before* each
+snapshot is applied — comparing afterwards would be vacuous, because a snapshot
+replaces state wholesale.
+
+Six deltas follow the last snapshot, so the final state is deliberately **not**
+equal to it. Asserting that it was would have been the more obvious test and the
+wrong one; the first draft of this test made exactly that mistake and failed.
+
+### Three findings from building it
+
+**The replay clock cannot be seeded from the capture-run row.** `run.started_at`
+and an arrival's `received_time` come from two different clocks — the capture
+loop's and the transport's — and nothing in the store obliges them to agree.
+Seeding from the run row and then advancing to an earlier arrival raises
+`ClockRegressionError` and kills the replay; seeding from it and *skipping* the
+advance would leave the virtual clock ahead of the capture, which is the leakage
+this milestone exists to prevent. Reproduced against the recorded capture, whose
+frames predate the injected run start by four days. The clock is now seeded from
+the first arrival, which makes it a function of the data being replayed.
+
+**A test fixture was manufacturing rejections the shipped path cannot
+produce.** Feeding the recorded fixture's frames straight into `run_capture`
+yields four `malformed_payload` rejections — they are the server's plain-text
+`PONG` replies, which `ClobMarketWsClient._classify` consumes and never yields
+onward. The M3 readiness audit had already recorded this as a probe artifact; it
+would have become a *committed* artifact if the golden hash had been computed
+over a capture that cannot happen. The fixture loader filters them and says why.
+
+**A duplicate delivery must not be re-applied, and "harmless" is nearly true.**
+Re-applying a `price_change` group is not idempotent: a second `REMOVE` names a
+level the projection no longer holds, and `OrderBookProjection` correctly
+records `REMOVE_OF_ABSENT_LEVEL` — an anomaly whose whole job is to signal a
+missed delta. Replaying duplicates would manufacture that signal out of the
+deduplication mechanism itself, and make the anomaly count a function of how
+often the *source* resent. The dispatcher owns the refusal rather than each
+caller, so live and replay cannot drift apart on it.
+
+### One projection change, and the rule it had to respect
+
+`apply_snapshot`/`apply_delta` now accept `event_time=None`. An observation
+whose source timestamp did not parse is accepted by the envelope contract and
+must still reach the book: refusing it would lose a real book state, and
+substituting `received_time` would be the silent timestamp replacement
+`.claude/rules/data-integrity.md` forbids. It is applied, excluded from ordering
+comparisons, forbidden from overwriting the last applied event time — assigning
+`None` through would have silently disabled lateness detection for everything
+after it — and counted as **undatable**, which is a third value precisely
+because "the source sent no timestamp" and "the source sent one and it was not
+late" are different facts about the source.
+
+### What M3 deliberately does not do
+
+- **No multi-run replay.** `ingest_sequence` means nothing between capture runs,
+  and a cross-run order would have to be invented. Filed rather than guessed.
+- **No `supersedes_observation_id`.** Still not needed: a replay reads one run's
+  records as captured, and nothing here can yet re-normalize a capture under a
+  corrected parser, which is the only operation that mints an unlinked second
+  identity.
+- **No buffering watermark.** ADR-0003 forbids reordering late data into the
+  past outside a separately labelled experiment, so the watermark marks and
+  nothing else happens to a late event.
 
 ## M2 closure reviews (2026-08-17)
 

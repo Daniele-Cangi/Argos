@@ -106,7 +106,7 @@ def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
     # Imported for the side effect that matters here: defining the classes is
     # what registers them. `importlib` rather than a bare `import ... # noqa`
     # so the intent is stated in code rather than in a lint suppression.
-    for package in ("argos.compiler", "argos.config", "argos.domain"):
+    for package in ("argos.compiler", "argos.config", "argos.domain", "argos.replay"):
         importlib.import_module(package)
 
     shipped = {
@@ -123,6 +123,7 @@ def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
         "price_change.v1": "PriceChangeV1",
         "quarantined_market.v1": "QuarantinedMarketV1",
         "rejected_observation.v1": "RejectedObservationV1",
+        "replay_manifest.v1": "ReplayManifestV1",
         "run_manifest.v5": "RunManifest",
         "source_provenance.v1": "SourceProvenanceV1",
         "ws_book_snapshot.v1": "WsBookSnapshotV1",

@@ -208,6 +208,32 @@ result_status
 
 Repeated replay of identical input, code, config, and mode must produce identical state hash and record counts.
 
+Four amendments recorded against this specification when M3 implemented it
+(`src/argos/replay/manifest.py`, ADR-0012):
+
+- `replay_mode` gains **`stepwise`**. `docs/07_MILESTONES.md` names stepwise a
+  deliverable in the same breath as accelerated; dropping it to fit a two-value
+  enum would be the "specified contract silently dropped" failure that blocked
+  M1.
+- `working_tree` joins `code_revision`, for the reason already accepted for
+  `RunManifest`: a dirty tree makes a revision string misattribute the code that
+  produced a run, and a replay whose entire claim is reproducibility is the
+  worst place to leave that ambiguous.
+- `input_event_count` is implemented as **`input_arrival_count`**. What is
+  counted is *arrivals* — a duplicate is one more arrival of the same event —
+  and that distinction is the whole reason the delivery record exists.
+- `source_completion_status` is added. Replaying an interrupted capture is
+  legitimate and often the point, but a manifest that did not say so would
+  present a partial capture's state hash as though it described a complete one.
+
+**And one correction to the sentence above.** The mode is *not* an input to the
+hash. Two replays of one capture in all three modes produce one hash — asserted
+directly, because ADR-0009 requires that scheduler pacing never influence the
+output hash. The mode is recorded because it describes how the run was
+performed, not because it changes what the run produced. What must be identical
+across runs is `output_state_hash` and `output_record_counts`; `started_at` and
+`finished_at` legitimately differ, and do.
+
 ## `EngineForecastV1` — introduced only after baseline contracts exist
 
 ```text

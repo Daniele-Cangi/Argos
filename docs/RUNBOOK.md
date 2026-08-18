@@ -115,6 +115,37 @@ The command prints the loop's own counters *and* the store's independently
 derived counts. They must agree; printing one would hide a disagreement, and a
 disagreement is exactly the kind of defect that must stay visible.
 
+### Deterministic replay (M3)
+
+Reads a stored capture and rebuilds the market state it implies. Touches no
+network and writes nothing but its manifest — a replay that could modify its own
+input would not be a replay, and that is asserted by comparing the database
+bytes before and after.
+
+```bash
+uv run argos replay capture <capture_run_id> --db .data/capture/events.sqlite3
+uv run argos replay capture <capture_run_id> --db events.sqlite3 --json
+uv run argos replay capture <capture_run_id> --db events.sqlite3 --mode original_arrival
+uv run argos replay capture <capture_run_id> --db events.sqlite3 --allowed-lateness-ms 250
+```
+
+`--mode` is **pacing only** and cannot change the output hash (ADR-0012 section
+7, and a test asserts it over all three modes). `accelerated` runs as fast as
+the machine allows; `original_arrival` sleeps the real gaps between arrivals,
+for a replay somebody is watching; `stepwise` exists for a caller driving one
+arrival at a time through the library.
+
+`--allowed-lateness-ms` is the watermark tolerance. Zero is the default because
+no capture in this repository contains an out-of-order arrival, so zero flags
+nothing yet observed while flagging any genuine regression the first time it
+happens. A late event is **marked and still applied in arrival order** —
+reordering it would be forbidden by ADR-0003 — so changing this changes the
+counts and never the state hash.
+
+The command prints the state hash, its encoding version, both count sets
+(what the capture recorded, and what the dispatcher did with it) and a digest
+per reconstructed book, and writes a `replay_manifest.v1` beside the database.
+
 ## Configuration
 
 Settings come from `ARGOS_*` environment variables; `.env.example` lists them.

@@ -33,6 +33,7 @@ from argos.ingestion import (
     run_capture,
 )
 from argos.logging import configure_logging
+from argos.replay import RealTimePacer, ReplayMode, VirtualPacer, replay_capture
 from argos.sources import (
     ClobMarketWsClient,
     GammaClient,
@@ -45,8 +46,10 @@ from argos.store import EventStore, open_sqlite_event_store, write_raw_payload
 app = typer.Typer(no_args_is_help=True, help="ARGOS research CLI")
 markets_app = typer.Typer(no_args_is_help=True, help="Public market discovery and audit")
 capture_app = typer.Typer(no_args_is_help=True, help="Bounded live capture against a public source")
+replay_app = typer.Typer(no_args_is_help=True, help="Deterministic replay of a stored capture")
 app.add_typer(markets_app, name="markets")
 app.add_typer(capture_app, name="capture")
+app.add_typer(replay_app, name="replay")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -555,6 +558,117 @@ def capture_market(
         )
     if interrupted:
         raise typer.Exit(code=130)
+
+
+# --- replay ---------------------------------------------------------------------------
+#
+# M3's operator surface. Everything this command does is `argos.replay`'s; the
+# CLI's own job is exactly the three things a CLI should do -- read arguments,
+# choose adapters, render a result.
+
+_REPLAY_DB_OPTION: Final = typer.Option(
+    ..., "--db", help="SQLite event store holding the capture to replay."
+)
+# Module-level singletons: ruff (B008) does not recognize `Path` as a safe
+# inline `typer.Option` default the way it does `str`/`int`/`bool`/`None`.
+_REPLAY_MANIFEST_OPTION: Final = typer.Option(
+    None, "--manifest-out", help="Where to write the replay manifest. Defaults beside the db."
+)
+_REPLAY_MODE_OPTION: Final = typer.Option(
+    ReplayMode.ACCELERATED,
+    "--mode",
+    help=(
+        "Pacing only. It cannot change the output hash -- that is a tested "
+        "property, not a claim (ADR-0012 section 7)."
+    ),
+)
+
+
+@replay_app.command("capture")
+def replay_capture_command(
+    capture_run_id: str = typer.Argument(help="The capture_run_id to replay."),
+    db: Path = _REPLAY_DB_OPTION,
+    mode: ReplayMode = _REPLAY_MODE_OPTION,
+    allowed_lateness_ms: int = typer.Option(
+        0,
+        help=(
+            "Watermark tolerance in milliseconds. Zero is the default because no "
+            "capture in this repository contains an out-of-order arrival, so zero "
+            "flags nothing yet observed while flagging any genuine regression."
+        ),
+    ),
+    manifest_out: Path | None = _REPLAY_MANIFEST_OPTION,
+    as_json: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+) -> None:
+    """Replay one stored capture run and report its state hash and counts.
+
+    Reads only; writes nothing but the manifest. The event store is opened,
+    walked in `ingest_sequence` order, and left exactly as it was found -- a
+    replay that could modify its own input would not be a replay.
+    """
+    if allowed_lateness_ms < 0:
+        typer.echo("--allowed-lateness-ms must not be negative", err=True)
+        raise typer.Exit(code=2)
+
+    settings = _load_or_exit()
+    configure_logging(settings.log_level)
+    clock = LiveClock()
+    code_revision, working_tree = _code_revision()
+    run_id = f"replay-{clock.now():%Y%m%dT%H%M%SZ}-{uuid4().hex[:8]}"
+
+    store = _open_store_or_exit(db)
+    try:
+        result = replay_capture(
+            store=store,
+            capture_run_id=capture_run_id,
+            settings=settings,
+            wall_clock=clock,
+            replay_run_id=run_id,
+            mode=mode,
+            allowed_lateness=timedelta(milliseconds=allowed_lateness_ms),
+            # Real pacing only when the operator asked to watch it happen; every
+            # other mode records the waits it would have made and makes none.
+            pacer=RealTimePacer() if mode is ReplayMode.ORIGINAL_ARRIVAL else VirtualPacer(),
+            code_revision=code_revision,
+            working_tree=working_tree,
+        )
+    except ArgosError as exc:
+        _fail(exc)
+    finally:
+        store.close()
+
+    destination = manifest_out or db.parent / f"{run_id}.replay-manifest.json"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(
+        orjson.dumps(result.manifest.to_record(), option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
+    )
+
+    payload: dict[str, Any] = {
+        "replay_run_id": run_id,
+        "source_capture_run_id": capture_run_id,
+        "mode": mode.value,
+        "manifest_path": str(destination),
+        "state_hash": result.state_hash,
+        "state_hash_version": result.manifest.state_hash_version,
+        "counts": result.manifest.to_record()["output_record_counts"],
+        "projections": [
+            {"condition_id": condition_id, "token_id": token_id, "digest": projection.digest()}
+            for (condition_id, token_id), projection in sorted(
+                result.dispatcher.projections.items()
+            )
+        ],
+    }
+    if as_json:
+        typer.echo(_json(payload))
+        return
+
+    typer.echo(result.manifest.describe())
+    typer.echo(f"  manifest {destination}")
+    typer.echo(f"  state    {result.state_hash} ({result.manifest.state_hash_version})")
+    typer.echo(f"  arrivals {payload['counts']['arrivals']}")
+    typer.echo(f"  dispatch {payload['counts']['dispatch']}")
+    for entry in payload["projections"]:
+        typer.echo(f"  book     {entry['token_id']} -> {entry['digest'][:16]}")
 
 
 def _normalize_or_exit(response: Any, observed_at: Any) -> MarketDefinitionV1:
