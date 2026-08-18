@@ -35,7 +35,7 @@ needs no new code and is filed in `docs/BACKLOG.md` as the first M4 carry-over.
 ## M4 — baseline probability and evaluation (2026-08-18)
 
 Quality gate: PASS — ruff, ruff format, mypy strict on 57 source files,
-**1,513 tests** (up from 1,415 at M3).
+**1,536 tests** (up from 1,415 at M3).
 
 **M4 closes with a real evaluation, not a constructed one**, and that was not
 guaranteed when the milestone started. The market ARGOS captured 40 seconds of
