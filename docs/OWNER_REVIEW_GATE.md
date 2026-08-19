@@ -2,6 +2,38 @@
 
 Claude must stop implementation when this gate is reached.
 
+## Owner decision — 2026-08-19
+
+**BLOCKED. The gate has not passed.** The independent review in
+`docs/OWNER_TAKEOVER_M4_REVIEW.md` reproduced F2, F3, F4, F5 and F8 and found
+additional sample-unit, displayed-price, resolution-identity, integrity and
+portability defects. ADR-0013 records the corrective policy.
+
+The checklist below is the dated 2026-08-18 submission and is retained as
+history, not as the current verdict. In particular, its M4-complete and
+completed-evaluation boxes are superseded: the 75 scores are trajectory points
+against one target, temporal admissibility cannot be proved without a cutoff,
+and the artifact did not bind its children.
+
+The corrective implementation now:
+
+- emits only on target information-state changes;
+- refuses non-final resolution, excludes post-resolution points and makes an
+  unknown cutoff a no-score result;
+- persists a digest-bound evaluation bundle and explicit per-arrival decisions
+  and per-forecast exclusions;
+- distinguishes arrivals, information states, forecast points and resolved
+  targets, with no one-target calibration headline;
+- preserves snapshot last trade separately and implements the conditional
+  displayed-price rule; and
+- runs the ordinary gate on Windows as well as Ubuntu.
+
+The local coverage threshold now passes (1,593 tests; `run_v2.py` 91.77%
+against 90%). Gate closure still requires the two-platform canonical CI matrix
+to pass, then a bounded prospective multi-target experiment with persisted
+contracts and exact resolution cutoff/finality evidence. No M5-M8 work is
+authorized.
+
 ## Required repository state
 
 Checked 2026-08-18, and re-checked after the M4.1 hardening pass

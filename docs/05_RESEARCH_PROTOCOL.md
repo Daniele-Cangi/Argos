@@ -68,6 +68,22 @@ Do not compare a fair probability only with midpoint when discussing actionable 
 - absolute error;
 - sample count and coverage.
 
+The headline sampling unit is an independently resolved target, not a transport
+arrival or a forecast point along one market trajectory. Reports must state
+all three counts separately. Calibration from one resolved target is not
+empirically established; per-trajectory calculations may appear only as
+diagnostics.
+
+Forecasts enter scoring only when the stored resolution is final, the compiled
+contract identity is present, the exact resolution cutoff is known, the
+forecast precedes that cutoff, and capture/replay integrity checks pass.
+Every omission or exclusion is persisted with a reason.
+
+Displayed price, midpoint and last trade remain separate methods. The displayed
+proxy uses last trade when bid/ask spread is greater than 0.10 and midpoint
+otherwise; it abstains when the required input is absent. Last trade is
+auxiliary evidence and never an order-book level.
+
 Later selective-prediction metrics:
 
 - risk–coverage curve;

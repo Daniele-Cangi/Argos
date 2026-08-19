@@ -4,6 +4,7 @@ Accepted architecture decisions live in `docs/adr/`. Use this file for small ope
 
 | Date | Milestone | Decision | Reason | Reversible? | Reference |
 |---|---|---|---|---|---|
+| 2026-08-19 | M4 owner correction | M4 is reopened; only final, temporally admissible, contract-bound evidence in a digest-bound bundle may support a headline, and the weighting unit is the resolved target | Independent adversarial review showed arrival fan-out, post-resolution points and unbound summaries changed or overstated the result without changing target information | Yes, with a superseding ADR and new evidence | ADR-0013 |
 | 2026-08-06 | Bootstrap | Autonomous implementation stops after M4 | Owner review before evidence/forecasting expansion | Yes | ADR-0007 |
 | 2026-08-06 | M0 | Schema version is a `ClassVar` on `VersionedModel`, re-attached by `to_record()` | Version describes the class, not a mutable field; a subclass that does not declare its **own** version fails at import time (checked via `cls.__dict__`, not `getattr`, so a subclass cannot inherit and mislabel its records) | Yes | `src/argos/domain/versioning.py` |
 | 2026-08-06 | M0 | Container fields on `VersionedModel` are deep-frozen on validation | `frozen=True` blocks only attribute assignment; a `dict` field stays mutable and the mutation reaches `to_record()` — invariant 7 needs the object itself to be unable to lie | Yes | `freeze`/`thaw` in `src/argos/domain/versioning.py` |

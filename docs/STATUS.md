@@ -1,6 +1,41 @@
 # ARGOS status
 
-Last updated: 2026-08-18
+Last updated: 2026-08-19
+
+## 2026-08-19 owner correction — M4 reopened
+
+The independent owner review in `docs/OWNER_TAKEOVER_M4_REVIEW.md` supersedes
+the M4/M4.1 completion claim below. The dated history is retained so the
+correction is auditable; it is not current authority.
+
+- Current milestone: **M4 blocked; owner gate not passed.** M5-M8 remain out of
+  scope.
+- The arrival-weighted v1 evaluator is superseded by ADR-0013. The exported v2
+  path emits on target information-state changes and persists a digest-bound
+  bundle containing policy, trajectory, resolution, optional contract,
+  forecasts, scores, decisions and exclusions.
+- Finality, exact resolution cutoff, persisted contract identity and capture/
+  replay integrity are prerequisites for scoring. The committed real sample
+  lacks an exact CLOB cutoff and a persisted compiled contract, so its honest
+  result is **zero admissible scored points and no headline claim**, not 75
+  samples.
+- Counts now distinguish arrivals, information states, forecast points, scored
+  points and resolved targets. One resolved target cannot establish
+  calibration; trajectory metrics are diagnostics only.
+- Initial book-snapshot last trade is preserved separately from book state.
+  Midpoint, last trade and the conditional displayed-price rule are distinct
+  baselines. Standalone last-trade events remain unmodeled until a pinned raw
+  fixture establishes the exact schema.
+- Windows is now a first-class CI platform. The local Windows gate passes
+  ruff, mypy and **1,593 tests** (one symlink-capability skip). The full local
+  branch-coverage gate passes: 95% aggregate for reporting purposes, every
+  declared per-area threshold satisfied, and `run_v2.py` at 91.77% against
+  its 90% floor.
+
+The smallest next data experiment is not merely a larger capture. It must
+prospectively persist compiled contracts and exact finality/cutoff evidence for
+multiple independently resolved markets, then aggregate with a predeclared
+resolved-target weighting policy.
 
 ## Current state
 

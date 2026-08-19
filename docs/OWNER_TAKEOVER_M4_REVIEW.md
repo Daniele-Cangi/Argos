@@ -259,3 +259,30 @@ collecting. The next data experiment should then capture enough independent
 resolved markets to estimate a market-weighted comparison, with resolution
 time/finality evidence recorded during the run rather than reconstructed after
 the fact.
+
+## Corrective implementation result
+
+The ADR-0013 slice implements and adversarially tests all five success criteria
+above:
+
+- duplicate and irrelevant sibling traffic leave the target information-state
+  and forecast series unchanged while changing the full trajectory hash;
+- non-final resolutions are refused, post-resolution points are explicit
+  exclusions, and unknown cutoff or missing contract produces zero scores;
+- `EvaluationRunBundleV1` round-trips with nested schema validation and
+  rejects a changed evidence digest;
+- reports separate arrival, information-state, forecast-point, scored-point and
+  resolved-target counts and do not publish one-target calibration; and
+- initial book last trade is auxiliary evidence, with distinct midpoint,
+  last-trade and conditional displayed-price method identities.
+
+The local Windows quality gate passes ruff, strict mypy and 1,593 tests. Branch
+coverage passes every declared threshold; the corrected evaluator is 91.77%
+against its 90% floor. One symlink test is skipped because the Windows account
+lacks symlink privilege and remains active on Ubuntu CI.
+
+This implementation removes the known code-level blockers but does **not**
+change the owner verdict. The current historical evidence still lacks an exact
+resolution cutoff and persisted contract, so it establishes no headline
+result. M4 remains blocked pending canonical two-platform CI and the prospective
+multi-target experiment described above.

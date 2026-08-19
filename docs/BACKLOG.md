@@ -2,6 +2,42 @@
 
 Work top to bottom unless a milestone dependency requires reordering.
 
+## Owner priority — M4 reopened 2026-08-19
+
+This section supersedes the historical “M4 — closed” and “Carried from M4”
+sections below without deleting their audit trail.
+
+- [x] Replace transport-arrival forecast emission with target
+      information-state-transition emission through `ReplaySession`; persist
+      one decision for every arrival.
+- [x] Enforce final-only resolution, exact cutoff, post-resolution exclusion,
+      persisted contract identity and capture/replay integrity as explicit
+      scoring admissibility rules.
+- [x] Persist `EvaluationRunBundleV1` with canonical evidence digest, nested
+      version checks, trajectory/resolution/contract identity, forecasts,
+      evaluations, decisions and exclusions.
+- [x] Separate arrivals, target information states, forecast points, scored
+      points and resolved-target counts. Keep one-target calibration out of the
+      headline.
+- [x] Preserve `last_trade_price` supplied by initial REST/WebSocket book
+      snapshots as auxiliary evidence, outside the order-book state hash.
+- [x] Restore the distinct displayed-price method: midpoint for spread at most
+      0.10, last trade for wider spreads.
+- [x] Make the declared local baseline portable: Windows tzdata, guarded
+      `O_NOFOLLOW`, platform-correct archive durability behavior and a
+      Windows/Ubuntu CI matrix.
+- [x] Meet per-file branch-coverage thresholds for the corrected contracts and
+      evaluator. Local Windows result: 1,593 passed, one privilege-dependent
+      symlink skip; `run_v2.py` 91.77% against its 90% floor.
+- [ ] Pass the complete two-platform CI matrix on the canonical pull request.
+- [ ] Pin a real standalone `last_trade_price` WebSocket fixture before
+      modeling that event. Do not infer its exact persistent schema from docs
+      alone.
+- [ ] Run the smallest prospective multi-target experiment: bounded captures
+      with persisted compiled contracts plus exact resolution cutoff/finality,
+      enough independently resolved targets for a predeclared target-weighted
+      comparison, and no M5 feature work.
+
 ## Must close before M3 — from the M3 readiness audit (2026-08-17)
 
 Reconstructed from `main` and from measurement, not from this file's own
