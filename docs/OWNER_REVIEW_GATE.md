@@ -23,16 +23,21 @@ The corrective implementation now:
   unknown cutoff a no-score result;
 - persists a digest-bound evaluation bundle and explicit per-arrival decisions
   and per-forecast exclusions;
+- rejects a correctly re-digested but internally contradictory bundle by
+  cross-validating report claims and child links against sibling records;
 - distinguishes arrivals, information states, forecast points and resolved
   targets, with no one-target calibration headline;
 - preserves snapshot last trade separately and implements the conditional
   displayed-price rule; and
 - runs the ordinary gate on Windows as well as Ubuntu.
 
-The final local ADR-0014 gate passes (1,595 tests plus one Windows symlink
-skip; 95% aggregate coverage; `bundle.py` 94.97% and `run_v2.py` 92.11%). PR
-#2 remains subject to green Windows and Ubuntu checks before merge. Gate
-closure still requires a bounded prospective
+The final local prospective bundle-hardening gate passes (1,597 tests plus one
+Windows symlink skip; 95% aggregate coverage; `bundle.py` 96.47% and
+`run_v2.py` 92.11%). PR #2 was merged as `bd2ca1c` after final run
+`32279416650` passed on Windows and
+Ubuntu. GitHub branch protection/status enforcement is not configured; the
+green-before-merge rule was operational discipline. Gate closure still
+requires a bounded prospective
 multi-target experiment with contract persistence proven before forecast,
 predeclared source-terminal or first-observed-final cutoff evidence, and a
 predeclared sample/weighting/sufficiency rule. No M5-M8 work is authorized.

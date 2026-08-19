@@ -23,15 +23,22 @@ correction is auditable; it is not current authority.
   points and resolved targets. ADR-0014 makes two targets a structural floor,
   not calibration sufficiency; only a predeclared multi-target sample,
   weighting and sufficiency rule can support that claim.
+- `EvaluationRunBundleV2` now rejects digest-valid internal contradictions by
+  cross-validating report policy/resolution/contract claims, counts and child
+  digests, evaluation links, and scored-versus-excluded membership against the
+  actual sibling records.
 - Initial book-snapshot last trade is preserved separately from book state.
   Midpoint, last trade and the conditional displayed-price rule are distinct
   baselines. Standalone last-trade events remain unmodeled until a pinned raw
   fixture establishes the exact schema.
-- Windows is now a first-class CI platform. The final local ADR-0014 gate
-  passes Ruff, format, strict mypy, and **1,595 tests** (one
-  symlink-capability skip). The branch-coverage gate passes at 95% aggregate;
-  `bundle.py` is 94.97% and `run_v2.py` 92.11%, both above their 90% floors.
-  PR #2 must retain green Windows and Ubuntu jobs before merge.
+- Windows is now a first-class CI platform. The final local prospective
+  bundle-hardening gate passes Ruff, format, strict mypy, and **1,597 tests**
+  (one symlink-capability skip). The branch-coverage gate passes at 95% aggregate;
+  `bundle.py` is 96.47% and `run_v2.py` 92.11%, both above their 90% floors.
+  PR #2 was merged as `bd2ca1c` only after final GitHub Actions run
+  `32279416650` passed on Windows and Ubuntu. GitHub branch protection/status
+  enforcement is not configured, so this was an observed operational gate,
+  not a repository-enforced barrier.
 
 The smallest next data experiment is not merely a larger capture. It must
 persist each compiled contract before its first forecast and record either a

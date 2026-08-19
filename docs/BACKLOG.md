@@ -16,6 +16,9 @@ sections below without deleting their audit trail.
 - [x] Persist `EvaluationRunBundleV2` with canonical evidence digest, nested
       version checks, trajectory/resolution/contract identity, forecasts,
       evaluations, decisions and exclusions.
+- [x] Reject digest-valid but internally contradictory v2 bundles by checking
+      report claims, child counts/digests, evaluation links, and exclusive
+      scored/excluded membership against the actual sibling records.
 - [x] Separate arrivals, target information states, forecast points, scored
       points and resolved-target counts. Keep one-target calibration out of the
       headline.
@@ -30,12 +33,13 @@ sections below without deleting their audit trail.
       `O_NOFOLLOW`, platform-correct archive durability behavior and a
       Windows/Ubuntu CI matrix.
 - [x] Meet per-file branch-coverage thresholds for the corrected contracts and
-      evaluator. Final ADR-0014 local Windows result: 1,595 passed, one
-      privilege-dependent symlink skip; `bundle.py` 94.97% and `run_v2.py`
-      92.11% against their 90% floors.
-- [x] Make the complete Windows/Ubuntu CI matrix a required pre-merge check on
-      canonical PR #2; its final head is not made ready or merged until both
-      jobs pass, including Ubuntu coverage.
+      evaluator. Final prospective bundle-hardening local Windows result:
+      1,597 passed, one privilege-dependent symlink skip; `bundle.py` 96.47%
+      and `run_v2.py` 92.11% against their 90% floors.
+- [x] Merge canonical PR #2 only after its complete Windows/Ubuntu CI matrix
+      passed, including Ubuntu coverage (`32279416650`). This was operational
+      discipline; GitHub branch protection/status enforcement is not currently
+      configured.
 - [ ] Pin a real standalone `last_trade_price` WebSocket fixture before
       modeling that event. Do not infer its exact persistent schema from docs
       alone.

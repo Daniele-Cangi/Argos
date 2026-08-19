@@ -342,3 +342,10 @@ forecast-point, scored-point, resolved-target and headline-eligible-target
 counts. It also binds trajectory, resolution, contract, settings, revision,
 working-tree, replay-integrity and child-record digests. A final state hash is
 not a trajectory identity.
+
+The v2 bundle validator cross-checks those report claims against its sibling
+records before accepting the outer evidence digest: policy version;
+resolution identity, digest, status, normalizer and cutoff; contract identity
+and digest; child counts and digests; forecast/evaluation scope; and exclusive
+scored-versus-excluded classification. Recomputing the outer digest over an
+internally contradictory bundle does not make it a valid claim.
