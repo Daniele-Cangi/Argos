@@ -104,8 +104,8 @@ def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
     schema that does not exist".
     """
     # Imported for the side effect that matters here: defining the classes is
-    # what registers them. `importlib` rather than a bare `import ... # noqa`
-    # so the intent is stated in code rather than in a lint suppression.
+    # what registers them. `importlib` rather than a lint-suppressed bare import
+    # so the intent is stated in code.
     for package in (
         "argos.baselines",
         "argos.compiler",
@@ -124,9 +124,16 @@ def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
     }
     assert shipped == {
         "compiled_market_contract.v1": "CompiledMarketContractV1",
+        "evaluation_decision.v1": "EvaluationDecisionV1",
+        "evaluation_exclusion.v1": "EvaluationExclusionV1",
+        "evaluation_policy.v1": "EvaluationPolicyV1",
         "evaluation_report.v1": "EvaluationReportV1",
+        "evaluation_report.v2": "EvaluationReportV2",
+        "evaluation_run_bundle.v1": "EvaluationRunBundleV1",
         "forecast_evaluation.v1": "ForecastEvaluationV1",
+        "forecast_evaluation.v2": "ForecastEvaluationV2",
         "market_baseline_forecast.v1": "MarketBaselineForecastV1",
+        "market_baseline_forecast.v2": "MarketBaselineForecastV2",
         "market_audit.v1": "MarketAuditV1",
         "market_definition.v1": "MarketDefinitionV1",
         "market_quote.v1": "MarketQuoteV1",

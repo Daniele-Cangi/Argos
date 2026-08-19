@@ -40,6 +40,7 @@ import hashlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
+from decimal import Decimal
 from enum import StrEnum
 from typing import Final
 
@@ -61,6 +62,7 @@ __all__ = [
     "DispatchCounts",
     "DispatchOutcome",
     "DispatchOutcomeKind",
+    "LastTradeState",
     "Lateness",
     "ObservationDispatcher",
     "Watermark",
@@ -125,6 +127,24 @@ class DispatchOutcome:
     observation_id: str
     lateness: Lateness
     anomalies: tuple[BookProjectionAnomaly, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class LastTradeState:
+    """Most recent recorded trade evidence for one token.
+
+    This is deliberately outside :meth:`ObservationDispatcher.state_hash`.
+    ``state_hash.v1`` identifies reconstructed order books; a trade is an
+    auxiliary observation, not a resting order. Evaluation gives the combined
+    information state its own digest instead of changing M3's hash semantics.
+    """
+
+    condition_id: str
+    token_id: str
+    price: Decimal
+    source_observation_id: str
+    event_time: datetime | None
+    received_time: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +260,9 @@ class ObservationDispatcher:
     _projections: dict[tuple[str, str], OrderBookProjection] = field(
         default_factory=dict, init=False, repr=False
     )
+    _last_trades: dict[tuple[str, str], LastTradeState] = field(
+        default_factory=dict, init=False, repr=False
+    )
     _applied: set[str] = field(default_factory=set, init=False, repr=False)
     """Every ``observation_id`` already applied in this session.
 
@@ -262,6 +285,11 @@ class ObservationDispatcher:
     def projections(self) -> Mapping[tuple[str, str], OrderBookProjection]:
         """The live projections, keyed by ``(condition_id, token_id)``."""
         return dict(self._projections)
+
+    @property
+    def last_trades(self) -> Mapping[tuple[str, str], LastTradeState]:
+        """Auxiliary last-trade evidence, excluded from the book-state hash."""
+        return dict(self._last_trades)
 
     def dispatch(self, envelope: ObservationEnvelopeV1) -> DispatchOutcome:
         """Apply one observation, or record precisely why it was not applied."""
@@ -298,6 +326,22 @@ class ObservationDispatcher:
 
         projection = self._projection_for(envelope.condition_id, envelope.token_id)
         kind, anomalies = handler(projection, envelope, payload)
+
+        # Subscribe-time WS snapshots and REST snapshots both carry the most
+        # recent trade. Preserve it as auxiliary evidence without inserting it
+        # into BookState or state_hash.v1. Standalone last_trade_price events
+        # remain counted as unhandled until a real raw sample pins that schema.
+        last_trade_price = _last_trade_price(payload)
+        if last_trade_price is not None:
+            key = (envelope.condition_id, envelope.token_id)
+            self._last_trades[key] = LastTradeState(
+                condition_id=envelope.condition_id,
+                token_id=envelope.token_id,
+                price=last_trade_price,
+                source_observation_id=envelope.observation_id,
+                event_time=envelope.event_time,
+                received_time=envelope.received_time,
+            )
 
         self._applied.add(envelope.observation_id)
         self.watermark.observe(envelope.event_time)
@@ -421,3 +465,9 @@ payload kind absent from this table is an explicit, counted
 ``UNHANDLED_PAYLOAD`` — which is the honest state of ``last_trade_price`` and
 ``tick_size_change`` today.
 """
+
+
+def _last_trade_price(payload: VersionedModel) -> Decimal | None:
+    if isinstance(payload, (WsBookSnapshotV1, OrderBookSnapshotV1)):
+        return payload.last_trade_price
+    return None

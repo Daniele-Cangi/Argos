@@ -19,7 +19,12 @@ import typer
 
 from argos import __version__
 from argos.clock import Clock, LiveClock, Pacer, RealPacer
-from argos.compiler import build_market_audit, compile_market_contract, render_market_audit
+from argos.compiler import (
+    CompiledMarketContractV1,
+    build_market_audit,
+    compile_market_contract,
+    render_market_audit,
+)
 from argos.config import RunMode, Settings, WorkingTreeStatus, build_run_manifest, load_settings
 from argos.domain.market import TOKEN_ID_PATTERN, MarketDefinitionV1
 from argos.domain.observation import ObservationEnvelopeV1, RejectedObservationV1
@@ -701,8 +706,16 @@ _EVAL_RESOLUTION_OPTION: Final = typer.Option(
         "URL: the evaluation must give the same answer tomorrow."
     ),
 )
+_EVAL_CONTRACT_OPTION: Final = typer.Option(
+    None,
+    "--contract",
+    help="Path to the persisted compiled-market contract identifying the target rules.",
+)
 _EVAL_OUT_OPTION: Final = typer.Option(
-    None, "--report-out", help="Where to write the evaluation report. Defaults beside the db."
+    None,
+    "--bundle-out",
+    "--report-out",
+    help="Where to write the evaluation evidence bundle. Defaults beside the db.",
 )
 
 
@@ -753,12 +766,26 @@ def _load_resolution(path: Path, token_id: str, clock: Clock) -> ResolutionV1:
     raise typer.Exit(code=1)
 
 
+def _load_contract(path: Path | None) -> CompiledMarketContractV1 | None:
+    if path is None:
+        return None
+    try:
+        record = orjson.loads(path.read_bytes())
+        if not isinstance(record, dict):
+            raise ValueError("contract record is not an object")
+        return CompiledMarketContractV1.from_record(record)
+    except (OSError, ValueError, ArgosError) as error:
+        typer.echo(f"cannot read compiled contract {path}: {error}", err=True)
+        raise typer.Exit(code=2) from error
+
+
 @evaluate_app.command("baseline")
 def evaluate_baseline(
     capture_run_id: str = typer.Argument(help="The capture_run_id to evaluate."),
     token_id: str = typer.Option(..., "--token-id", help="The token whose side is forecast."),
     db: Path = _EVAL_DB_OPTION,
     resolution_path: Path = _EVAL_RESOLUTION_OPTION,
+    contract_path: Path | None = _EVAL_CONTRACT_OPTION,
     report_out: Path | None = _EVAL_OUT_OPTION,
     as_json: bool = typer.Option(False, "--json", help="Emit the report as JSON."),
 ) -> None:
@@ -775,8 +802,9 @@ def evaluate_baseline(
     settings = _load_or_exit()
     configure_logging(settings.log_level)
     clock = LiveClock()
-    code_revision, _working_tree = _code_revision()
+    code_revision, working_tree = _code_revision()
     resolution = _load_resolution(resolution_path, token_id, clock)
+    contract = _load_contract(contract_path)
     run_id = f"eval-{clock.now():%Y%m%dT%H%M%SZ}-{uuid4().hex[:8]}"
 
     store = _open_store_or_exit(db)
@@ -789,7 +817,9 @@ def evaluate_baseline(
             settings=settings,
             clock=clock,
             evaluation_run_id=run_id,
+            contract=contract,
             code_revision=code_revision,
+            working_tree=working_tree,
         )
     except ArgosError as exc:
         _fail(exc)
@@ -799,22 +829,24 @@ def evaluate_baseline(
     finally:
         store.close()
 
-    destination = report_out or db.parent / f"{run_id}.evaluation-report.json"
+    destination = report_out or db.parent / f"{run_id}.evaluation-bundle.json"
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(
-        orjson.dumps(result.report.to_record(), option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
+        orjson.dumps(result.bundle.to_record(), option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
     )
 
     if as_json:
-        typer.echo(_json(result.report.to_record()))
+        typer.echo(_json(result.bundle.to_record()))
         return
 
     report = result.report
     typer.echo(report.describe())
-    typer.echo(f"  report     {destination}")
+    typer.echo(f"  bundle     {destination}")
     typer.echo(f"  resolution {resolution.winning_outcome.value} for token {token_id}")
     typer.echo(f"  state      {report.source_state_hash}")
-    for method, summary in sorted(report.calibration.items()):
+    typer.echo(f"  trajectory {report.source_trajectory_hash}")
+    typer.echo(f"  headline   {report.headline_status.value}: {', '.join(report.headline_reasons)}")
+    for method, summary in sorted(report.trajectory_diagnostics.items()):
         typer.echo(
             f"  {method:<12} n={summary['sample_count']} "
             f"brier={summary['mean_brier']} log_loss={summary['mean_log_loss']} "

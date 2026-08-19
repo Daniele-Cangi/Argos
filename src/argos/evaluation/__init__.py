@@ -11,6 +11,12 @@ exit criterion "unresolved markets are not scored as negatives" is enforced by
 the type rather than by a check somebody has to remember.
 """
 
+from argos.evaluation.bundle import (
+    EvaluationDecisionV1,
+    EvaluationExclusionV1,
+    EvaluationPolicyV1,
+    EvaluationRunBundleV1,
+)
 from argos.evaluation.calibration import (
     DEFAULT_BIN_COUNT,
     CalibrationBin,
@@ -28,12 +34,13 @@ from argos.evaluation.numeric import (
     require_bin_count,
     require_epsilon,
 )
-from argos.evaluation.report import EvaluationReportV1
-from argos.evaluation.run import EvaluationResult, evaluate_capture
+from argos.evaluation.report import EvaluationReportV1, EvaluationReportV2, HeadlineStatus
+from argos.evaluation.run_v2 import EvaluationResult, evaluate_capture
 from argos.evaluation.scoring import (
     DEFAULT_LOG_LOSS_EPSILON,
     EVALUATOR_VERSION,
     ForecastEvaluationV1,
+    ForecastEvaluationV2,
     brier_score,
     log_loss,
     score_forecast,
@@ -49,9 +56,16 @@ __all__ = [
     "CalibrationBin",
     "CalibrationReport",
     "CohortReport",
+    "EvaluationDecisionV1",
+    "EvaluationExclusionV1",
+    "EvaluationPolicyV1",
     "EvaluationReportV1",
+    "EvaluationReportV2",
     "EvaluationResult",
+    "EvaluationRunBundleV1",
     "ForecastEvaluationV1",
+    "ForecastEvaluationV2",
+    "HeadlineStatus",
     "brier_score",
     "calibration_report",
     "cohort_report",
