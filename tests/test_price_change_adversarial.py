@@ -857,6 +857,7 @@ def test_an_entry_for_only_the_sibling_token_still_refuses_cleanly_for_the_reque
         ("a" * 300, "300 characters, past the envelope's 256-character identifier cap"),
         ("a" * 20_000_000, "20,000,000 characters"),
     ],
+    ids=("osc52", "newline", "rtl", "over-limit", "twenty-million"),
 )
 def test_a_hostile_entry_hash_is_not_bounded_or_sanitized_inside_this_module(
     hostile_hash: str, label: str

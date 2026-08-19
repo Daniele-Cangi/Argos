@@ -7,7 +7,11 @@ on:
 
 jobs:
   quality:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -16,7 +20,7 @@ jobs:
       - name: Install uv
         run: python -m pip install --upgrade uv
       - name: Sync
-        run: uv sync --all-groups
+        run: uv sync --frozen --all-groups
       - name: Ruff
         run: uv run ruff check .
       - name: Format check
@@ -31,4 +35,5 @@ jobs:
       # 8x its normal wall time, which is why the local gate keeps it behind
       # `--coverage` and CI carries it instead.
       - name: Branch coverage thresholds
+        if: runner.os == 'Linux'
         run: uv run python scripts/claude/quality_gate.py --coverage

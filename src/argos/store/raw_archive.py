@@ -191,7 +191,11 @@ def _open_temporary(temporary: Path) -> int:
     a regular file is refused, loudly, as before: a crash leaves a regular file
     behind, and an attacker leaves something else.
     """
-    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW
+    # ``O_NOFOLLOW`` is a POSIX flag and is absent from both Windows and its
+    # type stubs. ``O_EXCL`` still refuses an existing reparse-point path on
+    # Windows; the lstat/regular-file check below remains the second guard.
+    no_follow = getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | no_follow
     try:
         return os.open(temporary, flags, 0o600)
     except FileExistsError:
@@ -227,7 +231,16 @@ def _fsync_directory(directory: Path) -> None:
 
     POSIX only guarantees a rename survives a crash once the directory entry
     itself has been synced; syncing the file it points at is not enough.
+
+    Windows does not expose directory handles through ``os.open`` and has no
+    ``os.fsync`` equivalent for a directory entry. The file itself was flushed
+    before ``os.replace``; on Windows that is the strongest guarantee available
+    through Python's portable filesystem API, so the unsupported second flush
+    is omitted rather than turning every successful archive write into a false
+    failure.
     """
+    if os.name == "nt":
+        return
     descriptor = os.open(directory, os.O_RDONLY)
     try:
         os.fsync(descriptor)

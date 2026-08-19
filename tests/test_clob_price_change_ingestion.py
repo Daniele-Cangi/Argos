@@ -307,6 +307,7 @@ def test_a_missing_timestamp_is_missing_not_substituted() -> None:
         ("h\x1b]52;c;cHdu\x07", "an OSC 52 clipboard write"),
         ("h" * 20_000_000, "20,000,000 characters"),
     ],
+    ids=("over-limit", "newline", "osc52", "twenty-million"),
 )
 def test_a_hostile_entry_hash_becomes_a_rejection_rather_than_raising(
     hostile_hash: str, label: str

@@ -257,6 +257,7 @@ def test_a_non_string_hash_is_rejected() -> None:
         ("h" * 20_000_000, "20,000,000 characters"),
         ("\ud800", "a lone UTF-16 surrogate"),
     ],
+    ids=("over-limit", "newline", "osc52", "twenty-million", "surrogate"),
 )
 def test_a_hostile_hash_becomes_a_rejection_rather_than_raising(
     hostile_hash: str, label: str

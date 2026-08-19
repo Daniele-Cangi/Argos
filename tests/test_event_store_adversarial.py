@@ -961,7 +961,9 @@ def test_fsync_is_actually_invoked_for_both_the_file_and_its_directory_on_a_norm
     monkeypatch.setattr(os, "fsync", spy)
     path = write_raw_payload(tmp_path, raw=raw, provenance=_archive_provenance(raw))
     assert path.read_bytes() == raw
-    assert len(calls) == 4
+    # Python exposes directory fsync on POSIX; Windows exposes no directory
+    # handle through os.open, so only the two file fsync calls are possible.
+    assert len(calls) == (2 if os.name == "nt" else 4)
 
 
 def test_a_directory_fsync_failure_after_a_successful_rename_is_reported_in_the_taxonomy(

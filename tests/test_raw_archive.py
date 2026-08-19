@@ -6,6 +6,7 @@ mechanical rather than a convention.
 
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -221,7 +222,12 @@ def test_a_symlink_at_the_temp_path_cannot_be_written_through(tmp_path: Path) ->
     victim = tmp_path / "victim"
     victim.write_bytes(b"original")
     planted = archive / "gamma" / f"{sha256_hex(RAW)}.meta.json.partial"
-    planted.symlink_to(victim)
+    try:
+        planted.symlink_to(victim)
+    except OSError as error:
+        if os.name == "nt" and getattr(error, "winerror", None) == 1314:
+            pytest.skip("Windows account lacks the privilege required to create a test symlink")
+        raise
 
     with pytest.raises(ImmutabilityViolationError):
         write_raw_payload(archive, raw=RAW, provenance=_provenance())
