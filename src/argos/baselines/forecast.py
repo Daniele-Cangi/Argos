@@ -25,11 +25,13 @@ coverage.
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import ClassVar
 
+import orjson
 from pydantic import Field, field_validator, model_validator
 
 from argos.baselines.quote import MarketQuoteV1
@@ -42,24 +44,19 @@ __all__ = [
     "BaselineMethod",
     "CalibrationStatus",
     "MarketBaselineForecastV1",
+    "MarketBaselineForecastV2",
     "build_baseline_forecast",
+    "build_baseline_forecast_v2",
 ]
+
+DISPLAYED_PRICE_LAST_TRADE_SPREAD = Decimal("0.10")
 
 
 class BaselineMethod(StrEnum):
     """Which documented baseline produced a score.
 
-    ``docs/05_RESEARCH_PROTOCOL.md`` names five. Three are implemented; the
-    other two are absent for stated reasons rather than forgotten:
-
-    - *"market displayed-price proxy according to a documented method"* is
-      **the same quantity as** :attr:`MIDPOINT` on this source. Measured: on
-      91 of 91 two-sided open markets, Polymarket's displayed price equals the
-      midpoint of best bid and best ask, exactly
-      (``docs/research/m4-gamma-resolution.md``). Implementing it separately
-      would produce two identical numbers and then report them as independent
-      baselines that agree, which is an artifact rather than a finding.
-    - *"category/base-rate baseline when enough resolved data exists"* needs
+    ``docs/05_RESEARCH_PROTOCOL.md`` names five. Four are implemented. The
+    remaining category/base-rate baseline needs
       resolved data grouped by category, and the qualifier is the operative
       part. It is not implemented because that data does not exist here yet.
     """
@@ -71,6 +68,11 @@ class BaselineMethod(StrEnum):
     """The last price that actually traded. Evidence about the past rather than
     a quote available now, which is why it is a separate baseline and not a
     fallback for a missing midpoint."""
+
+    DISPLAYED_PRICE = "displayed_price"
+    """Polymarket's documented display rule: midpoint for spreads at or below
+    $0.10, otherwise last traded price. Kept distinct even when it happens to
+    equal midpoint on a narrow-spread sample."""
 
     PERSISTENCE = "persistence"
     """The previous forecast for this token, carried forward unchanged.
@@ -101,6 +103,7 @@ class AbstentionReason(StrEnum):
     NO_TWO_SIDED_BOOK = "no_two_sided_book"
     NO_LAST_TRADE = "no_last_trade"
     NO_PRIOR_FORECAST = "no_prior_forecast"
+    NO_DISPLAYED_PRICE = "no_displayed_price"
 
 
 class MarketBaselineForecastV1(VersionedModel):
@@ -204,6 +207,20 @@ class MarketBaselineForecastV1(VersionedModel):
         return self
 
 
+class MarketBaselineForecastV2(MarketBaselineForecastV1):
+    """An identifiable forecast bound to one evaluation information state."""
+
+    schema_version: ClassVar[str] = "market_baseline_forecast.v2"
+
+    forecast_id: str = Field(min_length=1)
+    evaluation_run_id: str = Field(min_length=1)
+    source_capture_run_id: str = Field(min_length=1)
+    source_observation_id: str = Field(min_length=1)
+    information_state_hash: str = Field(min_length=64, max_length=64)
+    market_id: str = Field(min_length=1)
+    contract_id: str | None = Field(default=None, min_length=1)
+
+
 def build_baseline_forecast(
     *,
     method: BaselineMethod,
@@ -231,6 +248,14 @@ def build_baseline_forecast(
         score = quote.last_trade_price
         if score is None:
             reason = AbstentionReason.NO_LAST_TRADE
+    elif method is BaselineMethod.DISPLAYED_PRICE:
+        score = (
+            quote.last_trade_price
+            if quote.spread is not None and quote.spread > DISPLAYED_PRICE_LAST_TRADE_SPREAD
+            else quote.midpoint
+        )
+        if score is None:
+            reason = AbstentionReason.NO_DISPLAYED_PRICE
     else:
         score = previous_score
         if score is None:
@@ -247,4 +272,49 @@ def build_baseline_forecast(
         abstained=score is None,
         abstention_reason=reason,
         quote=quote,
+    )
+
+
+def build_baseline_forecast_v2(
+    *,
+    method: BaselineMethod,
+    quote: MarketQuoteV1,
+    as_of_received_time: datetime,
+    as_of_ingest_sequence: int,
+    previous_score: Decimal | None,
+    evaluation_run_id: str,
+    source_capture_run_id: str,
+    source_observation_id: str,
+    information_state_hash: str,
+    market_id: str,
+    contract_id: str | None,
+) -> MarketBaselineForecastV2:
+    """Build V1's score, then attach stable evidence identity."""
+    legacy = build_baseline_forecast(
+        method=method,
+        quote=quote,
+        as_of_received_time=as_of_received_time,
+        as_of_ingest_sequence=as_of_ingest_sequence,
+        previous_score=previous_score,
+    )
+    identity = {
+        "version": "forecast_identity.v1",
+        "capture_run_id": source_capture_run_id,
+        "observation_id": source_observation_id,
+        "information_state_hash": information_state_hash,
+        "method": method.value,
+        "condition_id": quote.condition_id,
+        "token_id": quote.token_id,
+        "contract_id": contract_id,
+    }
+    digest = hashlib.sha256(orjson.dumps(identity, option=orjson.OPT_SORT_KEYS)).hexdigest()
+    return MarketBaselineForecastV2(
+        **dict(legacy),
+        forecast_id=f"forecast-{digest[:32]}",
+        evaluation_run_id=evaluation_run_id,
+        source_capture_run_id=source_capture_run_id,
+        source_observation_id=source_observation_id,
+        information_state_hash=information_state_hash,
+        market_id=market_id,
+        contract_id=contract_id,
     )

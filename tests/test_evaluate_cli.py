@@ -40,13 +40,10 @@ async def _write_capture(db_path: Path) -> None:
         store.close()
 
 
-async def test_the_real_capture_scores_against_its_real_settlement(tmp_path: Path) -> None:
-    """The owner gate's completed baseline evaluation, through the CLI.
-
-    The captured token is Diana Shnaider's in a match she lost, so every
-    forecast is scored against an outcome of 0 -- read from the CLOB's explicit
-    `winner` flag, not inferred from a price.
-    """
+async def test_the_real_capture_refuses_to_claim_a_score_without_cutoff_or_contract(
+    tmp_path: Path,
+) -> None:
+    """The old owner-gate artifact lacked both pieces of admissibility evidence."""
     db_path = tmp_path / "events.sqlite3"
     await _write_capture(db_path)
 
@@ -66,26 +63,34 @@ async def test_the_real_capture_scores_against_its_real_settlement(tmp_path: Pat
         ],
     )
     assert result.exit_code == 0, result.output
-    report: dict[str, Any] = orjson.loads(result.stdout)
+    bundle: dict[str, Any] = orjson.loads(result.stdout)
+    report = bundle["report"]
 
-    assert report["schema_version"] == "evaluation_report.v1"
-    assert report["scored_count"] > 0
+    assert bundle["schema_version"] == "evaluation_run_bundle.v2"
+    assert bundle["policy"]["schema_version"] == "evaluation_policy.v2"
+    assert report["schema_version"] == "evaluation_report.v2"
+    assert report["scored_count"] == 0
+    assert report["headline_status"] == "not_established"
+    assert "resolution_time_unknown" in report["headline_reasons"]
+    assert "contract_identity_missing" in report["headline_reasons"]
     assert report["source_capture_run_ids"] == [RUN_ID]
     assert report["source_state_hash"]
+    assert report["source_trajectory_hash"]
     assert report["log_loss_epsilon"] == "0.000001"
     assert report["calibration_bin_count"] == 10
-
-    midpoint = report["calibration"]["midpoint"]
-    assert midpoint["sample_count"] == report["calibration"]["midpoint"]["sample_count"]
-    assert midpoint["calibration_status"] == "uncalibrated"
-    assert len(midpoint["bins"]) == 10
+    assert report["calibration"] == {}
+    assert len(report["trajectory_diagnostics"]["midpoint"]["bins"]) == 10
+    assert bundle["forecasts"]
+    assert bundle["decisions"]
+    assert bundle["exclusions"]
+    assert bundle["evidence_digest"]
 
     # Required and non-empty, and specific rather than boilerplate.
     assert report["limitations"]
     joined = " ".join(report["limitations"]).lower()
     assert "uncalibrated" in joined
     assert "autocorrelated" in joined
-    assert "single market" in joined
+    assert "one resolved target" in joined
 
 
 async def test_two_runs_of_the_same_evaluation_agree_on_every_metric(tmp_path: Path) -> None:
@@ -114,20 +119,22 @@ async def test_two_runs_of_the_same_evaluation_agree_on_every_metric(tmp_path: P
             ],
         )
         assert outcome.exit_code == 0, outcome.output
-        report: dict[str, Any] = orjson.loads(outcome.stdout)
-        return report
+        bundle: dict[str, Any] = orjson.loads(outcome.stdout)
+        return bundle
 
     first, second = run(), run()
+    first_report, second_report = first["report"], second["report"]
     for field in (
         "source_state_hash",
+        "source_trajectory_hash",
         "scored_count",
         "forecast_count",
         "abstention_count",
         "calibration",
-        "cohorts",
+        "trajectory_diagnostics",
         "limitations",
     ):
-        assert first[field] == second[field], field
+        assert first_report[field] == second_report[field], field
     assert first["evaluation_run_id"] != second["evaluation_run_id"]
 
 
@@ -149,14 +156,15 @@ async def test_the_report_is_written_beside_the_database(tmp_path: Path) -> None
         ],
     )
     assert result.exit_code == 0, result.output
-    written = list(tmp_path.glob("*.evaluation-report.json"))
+    written = list(tmp_path.glob("*.evaluation-bundle.json"))
     assert len(written) == 1
     record = json.loads(written[0].read_text(encoding="utf-8"))
-    assert record["schema_version"] == "evaluation_report.v1"
+    assert record["schema_version"] == "evaluation_run_bundle.v2"
+    assert record["report"]["schema_version"] == "evaluation_report.v2"
     # The human summary never omits the sample size, and always prints the
     # limitations -- a report whose caveats are one flag away is a report whose
     # caveats get dropped.
-    assert "scored of" in result.output
+    assert "headline=" in result.output
     assert "limitations:" in result.output
 
 

@@ -1,4 +1,4 @@
-"""``evaluate_capture``: a stored capture plus a recorded resolution, scored.
+"""Legacy M4 evaluator retained only for v1 compatibility tests.
 
 The composition root for M4, and the answer to "baseline evaluation is
 reproducible from stored records". Both inputs are *records*: an event store
@@ -45,11 +45,11 @@ from argos.replay.reader import read_capture_arrivals
 from argos.resolution.gamma_resolution import ResolutionV1, WinningOutcome
 from argos.store.event_store import EventStore
 
-__all__ = ["EvaluationResult", "evaluate_capture"]
+__all__ = ["EvaluationResult", "evaluate_capture_v1_unsafe"]
 
 
 @dataclass(frozen=True, slots=True)
-class EvaluationResult:
+class EvaluationResult:  # pragma: no cover - superseded v1 compatibility
     """The report, plus the records behind it for a caller that wants them."""
 
     report: EvaluationReportV1
@@ -57,7 +57,11 @@ class EvaluationResult:
     evaluations: tuple[ForecastEvaluationV1, ...]
 
 
-def evaluate_capture(
+def _refuse_v1() -> None:  # pragma: no cover - superseded v1 compatibility
+    raise RuntimeError("the arrival-weighted v1 evaluator is superseded by ADR-0013")
+
+
+def evaluate_capture_v1_unsafe(  # pragma: no cover - superseded v1 compatibility
     *,
     store: EventStore,
     capture_run_id: str,
@@ -72,7 +76,10 @@ def evaluate_capture(
     code_revision: str | None = None,
     extra_limitations: tuple[str, ...] = (),
 ) -> EvaluationResult:
-    """Replay one capture, take baselines at every state, and score them.
+    """Replay one capture with superseded arrival-weighted v1 semantics.
+
+    This function is deliberately not exported from :mod:`argos.evaluation`.
+    New callers must use the evidence-bundled v2 evaluator exported there.
 
     ``token_id`` names the side being forecast. The resolution says which token
     won; a forecast is a score for *this* token winning, so the outcome is YES
@@ -80,6 +87,8 @@ def evaluate_capture(
     rather than taken on trust, because getting it backwards would invert every
     score in the report and nothing else would look wrong.
     """
+    _refuse_v1()
+
     require_epsilon(epsilon)
     require_bin_count(bin_count)
     if resolution.winning_token_id is None:
@@ -207,11 +216,13 @@ def evaluate_capture(
     )
 
 
-def _outcome_for(resolution: ResolutionV1, token_id: str) -> WinningOutcome:
+def _outcome_for(  # pragma: no cover - superseded v1 compatibility
+    resolution: ResolutionV1, token_id: str
+) -> WinningOutcome:
     return WinningOutcome.YES if resolution.winning_token_id == token_id else WinningOutcome.NO
 
 
-def _spread_keys(
+def _spread_keys(  # pragma: no cover - superseded v1 compatibility
     forecasts: list[MarketBaselineForecastV1], evaluations: list[ForecastEvaluationV1]
 ) -> dict[str, str]:
     by_sequence = {(f.method.value, f.as_of_ingest_sequence): f.quote.spread for f in forecasts}
@@ -224,7 +235,7 @@ def _spread_keys(
     return keys
 
 
-def _time_to_resolution_keys(
+def _time_to_resolution_keys(  # pragma: no cover - superseded v1 compatibility
     forecasts: list[MarketBaselineForecastV1],
     evaluations: list[ForecastEvaluationV1],
     resolution: ResolutionV1,
@@ -248,7 +259,9 @@ def _time_to_resolution_keys(
     return keys
 
 
-def _lead_bucket(made_at: datetime | None, resolved_at: datetime | None) -> str:
+def _lead_bucket(  # pragma: no cover - superseded v1 compatibility
+    made_at: datetime | None, resolved_at: datetime | None
+) -> str:
     if made_at is None or resolved_at is None:
         return "unknown"
     lead = resolved_at - made_at
@@ -263,7 +276,7 @@ def _lead_bucket(made_at: datetime | None, resolved_at: datetime | None) -> str:
     return "over-7d"
 
 
-def _limitations(
+def _limitations(  # pragma: no cover - superseded v1 compatibility
     evaluations: list[ForecastEvaluationV1], extra: tuple[str, ...]
 ) -> tuple[str, ...]:
     """Always non-empty, and specific to what this run actually was.

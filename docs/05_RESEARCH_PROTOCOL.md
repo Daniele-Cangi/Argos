@@ -68,6 +68,49 @@ Do not compare a fair probability only with midpoint when discussing actionable 
 - absolute error;
 - sample count and coverage.
 
+The headline sampling unit is an independently resolved target, not a transport
+arrival or a forecast point along one market trajectory. Reports must state
+all three counts separately. Calibration from one resolved target is not
+empirically established; per-trajectory calculations may appear only as
+diagnostics.
+
+Forecasts enter scoring only when the stored resolution is final, the compiled
+contract identity is present, the exact resolution cutoff is known, the
+forecast precedes that cutoff, and capture/replay integrity checks pass.
+Every omission or exclusion is persisted with a reason.
+
+## Prospective admissibility and calibration sufficiency
+
+For the M4 prospective experiment, `resolved_at` is not evidence by itself.
+The protocol must predeclare exactly one cutoff basis per target:
+
+- a terminal settlement timestamp explicitly stated in and verifiable from
+  the immutable source payload; or
+- if none exists, the `retrieved_at` of the first immutably recorded lifecycle
+  poll that states final settlement.
+
+The cutoff record keeps source time, retrieval time and selected cutoff
+separate and binds endpoint, raw digest, byte length, observation identity,
+finality and resolution identity. Reconstructed provenance and ex-post
+estimates are inadmissible; a later observation cannot be backdated.
+
+The compiled contract, its digest and its persistence receipt must be durable
+strictly before the earliest included forecast's receipt time. A `compiled_at`
+field or a contract attached after resolution does not prove historical
+availability.
+
+Two independently resolved targets are only a structural floor. Before the
+first included forecast, the experiment protocol must persist its population,
+selection and stopping rules, minimum target count with rationale,
+within-target aggregation, resolved-target weighting, metrics and bins,
+missingness/exclusion treatment, uncertainty reporting, and sufficiency rule.
+No generic constant can promote calibration to `established`.
+
+Displayed price, midpoint and last trade remain separate methods. The displayed
+proxy uses last trade when bid/ask spread is greater than 0.10 and midpoint
+otherwise; it abstains when the required input is absent. Last trade is
+auxiliary evidence and never an order-book level.
+
 Later selective-prediction metrics:
 
 - risk–coverage curve;

@@ -26,8 +26,10 @@ from test_replay import CAPTURE_START, RUN_ID, TOKEN, _ListFrameSource, _recorde
 
 from argos.baselines import BaselineMethod
 from argos.clock import ReplayClock
+from argos.compiler import CompiledMarketContractV1
 from argos.config import Settings
 from argos.evaluation import evaluate_capture
+from argos.evaluation.bundle import ExclusionReason
 from argos.evaluation.run import _lead_bucket
 from argos.ingestion.capture import run_capture
 from argos.resolution import (
@@ -56,6 +58,18 @@ def _resolution(**overrides: Any) -> ResolutionV1:
     )
     assert isinstance(result, ResolutionV1)
     return result.model_copy(update=overrides) if overrides else result
+
+
+def _contract() -> CompiledMarketContractV1:
+    return CompiledMarketContractV1(
+        contract_id="contract-" + "a" * 32,
+        market_id=CONDITION,
+        condition_id=CONDITION,
+        source_market_hash="b" * 64,
+        compiler_version="test-compiler/1",
+        compiled_at=NOW,
+        proposition="Recorded tennis market",
+    )
 
 
 async def _store() -> Any:
@@ -90,6 +104,20 @@ async def test_a_resolution_with_no_winning_token_cannot_score_a_token() -> None
         )
 
 
+async def test_a_nonfinal_resolution_is_refused_before_replay() -> None:
+    store = await _store()
+    with pytest.raises(ValueError, match="only a final resolution"):
+        evaluate_capture(
+            store=store,
+            capture_run_id=RUN_ID,
+            resolution=_resolution(resolution_status="proposed"),
+            token_id=TOKEN,
+            settings=Settings(),
+            clock=ReplayClock(NOW),
+            evaluation_run_id="eval-proposed",
+        )
+
+
 async def test_a_token_the_capture_never_covered_yields_no_forecasts() -> None:
     """Not an error: an evaluation over a token this capture does not hold is
     empty rather than wrong, and the report says so through its counts instead
@@ -110,10 +138,8 @@ async def test_a_token_the_capture_never_covered_yields_no_forecasts() -> None:
     assert result.report.limitations, "an empty report still states its limitations"
 
 
-async def test_the_last_trade_baseline_abstains_across_a_capture_with_no_trades() -> None:
-    """The WebSocket capture carries no trade, so every `last_trade` forecast
-    abstains -- and the abstention is counted by reason rather than dropped,
-    which is what keeps a coverage number honest."""
+async def test_the_subscribe_snapshot_supplies_last_trade_as_auxiliary_evidence() -> None:
+    """The raw subscribe-time book carries 0.280 even though later snapshots do not."""
     store = await _store()
     result = evaluate_capture(
         store=store,
@@ -126,14 +152,12 @@ async def test_the_last_trade_baseline_abstains_across_a_capture_with_no_trades(
         methods=(BaselineMethod.LAST_TRADE,),
     )
     assert result.report.scored_count == 0
-    assert result.report.abstention_count == result.report.forecast_count
-    assert result.report.abstention_reasons == {"no_last_trade": result.report.forecast_count}
+    assert result.report.abstention_count == 0
+    assert {forecast.raw_score for forecast in result.forecasts} == {Decimal("0.28")}
+    assert "resolution_time_unknown" in result.report.headline_reasons
 
 
-async def test_a_resolution_with_a_settlement_time_buckets_the_lead() -> None:
-    """`resolved_at` is `None` on the CLOB path, so the real evaluation always
-    lands in `unknown`. Supplying one exercises the buckets that would otherwise
-    only ever run against a source ARGOS does not currently use."""
+async def test_a_known_cutoff_and_contract_allow_point_scoring_but_not_calibration() -> None:
     store = await _store()
     result = evaluate_capture(
         store=store,
@@ -144,9 +168,30 @@ async def test_a_resolution_with_a_settlement_time_buckets_the_lead() -> None:
         clock=ReplayClock(NOW),
         evaluation_run_id="eval-lead",
         methods=(BaselineMethod.MIDPOINT,),
+        contract=_contract(),
     )
-    buckets = result.report.cohorts["time_to_resolution"]["midpoint"]["slices"]
-    assert set(buckets) == {"1h-1d"}, buckets
+    assert result.report.scored_count > 0
+    assert result.report.calibration == {}
+    assert result.report.trajectory_diagnostics["midpoint"]["sample_count"] > 0
+    assert result.report.headline_status == "not_established"
+    assert "single_target_runner_cannot_establish_calibration" in result.report.headline_reasons
+
+
+async def test_post_resolution_points_are_excluded_not_bucketed_into_scores() -> None:
+    store = await _store()
+    result = evaluate_capture(
+        store=store,
+        capture_run_id=RUN_ID,
+        resolution=_resolution(resolved_at=datetime(2026, 8, 1, tzinfo=UTC)),
+        token_id=TOKEN,
+        settings=Settings(),
+        clock=ReplayClock(NOW),
+        evaluation_run_id="eval-after",
+        methods=(BaselineMethod.MIDPOINT,),
+        contract=_contract(),
+    )
+    assert result.report.scored_count == 0
+    assert {item.reason for item in result.exclusions} == {ExclusionReason.POST_RESOLUTION}
 
 
 @pytest.mark.parametrize(
@@ -161,9 +206,7 @@ async def test_a_resolution_with_a_settlement_time_buckets_the_lead() -> None:
     ],
 )
 def test_every_lead_bucket_has_a_name(lead: timedelta | None, bucket: str) -> None:
-    """`after_resolution` is a bucket rather than an exclusion: a forecast made
-    after settlement is not evidence, and silently dropping it would hide the
-    join error that produced it."""
+    """The label remains available for diagnostics; scoring excludes it."""
     made_at = NOW
     resolved_at = None if lead is None else NOW + lead
     assert _lead_bucket(made_at, resolved_at) == bucket

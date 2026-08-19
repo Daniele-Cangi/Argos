@@ -1,5 +1,11 @@
 # ARGOS handoff — Owner Review Gate A (after M4)
 
+> **Superseded 2026-08-19.** This is the dated M4/M4.1 submission, retained as
+> evidence. The independent verdict and current authority are
+> `docs/OWNER_TAKEOVER_M4_REVIEW.md`, `docs/OWNER_REVIEW_GATE.md` and
+> ADR-0013. M4 is blocked; the evaluation and completion claims below must not
+> be quoted as current state.
+
 Structure follows `docs/10_HANDOFF.md` exactly.
 
 ## 1. Executive state

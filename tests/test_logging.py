@@ -170,7 +170,7 @@ def test_a_value_json_cannot_encode_is_stringified_rather_than_dropped() -> None
     get_logger("test").info("captured", cursor=object(), path=__import__("pathlib").Path("/tmp/x"))
     (record,) = _records(stream)
     assert "object object" in str(record["cursor"])
-    assert record["path"] == "/tmp/x"
+    assert record["path"] == str(__import__("pathlib").Path("/tmp/x"))
 
 
 def test_reconfiguring_the_level_takes_effect_immediately() -> None:

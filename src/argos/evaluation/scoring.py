@@ -24,10 +24,12 @@ rescue.
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 from decimal import Decimal
 from typing import ClassVar
 
+import orjson
 from pydantic import Field, field_validator, model_validator
 
 from argos.clock import ensure_utc
@@ -39,9 +41,11 @@ from argos.resolution.gamma_resolution import WinningOutcome
 __all__ = [
     "DEFAULT_LOG_LOSS_EPSILON",
     "ForecastEvaluationV1",
+    "ForecastEvaluationV2",
     "brier_score",
     "log_loss",
     "score_forecast",
+    "score_forecast_v2",
 ]
 
 DEFAULT_LOG_LOSS_EPSILON = Decimal("0.000001")
@@ -168,7 +172,17 @@ class ForecastEvaluationV1(VersionedModel):
         return self
 
 
-EVALUATOR_VERSION = "argos-baseline-evaluator/1"
+class ForecastEvaluationV2(ForecastEvaluationV1):
+    """A score linked to the exact persisted forecast it evaluates."""
+
+    schema_version: ClassVar[str] = "forecast_evaluation.v2"
+
+    forecast_id: str = Field(min_length=1)
+    evaluation_run_id: str = Field(min_length=1)
+    contract_id: str = Field(min_length=1)
+
+
+EVALUATOR_VERSION = "argos-baseline-evaluator/2"
 
 
 def score_forecast(
@@ -212,4 +226,49 @@ def score_forecast(
         calibration_status=calibration_status,
         evaluator_version=EVALUATOR_VERSION,
         created_at=created_at,
+    )
+
+
+def score_forecast_v2(
+    *,
+    forecast_id: str,
+    evaluation_run_id: str,
+    contract_id: str,
+    forecast_method: str,
+    condition_id: str,
+    token_id: str,
+    score: Decimal,
+    resolution_id: str,
+    winning_outcome: WinningOutcome,
+    calibration_status: str,
+    created_at: datetime,
+    epsilon: Decimal = DEFAULT_LOG_LOSS_EPSILON,
+) -> ForecastEvaluationV2:
+    legacy = score_forecast(
+        forecast_method=forecast_method,
+        condition_id=condition_id,
+        token_id=token_id,
+        score=score,
+        resolution_id=resolution_id,
+        winning_outcome=winning_outcome,
+        calibration_status=calibration_status,
+        created_at=created_at,
+        epsilon=epsilon,
+    )
+    identity = {
+        "version": "forecast_evaluation_identity.v1",
+        "forecast_id": forecast_id,
+        "resolution_id": resolution_id,
+        "contract_id": contract_id,
+        "evaluator_version": EVALUATOR_VERSION,
+        "epsilon": str(epsilon),
+    }
+    digest = hashlib.sha256(orjson.dumps(identity, option=orjson.OPT_SORT_KEYS)).hexdigest()
+    fields = dict(legacy)
+    fields["evaluation_id"] = f"evaluation-{digest[:32]}"
+    return ForecastEvaluationV2(
+        **fields,
+        forecast_id=forecast_id,
+        evaluation_run_id=evaluation_run_id,
+        contract_id=contract_id,
     )

@@ -26,6 +26,7 @@ refusal rather than as a silent choice between two answers.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -41,7 +42,7 @@ from argos.resolution.gamma_resolution import (
 
 __all__ = ["CLOB_RESOLUTION_NORMALIZER_VERSION", "normalize_clob_resolution"]
 
-CLOB_RESOLUTION_NORMALIZER_VERSION = "clob-resolution-normalizer/1"
+CLOB_RESOLUTION_NORMALIZER_VERSION = "clob-resolution-normalizer/2"
 
 
 def normalize_clob_resolution(
@@ -124,7 +125,12 @@ def normalize_clob_resolution(
     outcome = WinningOutcome.YES if winning_token == reference else WinningOutcome.NO
 
     return ResolutionV1(
-        resolution_id=f"resolution-{condition_id}",
+        resolution_id=_resolution_id(
+            condition_id=condition_id,
+            source_payload_sha256=source_payload_sha256,
+            winning_token_id=winning_token,
+            yes_token_id=reference,
+        ),
         # This source has no Gamma market id; the condition id is the identifier
         # it does carry, and inventing one would make two records for one market
         # look like records for two.
@@ -166,6 +172,30 @@ def _price_disagreement(tokens: list[Any]) -> str | None:
         if not is_winner and price != 0:
             return f"token not flagged winner carries price {price}, not 0"
     return None
+
+
+def _resolution_id(
+    *,
+    condition_id: str,
+    source_payload_sha256: str,
+    winning_token_id: str,
+    yes_token_id: str | None,
+) -> str:
+    """Bind identity to the outcome mapping, not only the condition.
+
+    The previous id stayed constant when a caller changed ``yes_token_id`` and
+    therefore changed ``winning_outcome``. Length-prefixing keeps the encoding
+    injective across source-controlled identifiers.
+    """
+    parts = (
+        "clob_resolution_identity.v2",
+        condition_id,
+        source_payload_sha256,
+        winning_token_id,
+        yes_token_id or "",
+    )
+    encoded = "|".join(f"{len(part)}:{part}" for part in parts)
+    return f"resolution-{hashlib.sha256(encoded.encode()).hexdigest()[:32]}"
 
 
 def _is_mapping(value: Any) -> bool:

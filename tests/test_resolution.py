@@ -53,7 +53,7 @@ def test_a_really_resolved_market_normalizes() -> None:
     assert result.winning_outcome in set(WinningOutcome)
     assert result.resolution_status is ResolutionStatus.FINAL
     assert result.winning_token_id
-    assert result.normalizer_version == "gamma-resolution-normalizer/1"
+    assert result.normalizer_version == "gamma-resolution-normalizer/2"
     assert result.source_payload_sha256 == _payload("market_resolved")[1]
 
 

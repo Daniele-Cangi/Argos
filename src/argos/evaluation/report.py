@@ -16,14 +16,23 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal
+from enum import StrEnum
 from typing import Any, ClassVar
 
 from pydantic import Field, field_serializer, field_validator
 
 from argos.clock import ensure_utc
+from argos.config.manifest import WorkingTreeStatus
 from argos.domain.versioning import VersionedModel, freeze, thaw
 
-__all__ = ["EvaluationReportV1"]
+__all__ = ["EvaluationReportV1", "EvaluationReportV2", "HeadlineStatus"]
+
+
+class HeadlineStatus(StrEnum):
+    """Whether this run supports a headline aggregate claim."""
+
+    ESTABLISHED = "established"
+    NOT_ESTABLISHED = "not_established"
 
 
 class EvaluationReportV1(VersionedModel):
@@ -107,4 +116,73 @@ class EvaluationReportV1(VersionedModel):
             f"{self.forecast_count} forecasts "
             f"({self.abstention_count} abstained, {self.unresolved_count} unresolved), "
             f"eps={self.log_loss_epsilon}, bins={self.calibration_bin_count}"
+        )
+
+
+class EvaluationReportV2(EvaluationReportV1):
+    """Audit summary whose counts and evidence units cannot be conflated."""
+
+    schema_version: ClassVar[str] = "evaluation_report.v2"
+
+    working_tree: WorkingTreeStatus = WorkingTreeStatus.UNKNOWN
+    settings_snapshot: Mapping[str, Any]
+
+    source_trajectory_hash: str = Field(min_length=64, max_length=64)
+    source_trajectory_hash_version: str = Field(min_length=1)
+    source_completion_status: str | None = None
+    replay_counts: Mapping[str, Any]
+
+    resolution_id: str = Field(min_length=1)
+    resolution_record_sha256: str = Field(min_length=64, max_length=64)
+    resolution_status: str = Field(min_length=1)
+    resolution_normalizer_version: str = Field(min_length=1)
+    resolution_cutoff: datetime | None = None
+    contract_id: str | None = Field(default=None, min_length=1)
+    contract_record_sha256: str | None = Field(default=None, min_length=64, max_length=64)
+
+    evaluation_policy_version: str = Field(min_length=1)
+    headline_status: HeadlineStatus
+    headline_reasons: tuple[str, ...]
+
+    arrival_count: int = Field(ge=0)
+    target_information_state_count: int = Field(ge=0)
+    forecast_point_count: int = Field(ge=0)
+    scored_forecast_point_count: int = Field(ge=0)
+    resolved_target_count: int = Field(ge=0)
+    headline_eligible_target_count: int = Field(ge=0)
+    trajectory_diagnostics: Mapping[str, Any] = Field(default_factory=dict)
+    child_record_digests: Mapping[str, Any] = Field(default_factory=dict)
+
+    @field_validator("resolution_cutoff")
+    @classmethod
+    def _anchor_cutoff(cls, value: datetime | None) -> datetime | None:
+        return None if value is None else ensure_utc(value)
+
+    @field_validator(
+        "settings_snapshot",
+        "replay_counts",
+        "trajectory_diagnostics",
+        "child_record_digests",
+    )
+    @classmethod
+    def _freeze_v2_mapping(cls, value: Mapping[str, Any]) -> Mapping[str, Any]:
+        frozen: Mapping[str, Any] = freeze(value)
+        return frozen
+
+    @field_serializer(
+        "settings_snapshot",
+        "replay_counts",
+        "trajectory_diagnostics",
+        "child_record_digests",
+    )
+    def _thaw_v2_mapping(self, value: Mapping[str, Any]) -> dict[str, Any]:
+        thawed: dict[str, Any] = thaw(value)
+        return thawed
+
+    def describe(self) -> str:
+        return (
+            f"{self.evaluation_run_id}: headline={self.headline_status.value} "
+            f"targets={self.headline_eligible_target_count}/{self.resolved_target_count} "
+            f"states={self.target_information_state_count} "
+            f"scored_points={self.scored_forecast_point_count}"
         )

@@ -26,6 +26,7 @@ report can say how many markets were unusable and why.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -51,7 +52,7 @@ __all__ = [
     "normalize_gamma_resolution",
 ]
 
-GAMMA_RESOLUTION_NORMALIZER_VERSION = "gamma-resolution-normalizer/1"
+GAMMA_RESOLUTION_NORMALIZER_VERSION = "gamma-resolution-normalizer/2"
 
 _MAX_TEXT = 200
 
@@ -262,7 +263,13 @@ def normalize_gamma_resolution(
         status = ResolutionStatus.UNKNOWN
 
     return ResolutionV1(
-        resolution_id=f"resolution-{condition_id}",
+        resolution_id=_resolution_id(
+            condition_id=condition_id,
+            source_payload_sha256=source_payload_sha256,
+            winning_outcome=winner,
+            winning_token_id=winning_token,
+            resolution_status=status,
+        ),
         market_id=market_id,
         condition_id=condition_id,
         resolved_at=_timestamp(payload.get("updatedAt")),
@@ -298,6 +305,26 @@ def _status(raw: Any) -> ResolutionStatus:
     if latest == "disputed":
         return ResolutionStatus.DISPUTED
     return ResolutionStatus.UNKNOWN
+
+
+def _resolution_id(
+    *,
+    condition_id: str,
+    source_payload_sha256: str,
+    winning_outcome: WinningOutcome,
+    winning_token_id: str | None,
+    resolution_status: ResolutionStatus,
+) -> str:
+    parts = (
+        "gamma_resolution_identity.v2",
+        condition_id,
+        source_payload_sha256,
+        winning_outcome.value,
+        winning_token_id or "",
+        resolution_status.value,
+    )
+    encoded = "|".join(f"{len(part)}:{part}" for part in parts)
+    return f"resolution-{hashlib.sha256(encoded.encode()).hexdigest()[:32]}"
 
 
 def _decimal_list(raw: Any) -> list[Decimal] | None:

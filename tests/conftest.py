@@ -50,7 +50,14 @@ def _no_outbound_network() -> Iterator[None]:
 
     def guard(name: str, original: Any) -> Any:
         def wrapper(self: socket.socket, address: Any, *args: Any, **kwargs: Any) -> Any:
-            if self.family in blocked:
+            # Windows implements ``socket.socketpair`` with a temporary TCP
+            # connection to loopback; asyncio uses that pair for its internal
+            # wake-up pipe. Blocking it prevents an event loop from existing,
+            # not an adapter from reaching the internet. External IP connects
+            # remain impossible.
+            host = address[0] if isinstance(address, tuple) and address else None
+            is_loopback = host in {"127.0.0.1", "::1"}
+            if self.family in blocked and not is_loopback:
                 raise RuntimeError(
                     f"tests must not open a network connection ({name} to {address!r}); "
                     "record a fixture and mount respx instead"

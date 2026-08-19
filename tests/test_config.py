@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta, timezone
@@ -289,7 +290,8 @@ def test_unknown_variables_are_detected_whatever_their_case(
     monkeypatch.setenv(name, "x")
     with pytest.raises(ConfigurationError) as caught:
         load_settings()
-    assert name in caught.value.context["variables"]  # type: ignore[operator]
+    variables = caught.value.context["variables"]  # type: ignore[assignment]
+    assert name.casefold() in {item.casefold() for item in variables}
 
 
 @pytest.mark.parametrize("name", ["argos_log_level", "Argos_Log_Level", "ARGOS_LOG_LEVEL"])
@@ -392,7 +394,11 @@ def test_fingerprint_is_identical_in_a_fresh_process() -> None:
             check=True,
             cwd=REPO_ROOT,
             env={
-                "PATH": "/usr/bin:/bin",
+                **{
+                    key: value
+                    for key, value in os.environ.items()
+                    if not key.upper().startswith("ARGOS_")
+                },
                 "PYTHONHASHSEED": seed,
                 "PYTHONPATH": str(REPO_ROOT / "src"),
             },

@@ -1,6 +1,43 @@
 # ARGOS status
 
-Last updated: 2026-08-18
+Last updated: 2026-08-19
+
+## 2026-08-19 owner correction — M4 reopened
+
+The independent owner review in `docs/OWNER_TAKEOVER_M4_REVIEW.md` supersedes
+the M4/M4.1 completion claim below. The dated history is retained so the
+correction is auditable; it is not current authority.
+
+- Current milestone: **M4 blocked; owner gate not passed.** M5-M8 remain out of
+  scope.
+- The arrival-weighted v1 evaluator is superseded by ADR-0013. The exported v2
+  path emits on target information-state changes and persists a digest-bound
+  bundle containing policy, trajectory, resolution, optional contract,
+  forecasts, scores, decisions and exclusions.
+- Finality, exact resolution cutoff, persisted contract identity and capture/
+  replay integrity are prerequisites for scoring. The committed real sample
+  lacks an exact CLOB cutoff and a persisted compiled contract, so its honest
+  result is **zero admissible scored points and no headline claim**, not 75
+  samples.
+- Counts now distinguish arrivals, information states, forecast points, scored
+  points and resolved targets. ADR-0014 makes two targets a structural floor,
+  not calibration sufficiency; only a predeclared multi-target sample,
+  weighting and sufficiency rule can support that claim.
+- Initial book-snapshot last trade is preserved separately from book state.
+  Midpoint, last trade and the conditional displayed-price rule are distinct
+  baselines. Standalone last-trade events remain unmodeled until a pinned raw
+  fixture establishes the exact schema.
+- Windows is now a first-class CI platform. The final local ADR-0014 gate
+  passes Ruff, format, strict mypy, and **1,595 tests** (one
+  symlink-capability skip). The branch-coverage gate passes at 95% aggregate;
+  `bundle.py` is 94.97% and `run_v2.py` 92.11%, both above their 90% floors.
+  PR #2 must retain green Windows and Ubuntu jobs before merge.
+
+The smallest next data experiment is not merely a larger capture. It must
+persist each compiled contract before its first forecast and record either a
+verifiable source terminal time or the first observed final settlement with
+separate source/retrieval times and non-reconstructed provenance. Its sample,
+target weighting, stopping and sufficiency rules must be predeclared.
 
 ## Current state
 

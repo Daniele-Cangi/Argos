@@ -206,6 +206,41 @@ def test_the_last_trade_baseline_is_not_a_fallback_for_a_missing_midpoint() -> N
     assert last_trade.raw_score == Decimal("0.49")
 
 
+def test_displayed_price_uses_midpoint_at_the_documented_spread_boundary() -> None:
+    quote = _quote(
+        best_bid=Decimal("0.40"),
+        best_ask=Decimal("0.50"),
+        midpoint=Decimal("0.45"),
+        spread=Decimal("0.10"),
+        last_trade_price=Decimal("0.20"),
+    )
+    forecast = build_baseline_forecast(
+        method=BaselineMethod.DISPLAYED_PRICE,
+        quote=quote,
+        as_of_received_time=NOW,
+        as_of_ingest_sequence=1,
+    )
+    assert quote.spread == Decimal("0.1")
+    assert forecast.raw_score == Decimal("0.45")
+
+
+def test_displayed_price_uses_last_trade_only_above_ten_cent_spread() -> None:
+    quote = _quote(
+        best_bid=Decimal("0.30"),
+        best_ask=Decimal("0.50"),
+        midpoint=Decimal("0.40"),
+        spread=Decimal("0.20"),
+        last_trade_price=Decimal("0.37"),
+    )
+    forecast = build_baseline_forecast(
+        method=BaselineMethod.DISPLAYED_PRICE,
+        quote=quote,
+        as_of_received_time=NOW,
+        as_of_ingest_sequence=1,
+    )
+    assert forecast.raw_score == Decimal("0.37")
+
+
 def test_the_persistence_baseline_abstains_rather_than_seeding_itself() -> None:
     """A persistence baseline that started at the current midpoint would be the
     midpoint baseline with a delay, and comparing the two would be comparing a
