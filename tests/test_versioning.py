@@ -141,6 +141,7 @@ def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
         "market_baseline_forecast.v2": "MarketBaselineForecastV2",
         "market_audit.v1": "MarketAuditV1",
         "market_definition.v1": "MarketDefinitionV1",
+        "last_trade_price.v1": "LastTradePriceV1",
         "lifecycle_observation.v1": "LifecycleObservationV1",
         "market_quote.v1": "MarketQuoteV1",
         "observation_envelope.v1": "ObservationEnvelopeV1",

@@ -1,0 +1,10 @@
+{
+  "byte_length": 392,
+  "endpoint": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+  "http_status": null,
+  "raw_sha256": "9a6d43ed15d780707b4e47694337cd7ef4e4c4f4deb9e0d52a562810f9666601",
+  "reconstructed": false,
+  "retrieved_at": "2026-08-19T22:20:44.059730Z",
+  "schema_version": "source_provenance.v1",
+  "source": "clob_market_ws"
+}

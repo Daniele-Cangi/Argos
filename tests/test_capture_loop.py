@@ -351,7 +351,7 @@ async def test_a_scalar_top_level_frame_is_also_a_decode_failure(
 async def test_an_unknown_event_type_is_counted_as_a_rejection(
     store: SQLiteEventStore, clock: ReplayClock
 ) -> None:
-    frame = _frame(_unknown_event(event_type="last_trade_price"))
+    frame = _frame(_unknown_event(event_type="tick_size_change"))
     run_id = "run-unknown-event-type"
     health = await run_capture(
         frame_source=ListFrameSource([frame]),
@@ -364,8 +364,8 @@ async def test_an_unknown_event_type_is_counted_as_a_rejection(
     assert len(rejections) == 1
     rejection = rejections[0].rejection
     assert rejection.reason is RejectionReason.UNKNOWN_EVENT_TYPE
-    assert rejection.source_event_type == "last_trade_price"
-    assert "last_trade_price" in rejection.detail
+    assert rejection.source_event_type == "tick_size_change"
+    assert "tick_size_change" in rejection.detail
     assert health.unknown_event_type == 1
     assert health.rejected == 1
 

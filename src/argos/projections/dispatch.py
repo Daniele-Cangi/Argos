@@ -30,8 +30,7 @@ differ between them:
    labelled experiment, so a late observation is applied in arrival order and
    counted as late. Nothing else happens to it.
 3. **An unhandled payload kind is a counted outcome, not a skip** (consequences).
-   When ``last_trade_price`` gains a model at M4, this counter is what shows it
-   arriving.
+   This counter continues to expose every genuinely unsupported schema.
 """
 
 from __future__ import annotations
@@ -45,6 +44,7 @@ from enum import StrEnum
 from typing import Final
 
 from argos.clock import ensure_utc
+from argos.domain.lasttrade import LastTradePriceV1
 from argos.domain.observation import ObservationEnvelopeV1, read_declared_payload
 from argos.domain.orderbook import OrderBookSnapshotV1
 from argos.domain.pricechange import PriceChangeV1
@@ -103,14 +103,14 @@ class DispatchOutcomeKind(StrEnum):
 
     APPLIED_SNAPSHOT = "applied_snapshot"
     APPLIED_DELTA = "applied_delta"
+    APPLIED_AUXILIARY = "applied_auxiliary"
 
     SKIPPED_DUPLICATE = "skipped_duplicate"
     """The same ``observation_id`` had already been applied in this session."""
 
     UNHANDLED_PAYLOAD = "unhandled_payload"
     """No handler is wired for this payload's schema version. Counted, never
-    silently ignored: this is the counter that will show ``last_trade_price``
-    arriving once M4 gives it a model."""
+    silently ignored, including any future unrecognized payload model."""
 
     UNSCOPED = "unscoped"
     """The envelope names no ``condition_id``/``token_id`` pair, so there is no
@@ -158,6 +158,7 @@ class DispatchCounts:
 
     applied_snapshots: int = 0
     applied_deltas: int = 0
+    applied_auxiliary: int = 0
     skipped_duplicates: int = 0
     unhandled_payloads: int = 0
     unscoped: int = 0
@@ -170,6 +171,7 @@ class DispatchCounts:
         return {
             "applied_snapshots": self.applied_snapshots,
             "applied_deltas": self.applied_deltas,
+            "applied_auxiliary": self.applied_auxiliary,
             "skipped_duplicates": self.skipped_duplicates,
             "unhandled_payloads": self.unhandled_payloads,
             "unscoped": self.unscoped,
@@ -307,6 +309,31 @@ class ObservationDispatcher:
             )
 
         payload = read_declared_payload(envelope)
+        if isinstance(payload, LastTradePriceV1):
+            if envelope.condition_id is None or envelope.token_id is None:
+                self._bump(unscoped=1)
+                return DispatchOutcome(
+                    kind=DispatchOutcomeKind.UNSCOPED,
+                    observation_id=envelope.observation_id,
+                    lateness=lateness,
+                )
+            key = (envelope.condition_id, envelope.token_id)
+            self._last_trades[key] = LastTradeState(
+                condition_id=envelope.condition_id,
+                token_id=envelope.token_id,
+                price=payload.price,
+                source_observation_id=envelope.observation_id,
+                event_time=envelope.event_time,
+                received_time=envelope.received_time,
+            )
+            self._applied.add(envelope.observation_id)
+            self.watermark.observe(envelope.event_time)
+            self._bump(applied_auxiliary=1, **{_LATENESS_COUNTER[lateness]: 1})
+            return DispatchOutcome(
+                kind=DispatchOutcomeKind.APPLIED_AUXILIARY,
+                observation_id=envelope.observation_id,
+                lateness=lateness,
+            )
         handler = _HANDLER_FOR.get(type(payload))
         if handler is None:
             self._bump(unhandled_payloads=1)
@@ -462,8 +489,7 @@ The schema registry (`argos.domain.versioning.resolve_schema`) already turned
 the stored version into a class, so dispatching on the class is one lookup
 rather than a chain of string comparisons that can silently fall through. A
 payload kind absent from this table is an explicit, counted
-``UNHANDLED_PAYLOAD`` — which is the honest state of ``last_trade_price`` and
-``tick_size_change`` today.
+``UNHANDLED_PAYLOAD`` — which remains the honest state of ``tick_size_change``.
 """
 
 
