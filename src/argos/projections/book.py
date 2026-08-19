@@ -518,9 +518,19 @@ class OrderBookProjection:
     # --- applying -------------------------------------------------------------
 
     def apply_snapshot(
-        self, snapshot: BookState, *, event_time: datetime
+        self, snapshot: BookState, *, event_time: datetime | None
     ) -> tuple[BookProjectionAnomaly, ...]:
         """Replace the projected state wholesale with ``snapshot``.
+
+        ``event_time`` is ``None`` when the source sent no usable timestamp —
+        :class:`argos.domain.observation.EventTimeStatus` ``MISSING`` or
+        ``UNPARSEABLE``. The input is still applied: refusing it would lose a
+        real book state, and substituting ``received_time`` for it would be the
+        silent timestamp replacement ``.claude/rules/data-integrity.md``
+        forbids. What it cannot do is take part in ordering — it is neither
+        compared against the last applied event time nor allowed to overwrite
+        it, and the dispatcher counts it as *undatable* rather than as on time
+        or late (ADR-0012 section 4).
 
         Wholesale, never merged: a full book is a complete statement about
         every resting level, so a price the projection holds and the snapshot
@@ -540,7 +550,7 @@ class OrderBookProjection:
         :attr:`anomalies` looking for what is new.
         """
         recorded: list[BookProjectionAnomaly] = []
-        moment = ensure_utc(event_time)
+        moment = None if event_time is None else ensure_utc(event_time)
 
         if not self._matches_scope(
             condition_id=snapshot.condition_id,
@@ -575,7 +585,11 @@ class OrderBookProjection:
         self._bids, self._asks = incoming
         self._seeded = True
         self._source_asserted_hash = snapshot.source_asserted_hash
-        self._last_event_time = moment
+        if moment is not None:
+            # Only ever advanced by a datable input. Assigning `None` would
+            # *erase* the last known event time, silently disabling the
+            # regression check for every input after an undatable one.
+            self._last_event_time = moment
         self._applied_snapshots += 1
         return self._record(recorded)
 
@@ -583,7 +597,7 @@ class OrderBookProjection:
         self,
         delta: PriceChangeV1,
         *,
-        event_time: datetime,
+        event_time: datetime | None,
         source_asserted_hash: str | None = None,
     ) -> tuple[BookProjectionAnomaly, ...]:
         """Apply one ``price_change`` group to the projected state.
@@ -617,7 +631,7 @@ class OrderBookProjection:
         call recorded.
         """
         recorded: list[BookProjectionAnomaly] = []
-        moment = ensure_utc(event_time)
+        moment = None if event_time is None else ensure_utc(event_time)
 
         if not self._matches_scope(
             condition_id=delta.condition_id,
@@ -677,7 +691,11 @@ class OrderBookProjection:
 
         if source_asserted_hash is not None:
             self._source_asserted_hash = source_asserted_hash
-        self._last_event_time = moment
+        if moment is not None:
+            # Only ever advanced by a datable input. Assigning `None` would
+            # *erase* the last known event time, silently disabling the
+            # regression check for every input after an undatable one.
+            self._last_event_time = moment
         self._applied_deltas += 1
         return self._record(recorded)
 
@@ -694,7 +712,7 @@ class OrderBookProjection:
         *,
         condition_id: str,
         asset_id: str,
-        event_time: datetime,
+        event_time: datetime | None,
         what: str,
         recorded: list[BookProjectionAnomaly],
     ) -> bool:
@@ -734,7 +752,7 @@ class OrderBookProjection:
         return True
 
     def _note_event_time_regression(
-        self, event_time: datetime, *, what: str, recorded: list[BookProjectionAnomaly]
+        self, event_time: datetime | None, *, what: str, recorded: list[BookProjectionAnomaly]
     ) -> None:
         """Count a backwards step in event time. Counting only — see :meth:`apply_delta`.
 
@@ -744,7 +762,14 @@ class OrderBookProjection:
         traffic on this source and flagging them would bury the real signal.
         """
         previous = self._last_event_time
-        if previous is not None and event_time < previous:
+        if event_time is None or previous is None:
+            # Nothing to compare against, in one direction or the other. An
+            # undatable input is counted as such by the dispatcher's watermark
+            # (ADR-0012 section 4); inventing a comparison here would be the
+            # silent timestamp substitution `.claude/rules/data-integrity.md`
+            # forbids, dressed as an ordering check.
+            return
+        if event_time < previous:
             recorded.append(
                 BookProjectionAnomaly(
                     kind=BookProjectionAnomalyKind.EVENT_TIME_REGRESSION,

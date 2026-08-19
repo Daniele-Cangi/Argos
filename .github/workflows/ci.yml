@@ -25,3 +25,10 @@ jobs:
         run: uv run mypy src
       - name: Tests
         run: uv run pytest -q
+      # Separate from the step above, and only here: docs/13_TEST_STRATEGY.md
+      # declares per-area branch-coverage thresholds that were unverifiable
+      # until pytest-cov landed. Running the suite under coverage costs roughly
+      # 8x its normal wall time, which is why the local gate keeps it behind
+      # `--coverage` and CI carries it instead.
+      - name: Branch coverage thresholds
+        run: uv run python scripts/claude/quality_gate.py --coverage

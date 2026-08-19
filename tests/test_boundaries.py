@@ -314,6 +314,27 @@ def test_settings_declare_no_credential_shaped_field() -> None:
     assert not offending, f"Settings exposes credential-shaped fields: {sorted(offending)}"
 
 
+def test_every_setting_declares_whether_it_belongs_in_the_fingerprint() -> None:
+    """The M3 blocker R1 guard, as a boundary rather than a unit test.
+
+    `config_fingerprint` covered `data_dir` — an output *location* that
+    `docs/02_ARCHITECTURE.md` explicitly allows to differ between live and
+    replay — so an otherwise identical replay recorded a different
+    configuration. The fix is only durable if a new setting cannot be added
+    without classifying it, which is what this asserts. It lives here, beside
+    the other rules that would otherwise exist only in prose, because the
+    failure mode is a field added months from now by someone who never read
+    the ADR.
+    """
+    from argos.config import FingerprintScope, Settings, fingerprint_scope
+
+    scopes = {name: fingerprint_scope(name) for name in Settings.model_fields}
+    assert set(scopes.values()) == set(FingerprintScope), (
+        "both scopes should still be in use; if one is empty the distinction has "
+        f"quietly collapsed: {scopes}"
+    )
+
+
 # --- ADR-0011: the event store is append-only, and SQL stays inside it -----------
 
 # Security review measured the first version of this set (UPDATE|DELETE|ALTER)

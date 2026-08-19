@@ -3,18 +3,22 @@ import sys
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, ClassVar
+from unittest import mock
 
 import orjson
 import pytest
 from pydantic import ValidationError
+from pydantic_settings import BaseSettings
 
 from argos.clock import ReplayClock
 from argos.config import (
+    FingerprintScope,
     RunManifest,
     RunMode,
     Settings,
     WorkingTreeStatus,
     build_run_manifest,
+    fingerprint_scope,
     load_settings,
 )
 from argos.config.settings import unknown_environment_keys
@@ -108,13 +112,78 @@ def test_unknown_setting_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_fingerprint_is_stable_and_sensitive() -> None:
     baseline = Settings().fingerprint()
     assert baseline == Settings().fingerprint()
-    assert baseline != Settings(log_level="DEBUG").fingerprint()
+    assert baseline != Settings(gamma_base_url="https://gamma-api.polymarket.com/v2").fingerprint()
 
 
 def test_fingerprint_is_sensitive_to_the_jitter_seed() -> None:
     """ADR-0009: the seed is configuration, not a runtime accident, so a capture
     that changed it must be traceable through the manifest's config fingerprint."""
     assert Settings().fingerprint() != Settings(source_jitter_seed=1).fingerprint()
+
+
+# --- fingerprint scope (M3 blocker R1) --------------------------------------------
+
+
+def test_the_fingerprint_does_not_change_when_only_the_output_location_does() -> None:
+    """The M3 blocker this mechanism exists to close.
+
+    `docs/02_ARCHITECTURE.md` lists output storage location among the components
+    that may differ between live and replay, and `docs/04_DATA_CONTRACTS.md`
+    requires that repeated replay of identical input, code and config produce an
+    identical state hash. Before this, two replays of one capture into two
+    directories recorded two different `config_fingerprint`s -- the same
+    experiment, described as two.
+    """
+    a = Settings(data_dir=Path("/tmp/replay-a"))
+    b = Settings(data_dir=Path("/tmp/replay-b"))
+    assert a.fingerprint() == b.fingerprint()
+    # ...and the difference is still recorded, just not hashed.
+    assert a.snapshot()["data_dir"] != b.snapshot()["data_dir"]
+
+
+def test_the_fingerprint_does_not_change_when_only_log_verbosity_does() -> None:
+    """`log_level` reaches structlog's level filter and no record. A run an
+    operator re-ran with `DEBUG` to diagnose something is the same experiment."""
+    assert Settings().fingerprint() == Settings(log_level="DEBUG").fingerprint()
+
+
+def test_environment_settings_are_absent_from_the_hashed_view_not_blanked() -> None:
+    """Absent, so that reclassifying a field changes the fingerprint.
+
+    A blanked-but-present key would let `data_dir` move from ENVIRONMENT to
+    EXPERIMENT without the hash noticing, and a reclassification is a change to
+    what "the same configuration" means.
+    """
+    hashed = Settings().experiment_snapshot()
+    assert "data_dir" not in hashed
+    assert "log_level" not in hashed
+    assert set(hashed) < set(Settings().snapshot())
+
+
+@pytest.mark.parametrize("field_name", sorted(Settings.model_fields))
+def test_every_setting_declares_a_fingerprint_scope(field_name: str) -> None:
+    """No default exists, deliberately: "hash it" would silently re-create the
+    `data_dir` defect for the next field somebody adds, and "do not hash it"
+    would silently drop a real experiment variable out of the record that
+    exists to identify the experiment."""
+    assert fingerprint_scope(field_name) in set(FingerprintScope)
+
+
+def test_a_field_with_no_declared_scope_fails_closed() -> None:
+    """The guard above is only worth having if the lookup refuses rather than
+    guesses, so the refusal is exercised directly rather than assumed."""
+
+    class _Unclassified(BaseSettings):
+        forgotten: int = 1
+
+    patched = {"forgotten": _Unclassified.model_fields["forgotten"]}
+    with mock.patch.dict(Settings.model_fields, patched), pytest.raises(ConfigurationError):
+        fingerprint_scope("forgotten")
+
+
+def test_an_unknown_field_name_is_refused_rather_than_silently_scoped() -> None:
+    with pytest.raises(ConfigurationError):
+        fingerprint_scope("no_such_setting")
 
 
 def test_manifest_uses_the_injected_clock_and_is_reproducible() -> None:
@@ -135,7 +204,7 @@ def test_manifest_round_trips_with_its_schema_version() -> None:
         settings=Settings(), clock=ReplayClock(START), run_id="run-1", mode=RunMode.REPLAY
     )
     record = manifest.to_record()
-    assert record["schema_version"] == "run_manifest.v3"
+    assert record["schema_version"] == "run_manifest.v5"
     assert RunManifest.from_record(record) == manifest
 
 

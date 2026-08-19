@@ -1,30 +1,28 @@
 # ARGOS status
 
-Last updated: 2026-08-12
+Last updated: 2026-08-18
 
 ## Current state
 
-- Current milestone: **M2 — CLOB capture — in progress**. M0 and M1 closed. The
-  pacing-versus-timekeeping ADR that gated M2 (ADR-0009) is resolved and merged.
-  Seven M2 vertical slices have landed: the canonical `ObservationEnvelopeV1` /
-  `RejectedObservationV1` contracts and their identity derivation (ADR-0010);
-  the first typed payload, `OrderBookSnapshotV1`; a security review of both
-  contracts (verdict **PASS_WITH_FINDINGS**, no blocker, findings closed in
-  `1fb057c`); a public CLOB WebSocket market-channel research note built from
-  live capture, not documentation alone; the idempotent, append-only SQLite
-  event store and delivery record specified by ADR-0011; the public CLOB
-  REST order-book adapter and its normalization step
-  (`src/argos/sources/clob.py`, `src/argos/ingestion/clob_book.py`) — the
-  first slice that is a genuinely complete vertical: real recorded bytes go
-  in one end and a deduplicated, identity-stable observation lands in
-  `SQLiteEventStore` at the other; and now the `price_change.v1` typed delta
-  payload (`src/argos/domain/pricechange.py`), the second and last payload
-  model M2 needs, built against the recorded live WebSocket capture.
-  Since then the WebSocket transport, the capture loop, and the order-book
-  projection have all landed. **What does not exist: a capture CLI, and any
-  run against live traffic.** Every M2 criterion below is evidenced against
-  *recorded* frames replayed through the real code path; no socket has ever
-  been opened by a capture.
+- Current milestone: **M4 — complete, plus an M4.1 owner-gate hardening pass.
+  Stopped at the owner gate.** The hardening pass fixed four confirmed defects
+  and characterized five findings that need an owner decision without choosing
+  one; its full record is `docs/HANDOFF_M4.md` section 12, which is not
+  repeated here. Suite now **1,582 tests** on **58 source files**, and the
+  gates are reproduced on GitHub Actions (run `32195822692`) as well as
+  locally. The canonical repository is `Daniele-Cangi/Argos` and the open
+  review surface is pull request #1, which must not be merged. M0 and M1 are
+  closed. **M2 is functionally complete and is closed on evidence rather than
+  on an independent verdict** — see "M2 closure" below, which does not claim
+  more than that, and "M3 readiness audit" for what was re-derived from `main`
+  rather than read off this file.
+- Every M2 deliverable in `docs/07_MILESTONES.md` exists: the public CLOB REST
+  order-book adapter, the public market WebSocket transport, both typed payload
+  models plus the WebSocket `book` model, bounded seeded reconnect backoff, the
+  idempotent append-only SQLite event store (ADR-0011), the capture loop with
+  health counters, a bounded blocking frame buffer, the `argos capture market`
+  CLI, and a raw frame archive. Three live captures ran against real Polymarket
+  traffic on 2026-08-15 (45 s, 60 s, 40 s).
 - Autonomous target: **complete M0-M4**
 - Owner gate: **required after M4**
 - Execution capability: **prohibited and absent**
@@ -32,62 +30,396 @@ Last updated: 2026-08-12
 
 ## Current objective
 
-Build the WebSocket market-channel **adapter** — the transport half of
-ingestion — using the same `Pacer`/`Clock` separation (ADR-0009) and
-`ObservationEnvelopeV1`/`RejectedObservationV1` contracts (ADR-0010) the REST
-adapter slice proved end-to-end against `SQLiteEventStore`. Both payload
-models M2 needs now exist, so this next slice is transport and ingestion only,
-not schema design.
+**None. Implementation stops here** — `docs/OWNER_REVIEW_GATE.md` is the gate
+after M4 and `CLAUDE.md` forbids continuing into M5 merely because M4 passes.
+`docs/HANDOFF_M4.md` is the owner package.
 
-`docs/BACKLOG.md` carries four constraints this slice must close, each with the
-measurement that produced it rather than a reminder: a byte cap checked
-*before* parsing (measured: 900,000 `price_changes` entries cost 146.87 s CPU
-and 731.7 MiB, and no `Pacer` can bound synchronous CPU work); validating
-`entry_hash` inside the ingestion `try` rather than leaving the envelope to
-refuse it with no ledger entry; `ingest_sequence` allocation and cross-token
-fan-out, still deliberately undecided; and the deliberate refusal of a
-`(frame, token)` group carrying more than one distinct hash, a shape never
-observed live.
+The one thing that would most change what this repository can claim is not code:
+a real sample. Ten to thirty liquid markets resolving within a week, captured
+continuously and then evaluated, would turn a working pipeline into a result. It
+needs no new code and is filed in `docs/BACKLOG.md` as the first M4 carry-over.
 
-## M2 closure: reviews did not deliver, and what was verified instead
+## M4 — baseline probability and evaluation (2026-08-18)
 
-**Both closure reviews terminated without a verdict.** The architecture and
-security review agents each ran to completion and stopped without delivering a
-report — the same failure mode that has now consumed seven of nine agent runs in
-this milestone. **M2 therefore cannot be declared closed on independent review**,
-and this file does not claim it is. What follows is what I verified directly,
-which is evidence but explicitly *not* a substitute for an independent reviewer.
+Quality gate at M4 close, and left as the dated record it is: PASS — ruff,
+ruff format, mypy strict on **57 source files**, **1,536 tests** (up from 1,415
+at M3). Both figures describe 2026-08-18, before the M4.1 pass added
+`argos/evaluation/numeric.py` and its tests; the current figures are in the
+"Current state" bullet above.
 
-**The raw-payload finding above came out of doing the architecture check by
-hand** after its agent went silent — a capture that discards the bytes it hashes
-is exactly the kind of thing a review exists to catch, and it was caught only
-because the silence was treated as "nothing verified" rather than "nothing
-found".
+**M4 closes with a real evaluation, not a constructed one**, and that was not
+guaranteed when the milestone started. The market ARGOS captured 40 seconds of
+on 2026-08-10 — *National Bank Open: Diana Shnaider vs Iga Swiatek* — has since
+resolved. So the whole chain runs on data this repository actually holds: the
+recorded capture, replayed through M3 into an order book, read as a midpoint
+baseline, scored against the settlement the CLOB published after the match.
 
-**Targeted escape hunt, run directly.** M2 found the same class five times: an
-exception escaping the ARGOS error taxonomy, so a hostile input produced no
-rejection-ledger entry. I probed for a sixth: **27 hostile values** — lone UTF-16
-surrogates, NUL, OSC 52, newline, tab, CR, RLO, BOM, Unicode tag characters,
-interlinear annotation, ALM, a 300-character string, empty string, `-0`,
-`1E+1000000`, `NaN`, `Infinity`, a 600-character decimal, and the non-string
-types `None`/`int`/`list`/`dict`/`bool`/`float`/`nan` — across **18 field
-positions** on all three normalizers (`price_change`: hash, price, size, side,
-best_bid, market, timestamp, asset_id, capture_run_id; `ws_book`: hash, bids,
-level price, tick_size, market; `rest_book`: hash, tick_size, neg_risk,
-last_trade_price). **486 probes, zero escapes** — every one returned a
-`ValueError`/`ArgosError`, i.e. a counted rejection. The sixth instance is not
-where the previous five were.
+### The research that changed the design, twice
 
-**A discipline note worth keeping.** The first run of that harness reported that
-*every* input escaped as `TypeError`, on every field, identically — including
-benign ones. A uniform result across inputs that should behave differently is
-the signature of a broken instrument, not a finding; the bug was in the harness
-(`**kwargs` swallowing the builder). Reporting it would have been a fabricated
-security finding, which is worse than none.
+Two findings came out of measuring the live public API rather than reading its
+documentation, and each one broke the obvious implementation.
 
-**Still open before M2 can close**: an architecture verdict and a security
-verdict. The CI gap is closed — see "Current state" above: pull request #2 ran
-the gate on Python 3.12 from a clean checkout and passed.
+**`closed == true` does not mean resolved.** Two samples of the same endpoint,
+differing only in ordering, disagree almost completely: oldest-first (n=900),
+**0.4%** of closed markets carry an exact 1/0 outcome while **93.2%** carry a
+fractional price and 5.1% carry `["0","0"]`; most-recently-ended (n=500), 100%
+carry an exact 1/0. Market 40 is *"Will Trump win the 2020 U.S. presidential
+election"*, closed, at `0.0000000436`/`0.9999999` — a question whose outcome is
+not in doubt and whose payload does not encode it. A normalizer validated
+against either sample alone would look correct and be wrong about the other, and
+a naive evaluator over the id-ordered one would have scored 93% of its markets
+against a price. Only an exact 1/0 pair is accepted; everything else is a
+counted refusal.
+
+**Gamma cannot resolve ARGOS's own capture.** A `condition_ids` query for the
+captured market returns *nothing at all*, while the CLOB returns a complete
+resolved record carrying an explicit `"winner": true` per token. So the resolution
+path that would have been built first — Gamma, inferring from `outcomePrices` —
+would have had **zero coverage of the one market this repository has captured**.
+Both paths ship; the CLOB one is primary because it states the settlement rather
+than leaving it to be inferred, and it cross-checks price against the winner flag
+rather than preferring one silently.
+
+A third finding removed work rather than adding it: Polymarket's displayed price
+**is** the midpoint, on 91 of 91 two-sided markets measured. So
+`docs/05_RESEARCH_PROTOCOL.md`'s "displayed-price proxy" and "midpoint" are one
+quantity here, and implementing both would have produced two identical numbers
+reported as independent baselines that agree.
+
+Four payloads are committed with provenance sidecars, one per observed shape;
+the full note, including its UNVERIFIED list and the HTTP 422 paging ceiling, is
+`docs/research/m4-gamma-resolution.md`.
+
+### The exit criteria
+
+| Criterion | How it is closed |
+|---|---|
+| Midpoint is never labeled executable price | Structurally: `best_bid`/`best_ask` carry sizes and are the only executable fields, and `midpoint` is `None` whenever both sides do not exist rather than falling back to the side that does. 9 of the 100 highest-volume open markets have no two-sided book, so that fallback would have been nine invented prices per hundred markets. A quote whose midpoint disagrees with its own sides is refused |
+| Unresolved markets are not scored as negatives | By the type. `score_forecast` takes a `WinningOutcome`, which has exactly two members; an undetermined market produces a `ResolutionRefusal` and never a resolution, so there is no call site at which "unresolved" could be passed as 0 |
+| Probability values validated, log-loss clipping declared | `ForecastEvaluationV1` refuses metrics that disagree with its own inputs, and carries `log_loss_epsilon` plus `log_loss_was_clipped` per forecast. At ε=1e-6 a confidently wrong market scores 13.8 and at 1e-3 it scores 6.9 — a report that omits ε has not reported log loss |
+| Baseline evaluation reproducible from stored records | Two CLI runs agree on the state hash, every count and every metric. Nothing is fetched during evaluation: both inputs are records |
+| Reports include missing data and sample counts | Missingness is split into abstentions and unresolved, because "the baseline declined" and "the market has not resolved" are different and only the first is a property of ARGOS. Every calibration bin reports its count, empty ones included, with `observed_rate` `None` rather than 0 |
+| No advanced predictive engine to flatter metrics | Only market baselines exist. `argos.forecasting` does not |
+
+### The evaluation, and why its numbers mean less than they look
+
+38 midpoint and 37 persistence forecasts, scored against outcome 0: Brier
+**0.081225**, log loss **0.3355** (ε = 1e-6, **0 clipped**), ECE **0.285**.
+
+Those numbers are one constant repeated. **The top of book never moved during
+the capture** — best bid 0.28, best ask 0.29, midpoint 0.285 across all 38
+states, with all 34 deltas touching deeper levels. So the effective sample size
+is 1, and midpoint and persistence agreeing *perfectly* is an artifact rather
+than corroboration. The report detects a method whose every score is identical
+and says exactly that, in its own required `limitations` field, alongside: the
+scores are uncalibrated market baselines and not ARGOS probabilities; the
+forecasts are successive states of one order book and heavily autocorrelated;
+and one market is not a sample.
+
+### Two defects the output showed and the tests did not
+
+**Persistence scored 0 of 38.** The carried-forward value was only updated inside
+the non-abstaining branch, so a baseline that can score only after something has
+been carried forward could never start. Every test passed throughout — a
+baseline that silently never fires produces no failure, only an empty column.
+Found by reading the printed report.
+
+**Then the fix exposed the constant-score problem above**, because midpoint and
+persistence came back byte-identical. That is the second time in this session
+that the interesting finding was in the *output* rather than in a red test, and
+it is the reason the constant-score limitation is now generated automatically
+rather than left for a reader to notice.
+
+### What M4 deliberately does not do
+
+- **No category cohort.** `docs/07_MILESTONES.md` asks for it "when data
+  permits"; it needs Gamma metadata, and Gamma does not cover the captured
+  market. Spread bucket and time-to-resolution ship.
+- **No base-rate baseline.** It needs resolved data grouped by category, and the
+  qualifier is the operative part.
+- **No `p_yes`, anywhere.** Every score this milestone produces is
+  `raw_score` with `calibration_status=uncalibrated`, and the validator refuses
+  a `p_yes` without a calibration version.
+
+## M4 closure reviews (2026-08-18)
+
+Same label as the M2 closure reviews, for the same reason: **performed by the
+author of the code, not independently.** `docs/OWNER_REVIEW_GATE.md`'s review
+box is deliberately left unticked because of it.
+
+**Architecture — APPROVE.** The four new packages sit where
+`docs/02_ARCHITECTURE.md` puts them, and the dependency direction holds:
+`argos.evaluation` imports `argos.replay` and `argos.resolution` and nothing
+imports it back. The one judgement worth recording is that `evaluate_capture`
+drives a replay rather than reading the store directly, so the whole chain a
+score depends on is the chain M3 made deterministic — a scorer with its own
+reader would have been a second ordering nobody tested.
+
+**Security — PASS, no new findings.** No new network surface: the evaluation
+path fetches nothing, and that is a property of the code rather than of how it
+is invoked. No new execution surface (the boundary scans pass unchanged). The
+one dependency added is `pytest-cov`, dev-only. The resolution normalizers parse
+untrusted source text and route it through the existing
+`neutralize_and_bound`; `ResolutionV1.resolution_source` is the only free-text
+field either produces, and it is bounded at 200 characters.
+
+**Testing — 1,536 tests at M4 close, and three findings worth the space.**
+
+The two defects above were found by reading output, not by a failing assertion,
+which is the third time this repository has recorded that pattern.
+
+The third came from the coverage gate itself, and it earned its keep twice in
+two days. It caught `argos/evaluation/run.py` at **77.78%** against its 90%
+floor and `clob_resolution.py` at 70% — because the real end-to-end evaluation
+exercises exactly one happy path (one market, one token, a two-sided book at
+every state), so the abstention path, the time-to-resolution buckets and *every
+refusal the CLOB normalizer can produce* had never run. A module whose only test
+is its happy path is a module whose refusals have never run, and refusals are
+most of what those two modules do. 23 tests close it; the gate now passes.
+
+What no coverage number can check, and what the constant-score finding shows, is
+whether a test exercises a property or merely reaches a line.
+
+**Documentation — complete.** `docs/RUNBOOK.md` gains the evaluation command
+and states the `closed != resolved` finding where an operator will meet it;
+`docs/04_DATA_CONTRACTS.md` was reconciled with the code at M2 closure and the
+M3 amendments are recorded there; `docs/HANDOFF_M4.md` carries all eleven
+sections `docs/10_HANDOFF.md` specifies.
+
+## M3 — deterministic replay (2026-08-18)
+
+Specified by **ADR-0012**, which decides the six things ADR-0003 deliberately
+left open: what a replay is scoped to, what happens to a duplicate arrival, what
+a watermark does to a late one, what the clock is advanced to, what the output
+hash covers, and whether pacing can reach it. Each of those has a defensible
+answer that produces a *different* hash from the other defensible answers, so
+leaving them implicit would have meant "identical input produces identical
+output hash" was satisfied by whatever the first implementation happened to do.
+
+Quality gate: PASS — ruff, ruff format, mypy strict on 49 source files,
+**1,415 tests** (up from 1,361 at M2 closure).
+
+### The exit criteria, and what closes each
+
+| Criterion | Evidence |
+|---|---|
+| Identical input + code + config produces an identical output hash across at least three runs | Three replays of the recorded capture produce one hash **and one set of counts** — the contract requires both, so both are compared (`tests/test_replay.py::test_three_replays_of_one_capture_agree_exactly`) |
+| Replay never reads the wall clock inside domain logic | The whole call is driven with a `ReplayClock` for the manifest's own timestamps too, so anything reaching for real time would leave a moment neither clock was ever set to. Plus the existing AST boundary scans |
+| Late and invalid event behaviour is deterministic and counted | A late arrival is marked and **still applied in arrival order**, and the state hash is identical whether the watermark called it late or not — marking changes counts, never state. Rejections are replayed as arrivals, tallied by reason, and reach no projection |
+| Changing a source event produces a predictable hash change | One price level's `size` is changed in the *source bytes* of the last recorded frame, so the change travels normalization, identity, storage and replay. The hash changes; every arrival and dispatch count stays identical, which is what makes the difference attributable to the book rather than to a different amount of input |
+| A live adapter can be replaced by a replay source without changing domain handlers | The capture loop and the replay scheduler drive the *same* `ObservationDispatcher`, and the two paths are compared directly: same frames, one from a fake wire and one from storage, identical state hash and identical dispatch counts |
+| Replay performance is measured but correctness takes precedence | Measured and printed, deliberately not asserted against a threshold — a wall-clock assertion in a unit suite is the flaky timing test `docs/13_TEST_STRATEGY.md` forbids |
+
+### The golden replay, and why it is anchored rather than merely pinned
+
+`GOLDEN_STATE_HASH = 2a7fcb6a…` over 38 arrivals (4 `book` snapshots, 34
+`price_change` deltas; 38 on time, 0 late, 0 undatable, 0 duplicates, 0
+rejections). A stable hash of the *wrong* state would still be stable, so the
+value is anchored to something the source itself asserted: the capture carries
+four full `book` snapshots with deltas between them, giving **three independent
+checkpoints** where the state built from deltas alone must already equal the
+book the source is about to restate. All three hold, checked *before* each
+snapshot is applied — comparing afterwards would be vacuous, because a snapshot
+replaces state wholesale.
+
+Six deltas follow the last snapshot, so the final state is deliberately **not**
+equal to it. Asserting that it was would have been the more obvious test and the
+wrong one; the first draft of this test made exactly that mistake and failed.
+
+### Three findings from building it
+
+**The replay clock cannot be seeded from the capture-run row.** `run.started_at`
+and an arrival's `received_time` come from two different clocks — the capture
+loop's and the transport's — and nothing in the store obliges them to agree.
+Seeding from the run row and then advancing to an earlier arrival raises
+`ClockRegressionError` and kills the replay; seeding from it and *skipping* the
+advance would leave the virtual clock ahead of the capture, which is the leakage
+this milestone exists to prevent. Reproduced against the recorded capture, whose
+frames predate the injected run start by four days. The clock is now seeded from
+the first arrival, which makes it a function of the data being replayed.
+
+**A test fixture was manufacturing rejections the shipped path cannot
+produce.** Feeding the recorded fixture's frames straight into `run_capture`
+yields four `malformed_payload` rejections — they are the server's plain-text
+`PONG` replies, which `ClobMarketWsClient._classify` consumes and never yields
+onward. The M3 readiness audit had already recorded this as a probe artifact; it
+would have become a *committed* artifact if the golden hash had been computed
+over a capture that cannot happen. The fixture loader filters them and says why.
+
+**A duplicate delivery must not be re-applied, and "harmless" is nearly true.**
+Re-applying a `price_change` group is not idempotent: a second `REMOVE` names a
+level the projection no longer holds, and `OrderBookProjection` correctly
+records `REMOVE_OF_ABSENT_LEVEL` — an anomaly whose whole job is to signal a
+missed delta. Replaying duplicates would manufacture that signal out of the
+deduplication mechanism itself, and make the anomaly count a function of how
+often the *source* resent. The dispatcher owns the refusal rather than each
+caller, so live and replay cannot drift apart on it.
+
+### One projection change, and the rule it had to respect
+
+`apply_snapshot`/`apply_delta` now accept `event_time=None`. An observation
+whose source timestamp did not parse is accepted by the envelope contract and
+must still reach the book: refusing it would lose a real book state, and
+substituting `received_time` would be the silent timestamp replacement
+`.claude/rules/data-integrity.md` forbids. It is applied, excluded from ordering
+comparisons, forbidden from overwriting the last applied event time — assigning
+`None` through would have silently disabled lateness detection for everything
+after it — and counted as **undatable**, which is a third value precisely
+because "the source sent no timestamp" and "the source sent one and it was not
+late" are different facts about the source.
+
+### What M3 deliberately does not do
+
+- **No multi-run replay.** `ingest_sequence` means nothing between capture runs,
+  and a cross-run order would have to be invented. Filed rather than guessed.
+- **No `supersedes_observation_id`.** Still not needed: a replay reads one run's
+  records as captured, and nothing here can yet re-normalize a capture under a
+  corrected parser, which is the only operation that mints an unlinked second
+  identity.
+- **No buffering watermark.** ADR-0003 forbids reordering late data into the
+  past outside a separately labelled experiment, so the watermark marks and
+  nothing else happens to a late event.
+
+## M2 closure reviews (2026-08-17)
+
+**Read the label before the verdicts.** These four reviews were performed by the
+same author who is building M3, not by an independent reviewer. M0 and M1 closed
+on independent verdicts; M2 does not, and this section does not pretend
+otherwise. The alternative was a fourth attempt at a delegation that failed
+seven times in this milestone, where silence would again have been
+indistinguishable from a clean result. Every finding below names what was
+*measured* rather than what was read, because that is the only part of a
+non-independent review worth anything.
+
+### Architecture — APPROVE_WITH_FOLLOWUPS
+
+**A1, fixed in this slice — a capture could not be reproduced from its own
+manifest.** Core invariant 13 says every run records its configuration.
+`RunManifest` recorded `Settings`, and a capture's real inputs are not settings:
+the subscribed token ids, the stopping bounds and the raw-archive flag all
+arrive as command-line arguments and were in **no durable artifact anywhere**.
+`subscribed_token_ids` is the one that matters. `argos.ingestion.capture` fans
+out over the *configured* token set, sorted — its own docstring calls that "the
+load-bearing one for M3", because it is what keeps `ingest_sequence` allocation
+a function of configuration rather than of connection topology — and that set
+existed only in the operator's shell history. Closed by `run_parameters` on
+`run_manifest.v5`, recorded deduplicated and sorted, in the form the loop
+actually used.
+
+**A2, fixed in this slice — a specified contract that was never implemented.**
+`docs/04_DATA_CONTRACTS.md` specifies `CaptureManifestV1` with eighteen fields.
+No such record exists; the capture-loop slice decided the manifest is
+`RunManifest` plus the store's `capture_run` rows, which is a good decision that
+was never written back into the specification. This is precisely the shape of
+the M1 architecture review's blocking finding and of ADR-0010's B3: a specified
+contract silently dropped. The document now says which record carries each
+field, and names the four that are genuinely unimplemented — `market_filter`
+and `selected_markets` (capture takes explicit token ids; there is no filter to
+record), `host_metadata`/`clock_metadata` (nothing reads them), and
+`reconnect_count`/`gap_warnings` (reconnects are counted in memory only, and
+this channel has no sequence number, so an always-empty `gap_warnings` would
+read as "no gaps" when the truth is "cannot tell").
+
+**A3, open, and it is M3's first deliverable — there is no dispatcher.** Core
+invariant 5 says live and replay use the same domain handlers. That is currently
+true only because there is *one* path, not because two share one: the capture
+loop writes to the store and stops, and every projection this repository has
+driven was driven by a test. Nothing is wrong with the M2 code; what is wrong is
+reading the exit-criteria table as evidence of a shared handler, which it is
+not. Filed under "Now — M3".
+
+**A4 — verified, no action.** Package boundaries and dependency direction hold
+(the AST boundary tests pass, including the ones added this session). All four
+adapters plus the capture loop expose the health counters
+`docs/02_ARCHITECTURE.md`'s failure model requires (`SourceHealth`, `ClobHealth`,
+`ClobWsHealth`, `CaptureHealth`). The only wall-clock read in `src/` is
+`LiveClock.now`. The store's append-only guarantee survives the new schema
+stamping: `PRAGMA` writes file-header fields, not rows, and the forbidden-SQL
+boundary test still passes.
+
+### Security — PASS_WITH_FINDINGS, no blocker
+
+**S1, accepted with the reasoning recorded.** Three statements in
+`event_store.py` interpolate into SQL with an f-string. SQLite cannot
+parameterize a pragma's name or its value, so there is no parameterized
+alternative; all three interpolate module constants — `_EXPECTED_TABLES` keys
+and two module integers — and no caller input reaches any of them. Recorded
+rather than left for a future reviewer to re-derive, because "f-string in SQL"
+is a pattern that should always be justified in place.
+
+**S2, verified negative, now pinned by a test.** R4 made
+`archive_relative_location` compose a value that lives in a durable record and
+that a consumer will join back onto an archive root — one layer further out than
+`write_raw_payload`'s containment check, which only guards the write. A
+separator or `..` in it would escape at read time. It cannot occur:
+`SourceProvenanceV1.source` is `^[a-z0-9][a-z0-9_-]{0,31}$` and `raw_sha256` is
+validated 64-character hex, so the composed string admits no slash, backslash or
+dot. Asserted at the *contract*, not at the composition, so relaxing the pattern
+breaks the test rather than silently reopening the hole.
+
+**S3, accepted.** The adopt-an-unstamped-store path (R3) lets ARGOS write into a
+pre-existing correctly-shaped database. Reaching it requires local write access
+to the database path, which is the same precondition as the already-filed **L2**
+symlink item; it is not an escalation, and refusing instead would strand every
+capture taken before today for no gain.
+
+**S4, accepted and documented at the point of use.** The schema registry (R2)
+makes "dispatch on whatever the record claims to be" the easy path, which is the
+silent coercion `.claude/rules/data-integrity.md` forbids.
+`read_declared_payload`'s docstring states that resolving is not accepting and
+that a consumer must still refuse what it does not handle, with a count.
+
+**S5 — no exposure from narrowing the fingerprint.** R1 removed `data_dir` and
+`log_level` from `config_fingerprint`. Both are still recorded verbatim in
+`settings_snapshot`, so nothing became unauditable; only the hash was scoped.
+
+No new network surface, no execution surface (the boundary scans pass), and the
+one dependency added — `pytest-cov` — is dev-only.
+
+### Testing — branch coverage measured for the first time
+
+`pytest-cov` was not installed, so `docs/13_TEST_STRATEGY.md`'s coverage
+thresholds had been **unverifiable since M0** and were filed as such. They are
+now measured, and they pass:
+
+| Area | Threshold | Measured |
+|---|---|---|
+| `argos.domain` (contracts) | 90% | 95-99% across eight modules |
+| `argos.sources` (adapters) | 80% | 94-96% across three modules |
+| `argos.replay` (ordering) | 90% | no module yet — M3 |
+| `argos.evaluation` (scoring) | 90% | no module yet — M4 |
+
+Whole-project branch coverage is 96% (3,346 statements, 762 branches, 101
+statements and 57 branch arcs unexercised). Enforcement is per area rather than
+aggregate, because that document's own first sentence about thresholds is "do
+not optimize for a vanity global coverage number", and an empty area is reported
+as empty rather than passing silently. It runs in CI and behind
+`--coverage` locally, not in the default gate: the suite takes ~80 s and the
+same suite under coverage takes ~610 s, and a gate that slow stops being run
+between slices.
+
+**A fourth instance of the "claim outruns its assertion" pattern this file
+already names three times.** Enabling the schema registry showed that a stub in
+`tests/test_observation_envelope.py` had been declaring
+`"order_book_snapshot.v1"` — the real payload model's version — inside the test
+module for `read_payload`, which is the function whose version check that
+collision defeats. The M2 security review had *described* this exact attack; the
+repository was carrying an instance of it in the test file for the affected
+function, and had been for four slices.
+
+### Documentation — two stale claims, both fixed
+
+`docs/RUNBOOK.md` documented no `capture` command at all, several slices after
+`argos capture market` shipped and three live captures ran — the milestone's
+last deliverable, the only one that opens a socket, and the one an operator is
+most likely to reach for. It also described `argos manifest` as emitting
+`run_manifest.v1`, three versions out of date. Both corrected, and the capture
+section states the things an operator can get wrong: the mandatory bound, what
+Ctrl-C does versus a killed process, and what `--no-raw-archive` costs.
+
+`docs/04_DATA_CONTRACTS.md` is reconciled with the code (A2 above).
+`docs/STATUS.md`'s own two stale present-tense claims were corrected by the
+readiness audit, above.
 
 ## M2 closure finding: captures were discarding the raw bytes
 
@@ -1273,21 +1605,29 @@ systematic) is unresolved and must not be assumed by the capture loop.
 
 ## M2 exit criteria
 
-Tracking `docs/07_MILESTONES.md`. Two criteria now have **end-to-end**
-evidence from the CLOB REST adapter slice (a real recorded response through
-`ClobClient` → `normalize_clob_book` → `SQLiteEventStore`), not merely
-store-level evidence; one has payload-level evidence on real recorded frames;
-one has store-only partial evidence; the rest have no adapter or capture loop
-yet to produce evidence against and are listed as open rather than implied
-closed. **No capture CLI exists, and no capture has ever run against a live
-socket** — every criterion below is evidenced by replaying recorded frames
-through the real code path, which is why several are marked "structurally
-closed, never exercised live" rather than simply closed.
+Tracking `docs/07_MILESTONES.md`.
+
+**Re-checked by the M3 readiness audit (2026-08-17), and two rows below were
+stale in the direction that flatters the milestone.** The table's introduction
+said "no capture CLI exists, and no capture has ever run against a live socket"
+several slices after both had landed, and the zero-size row said "no WebSocket
+transport exists" for the same reason. Those sentences are corrected here; the
+identical sentences *inside* the dated slice sections further down are left
+alone, because those are records of what was true at that slice, not claims
+about now. This is the third time in this milestone that a present-tense claim
+in this file outlived the thing it described, which is why the audit
+re-derived the state from `main` instead of reading it here.
+
+As it actually stands: the CLI exists, three live captures have run, and the
+remaining honest qualifications are narrower and specific — a real network
+reconnect has never happened, and no capture has ever been interrupted by a
+process dying. Those two are marked "never exercised live" below and are not
+claimed as closed.
 
 | Criterion | Status | Evidence |
 |---|---|---|
 | Duplicate source event does not create a second accepted observation | **End-to-end evidence; no capture loop runs it against live traffic yet** | `_observation_identity` collides an identical redelivery onto one `observation_id`, on the real recorded CLOB payload as well as a constructed one (`docs/research/m2-clob-rest-book.md`, "Consequence for `ObservationEnvelopeV1`"). `SQLiteEventStore.append_observation` enforces it at the store: a redelivery inserts zero second `observation` rows and exactly one `delivery` row with `disposition="duplicate"`, both writes inside one `BEGIN IMMEDIATE` transaction (`tests/test_event_store.py`, `tests/test_event_store_adversarial.py`, including real multi-connection race tests). The CLOB REST adapter slice closes the remaining gap end to end: a real recorded response fed through `ClobClient` → `normalize_clob_book` → `SQLiteEventStore` produces one observation row and two delivery rows (`accepted=1, duplicate=1`) for a redelivery. **Now closed on live traffic**: a 60-second live capture on 2026-08-15 received a genuine duplicate from the source and collapsed it — 18 observation rows, 18 `accepted_new` deliveries and 1 `duplicate` delivery, with no second observation minted |
-| Zero-size level update is represented as removal | **End-to-end evidence into the store; no transport receives a live frame yet** | Represented structurally, not by convention: `PriceLevelChangeKind.REMOVE` holds **if and only if** `size == 0`, validated on every construction path including replay and `from_record`, so a record cannot claim one and carry the other (`src/argos/domain/pricechange.py`). Both genuine zero-size entries in the recorded live capture now travel the full path — `normalize_clob_price_change` -> `build_observation_envelope` -> `SQLiteEventStore` — and land as `REMOVE` in a stored payload (`0.17` bid side, `0.83` ask side on the sibling), verified independently of the slice's own tests. `OrderBookSnapshotV1` separately implements the REST-snapshot side, where the same value is deliberately a counted anomaly rather than a removal. **Not yet closed**: no WebSocket transport exists, so the frames are replayed from a recorded capture rather than received from a socket |
+| Zero-size level update is represented as removal | **Closed structurally and end-to-end into the store; not observed on a live capture** | Represented structurally, not by convention: `PriceLevelChangeKind.REMOVE` holds **if and only if** `size == 0`, validated on every construction path including replay and `from_record`, so a record cannot claim one and carry the other (`src/argos/domain/pricechange.py`). Both genuine zero-size entries in the recorded live capture now travel the full path — `normalize_clob_price_change` -> `build_observation_envelope` -> `SQLiteEventStore` — and land as `REMOVE` in a stored payload (`0.17` bid side, `0.83` ask side on the sibling), verified independently of the slice's own tests. `OrderBookSnapshotV1` separately implements the REST-snapshot side, where the same value is deliberately a counted anomaly rather than a removal. **Corrected 2026-08-17**: the earlier "no WebSocket transport exists" qualification was stale — the transport, the capture loop and the CLI all shipped afterwards, and three live captures have run. The accurate residual is narrower: the two zero-size entries that carry this criterion come from the *recorded* capture, and no zero-size entry has been observed in a live ARGOS capture, because none of the three live runs happened to contain one. The `kind is REMOVE` ⟺ `size == 0` validator makes the representation structural either way |
 | Reconnect does not reset ingest sequence or silently lose manifest state | **Closed structurally; never exercised against a live socket** | `run_capture` owns the counter for the whole run, so a reconnect inside the transport is transparent to it — the transport keeps yielding from one async generator. Restarting the loop cannot silently restart the sequence either: re-opening the same `capture_run_id` is refused with `StorageError` by the store's partial unique index, so the property is structural rather than a check that could be forgotten. Verified independently of the slice's own tests, on the real recorded capture: sequences span both the delivery and rejection ledgers with no gaps and no reuse (exactly 1..38), and are identical across two runs. Manifest state cannot be lost silently: `capture_run` is append-only and a run with no closing row is a queryable signal. **Not yet closed**: no capture has run against a live socket, and a real network reconnect has never been exercised — the research note still records reconnect behaviour as UNVERIFIED |
 | Invalid messages enter a rejection ledger with reason and raw hash | **End-to-end evidence; no capture loop runs it against live traffic yet** | `RejectedObservationV1` carries `reason: RejectionReason`, `detail`, and `raw_payload_sha256`; `build_rejected_observation` derives a deterministic `rejection_id` so redelivery of the same invalid bytes for the same reason collapses rather than growing the ledger unbounded. `SQLiteEventStore.append_rejection`/`iter_rejections` persist it, keyed `(capture_run_id, ingest_sequence)` rather than on `rejection_id` alone, so two genuinely different malformed entries in one frame that happen to share one `rejection_id` (ADR-0011 section 7) both survive instead of one silently overwriting the other. The CLOB REST adapter slice closes the remaining gap end to end: a malformed real-shaped body fed through `normalize_clob_book` produces a `RejectedObservationV1` written to the ledger (`tests/test_clob_book_ingestion.py`). The WebSocket source now has the same evidence on its own path: `normalize_clob_price_change` turns every `ValueError` the domain raises — plus its own `entry_hash` length and display-control checks, deliberately inside its own `try` — into a `RejectedObservationV1` rather than an escaping exception, so a malformed real-shaped frame reaches the ledger with a reason and the raw hash (`tests/test_clob_price_change_ingestion.py`). **Not yet closed**: no capture loop runs either adapter continuously against live traffic |
 | Book snapshot plus deltas reconstruct a tested projection | **Closed on real recorded traffic** | `argos.projections.book` reconstructs the book from a snapshot plus `price_change` deltas. Verified on the recorded live capture, which contains 4 full `book` snapshots for the subscribed token and 34 delta frames: all three snapshot→deltas→snapshot transitions reconstruct **exactly**, level for level (`book@msg0 +13 → book@msg16`, `+7 → book@msg26`, `+8 → book@msg37`), and a single continuous run seeded once at msg0 and fed all 28 deltas lands exactly on msg37 with zero anomalies — re-verified independently of the slice's own tests. The zero-size removal convention is exercised through the projection, not merely at the payload. **Known limitation, not a gap in the test**: ARGOS cannot compute the source's own `hash` (algorithm unpublished), so a missed delta is undetectable from the delta stream alone; divergence surfaces only when a full snapshot arrives and disagrees, which is what these three transitions measure |
@@ -1686,4 +2026,12 @@ None.
 
 ## Next owner action
 
-No action required until the M4 owner gate unless Claude records a true blocker.
+**The M4 owner gate is reached. Implementation has stopped.**
+`docs/HANDOFF_M4.md` is the owner package; `docs/OWNER_REVIEW_GATE.md` carries
+the checklist with every box's evidence, and the one box left deliberately
+unticked is the independent architecture/security/test review — the only thing
+this gate asks for that was not obtained.
+
+The seven questions in `docs/OWNER_REVIEW_GATE.md` need answers before M5, and
+`docs/HANDOFF_M4.md` section 9 adds six more with a recommended default for
+each. Nothing in M5-M8 may start on the strength of M4 passing.

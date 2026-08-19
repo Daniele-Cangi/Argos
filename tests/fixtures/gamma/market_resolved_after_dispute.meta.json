@@ -1,0 +1,11 @@
+{
+ "byte_length": 4009,
+ "note": "A resolved market whose umaResolutionStatuses records a dispute and a re-proposal ([\"proposed\",\"disputed\",\"proposed\",\"resolved\"]). Recorded because the field is a *sequence* of statuses, not one value, so the current status is its last element and the history is visible.",
+ "parser_version": "gamma-market-normalizer/1",
+ "payload_kind": "gamma.markets.by_id",
+ "raw_sha256": "d6f74f16b99a56bf184a28a8c3adf039f7f34499144344dfc4bdf54b40d42607",
+ "redaction": "none - the endpoint is public and unauthenticated, and no request carried credentials",
+ "retrieved_at": "2026-08-18T02:24:08Z",
+ "source": "gamma",
+ "source_endpoint": "https://gamma-api.polymarket.com/markets/1021160"
+}

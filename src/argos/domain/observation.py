@@ -41,7 +41,13 @@ from argos.domain.text import (
     neutralize_and_bound,
     neutralize_identifier_and_bound,
 )
-from argos.domain.versioning import SCHEMA_VERSION_KEY, VersionedModel, freeze, thaw
+from argos.domain.versioning import (
+    SCHEMA_VERSION_KEY,
+    VersionedModel,
+    freeze,
+    resolve_schema,
+    thaw,
+)
 from argos.errors import ContractViolationError, RejectionReason, SchemaVersionError
 
 # Untrusted source text is neutralized, never dropped outright, and bounded so a
@@ -190,7 +196,26 @@ class ObservationEnvelopeV1(VersionedModel):
     named by ``payload_schema_version``."""
 
     raw_payload_sha256: str = Field(min_length=SHA256_LENGTH, max_length=SHA256_LENGTH)
+
     raw_payload_location: str | None = Field(default=None, min_length=1)
+    """Where the raw bytes were archived, **relative to the archive root**, or
+    ``None`` when nothing archived them.
+
+    Relative deliberately. Until 2026-08-17 this held the absolute path
+    ``write_raw_payload`` returned, so every observation durably recorded a
+    string that meant something only on the machine that wrote it — unverified
+    by anything, silently wrong once the capture directory moved, and different
+    in two stores holding byte-identical evidence. An archive root is a fact
+    about a *run*, not about a record. See
+    :func:`argos.store.raw_archive.archive_relative_location`, which is the one
+    place that composes this value, and which ``write_raw_payload`` also builds
+    its own target from so the two cannot disagree.
+
+    It is a convenience, not the link: ``raw_payload_sha256`` is the link, and
+    ``read_raw_payload`` finds archived bytes by hash without reading this field
+    at all.
+    """
+
     provenance: SourceProvenanceV1
 
     parser_version: str = Field(min_length=1)
@@ -559,6 +584,27 @@ def read_payload[PayloadT: VersionedModel](
             supported=[model.schema_version],
         )
     return model.model_validate(thaw(envelope.payload))
+
+
+def read_declared_payload(envelope: ObservationEnvelopeV1) -> VersionedModel:
+    """Validate ``envelope.payload`` into whichever model its own version names.
+
+    The counterpart to :func:`read_payload` for a reader that does *not* know
+    the payload type in advance — an M3 replay dispatcher over a capture holding
+    several payload kinds, or any future tool that walks a stored capture. It
+    goes through :func:`argos.domain.versioning.resolve_schema`, so the model is
+    looked up rather than selected by a chain of string comparisons, and so the
+    lookup is backed by the uniqueness guarantee that makes it meaningful: two
+    classes cannot both claim one version.
+
+    Resolving is not the same as accepting. This returns the typed payload; a
+    caller that only knows how to handle certain kinds must still check what it
+    got and refuse the rest deliberately, with a count. Dispatching on whatever
+    a stored record claims to be is exactly the silent coercion
+    ``.claude/rules/data-integrity.md`` forbids.
+    """
+    model = resolve_schema(envelope.payload_schema_version)
+    return read_payload(envelope, model)
 
 
 def _observation_identity(

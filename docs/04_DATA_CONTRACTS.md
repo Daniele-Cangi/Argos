@@ -157,6 +157,36 @@ gap_warnings[]
 completion_status
 ```
 
+**Implemented as three existing records, not as a class with this name** —
+decided in the M2 capture-loop slice, recorded here in the M2 closure so the
+specification and the code stop disagreeing. `RunManifest` (`run_manifest.v5`)
+carries `code_revision`, `config_sha256` (as `config_fingerprint`),
+`schema_versions`, `source_urls` (inside `settings_snapshot`),
+`subscribed_token_ids` (inside `run_parameters`), and `capture_run_id`; the
+store's append-only `capture_run` rows carry `started_at`, `ended_at` and
+`completion_status`; and `EventStore.counts_for_capture_run` *derives*
+`accepted_count`/`duplicate_count`/`rejected_count` by query, so a summary can
+never silently disagree with the rows it summarizes (ADR-0011 section 5).
+
+Four fields are genuinely **not implemented**, and saying so is the point of
+this note:
+
+- `market_filter` and `selected_markets` — capture takes explicit token ids
+  today; no selection policy runs inside a capture, so recording one would be
+  recording a filter that did not filter anything;
+- `host_metadata` and `clock_metadata` — nothing reads them, and a manifest
+  field nobody reads is a field that quietly stops being true;
+- `reconnect_count` and `gap_warnings[]` — the transport counts reconnects on
+  `ClobWsHealth`, which is in-memory and not persisted, and this channel has no
+  sequence number, so ARGOS cannot detect a gap at all
+  (`docs/research/m2-clob-websocket.md`). A `gap_warnings` field would be
+  permanently empty and would read as "no gaps", which is a stronger claim than
+  "cannot tell".
+
+The M1 architecture review's blocking finding was a specified contract silently
+dropped, and ADR-0010's B3 was the same shape. This note exists so that this one
+is dropped *loudly*.
+
 ## `ReplayManifestV1`
 
 ```text
@@ -177,6 +207,32 @@ result_status
 ```
 
 Repeated replay of identical input, code, config, and mode must produce identical state hash and record counts.
+
+Four amendments recorded against this specification when M3 implemented it
+(`src/argos/replay/manifest.py`, ADR-0012):
+
+- `replay_mode` gains **`stepwise`**. `docs/07_MILESTONES.md` names stepwise a
+  deliverable in the same breath as accelerated; dropping it to fit a two-value
+  enum would be the "specified contract silently dropped" failure that blocked
+  M1.
+- `working_tree` joins `code_revision`, for the reason already accepted for
+  `RunManifest`: a dirty tree makes a revision string misattribute the code that
+  produced a run, and a replay whose entire claim is reproducibility is the
+  worst place to leave that ambiguous.
+- `input_event_count` is implemented as **`input_arrival_count`**. What is
+  counted is *arrivals* — a duplicate is one more arrival of the same event —
+  and that distinction is the whole reason the delivery record exists.
+- `source_completion_status` is added. Replaying an interrupted capture is
+  legitimate and often the point, but a manifest that did not say so would
+  present a partial capture's state hash as though it described a complete one.
+
+**And one correction to the sentence above.** The mode is *not* an input to the
+hash. Two replays of one capture in all three modes produce one hash — asserted
+directly, because ADR-0009 requires that scheduler pacing never influence the
+output hash. The mode is recorded because it describes how the run was
+performed, not because it changes what the run produced. What must be identical
+across runs is `output_state_hash` and `output_record_counts`; `started_at` and
+`finished_at` legitimately differ, and do.
 
 ## `EngineForecastV1` — introduced only after baseline contracts exist
 

@@ -1,0 +1,11 @@
+{
+ "byte_length": 3622,
+ "note": "A closed market whose outcomePrices are fractional and sum to 1 - a last price, not a resolution. 93.2% of a 900-market id-ordered closed sample. The real-world outcome of this question is known, and the field does not encode it, which is exactly why closed=true cannot be read as resolved.",
+ "parser_version": "gamma-market-normalizer/1",
+ "payload_kind": "gamma.markets.by_id",
+ "raw_sha256": "200baf386f62f772eccf38f96c5854199d89031ad1b13a5e5c6178603e5fc743",
+ "redaction": "none - the endpoint is public and unauthenticated, and no request carried credentials",
+ "retrieved_at": "2026-08-18T02:24:08Z",
+ "source": "gamma",
+ "source_endpoint": "https://gamma-api.polymarket.com/markets/40"
+}

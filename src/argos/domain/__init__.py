@@ -14,6 +14,7 @@ from argos.domain.observation import (
     RejectedObservationV1,
     build_observation_envelope,
     build_rejected_observation,
+    read_declared_payload,
     read_payload,
     recompute_observation_id,
 )
@@ -36,7 +37,14 @@ from argos.domain.pricechange import (
     parse_price_change_group,
 )
 from argos.domain.text import neutralize_and_bound, neutralize_untrusted_text
-from argos.domain.versioning import VersionedModel, ensure_supported_version, freeze, thaw
+from argos.domain.versioning import (
+    VersionedModel,
+    ensure_supported_version,
+    freeze,
+    registered_schemas,
+    resolve_schema,
+    thaw,
+)
 from argos.domain.wsbook import WsBookSnapshotV1, parse_ws_book_snapshot
 
 __all__ = [
@@ -68,7 +76,10 @@ __all__ = [
     "parse_price_change_group",
     "parse_wire_decimal",
     "parse_ws_book_snapshot",
+    "read_declared_payload",
     "read_payload",
     "recompute_observation_id",
+    "registered_schemas",
+    "resolve_schema",
     "thaw",
 ]

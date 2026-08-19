@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import subprocess
 from collections.abc import AsyncIterator, Callable
@@ -25,6 +26,7 @@ from argos.domain.observation import ObservationEnvelopeV1, RejectedObservationV
 from argos.domain.pricechange import PriceChangeV1
 from argos.domain.selection import MarketSelectionPolicy, select_markets
 from argos.errors import ArgosError
+from argos.evaluation import evaluate_capture
 from argos.ingestion import (
     CaptureHealth,
     FrameSource,
@@ -33,6 +35,13 @@ from argos.ingestion import (
     run_capture,
 )
 from argos.logging import configure_logging
+from argos.replay import RealTimePacer, ReplayMode, VirtualPacer, replay_capture
+from argos.resolution import (
+    ResolutionRefusal,
+    ResolutionV1,
+    normalize_clob_resolution,
+    normalize_gamma_resolution,
+)
 from argos.sources import (
     ClobMarketWsClient,
     GammaClient,
@@ -45,8 +54,14 @@ from argos.store import EventStore, open_sqlite_event_store, write_raw_payload
 app = typer.Typer(no_args_is_help=True, help="ARGOS research CLI")
 markets_app = typer.Typer(no_args_is_help=True, help="Public market discovery and audit")
 capture_app = typer.Typer(no_args_is_help=True, help="Bounded live capture against a public source")
+replay_app = typer.Typer(no_args_is_help=True, help="Deterministic replay of a stored capture")
+evaluate_app = typer.Typer(
+    no_args_is_help=True, help="Score market baselines against a recorded resolution"
+)
 app.add_typer(markets_app, name="markets")
 app.add_typer(capture_app, name="capture")
+app.add_typer(replay_app, name="replay")
+app.add_typer(evaluate_app, name="evaluate")
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -499,6 +514,19 @@ def capture_market(
             working_tree=working_tree,
             capture_run_id=run_id,
             schema_versions=_CAPTURE_SCHEMA_VERSIONS,
+            # The operator's own arguments, which are not settings and were in
+            # no durable artifact before `run_parameters` existed (core
+            # invariant 13). `subscribed_token_ids` is recorded in the form the
+            # loop actually fanned out over -- deduplicated and sorted, matching
+            # `run_capture`'s own `sorted(frozenset(...))` -- because that set is
+            # what determines `ingest_sequence` allocation, and the order the
+            # flags happened to appear in determines nothing.
+            run_parameters={
+                "subscribed_token_ids": sorted(frozenset(token_ids)),
+                "max_seconds": max_seconds,
+                "max_frames": max_frames,
+                "raw_archive": raw_archive,
+            },
         )
         manifest_path = db_path.parent / f"{run_id}.manifest.json"
         manifest_path.write_bytes(
@@ -542,6 +570,259 @@ def capture_market(
         )
     if interrupted:
         raise typer.Exit(code=130)
+
+
+# --- replay ---------------------------------------------------------------------------
+#
+# M3's operator surface. Everything this command does is `argos.replay`'s; the
+# CLI's own job is exactly the three things a CLI should do -- read arguments,
+# choose adapters, render a result.
+
+_REPLAY_DB_OPTION: Final = typer.Option(
+    ..., "--db", help="SQLite event store holding the capture to replay."
+)
+# Module-level singletons: ruff (B008) does not recognize `Path` as a safe
+# inline `typer.Option` default the way it does `str`/`int`/`bool`/`None`.
+_REPLAY_MANIFEST_OPTION: Final = typer.Option(
+    None, "--manifest-out", help="Where to write the replay manifest. Defaults beside the db."
+)
+_REPLAY_MODE_OPTION: Final = typer.Option(
+    ReplayMode.ACCELERATED,
+    "--mode",
+    help=(
+        "Pacing only. It cannot change the output hash -- that is a tested "
+        "property, not a claim (ADR-0012 section 7)."
+    ),
+)
+
+
+@replay_app.command("capture")
+def replay_capture_command(
+    capture_run_id: str = typer.Argument(help="The capture_run_id to replay."),
+    db: Path = _REPLAY_DB_OPTION,
+    mode: ReplayMode = _REPLAY_MODE_OPTION,
+    allowed_lateness_ms: int = typer.Option(
+        0,
+        help=(
+            "Watermark tolerance in milliseconds. Zero is the default because no "
+            "capture in this repository contains an out-of-order arrival, so zero "
+            "flags nothing yet observed while flagging any genuine regression."
+        ),
+    ),
+    manifest_out: Path | None = _REPLAY_MANIFEST_OPTION,
+    as_json: bool = typer.Option(False, "--json", help="Emit the result as JSON."),
+) -> None:
+    """Replay one stored capture run and report its state hash and counts.
+
+    Reads only; writes nothing but the manifest. The event store is opened,
+    walked in `ingest_sequence` order, and left exactly as it was found -- a
+    replay that could modify its own input would not be a replay.
+    """
+    if allowed_lateness_ms < 0:
+        typer.echo("--allowed-lateness-ms must not be negative", err=True)
+        raise typer.Exit(code=2)
+
+    settings = _load_or_exit()
+    configure_logging(settings.log_level)
+    clock = LiveClock()
+    code_revision, working_tree = _code_revision()
+    run_id = f"replay-{clock.now():%Y%m%dT%H%M%SZ}-{uuid4().hex[:8]}"
+
+    store = _open_store_or_exit(db)
+    try:
+        result = replay_capture(
+            store=store,
+            capture_run_id=capture_run_id,
+            settings=settings,
+            wall_clock=clock,
+            replay_run_id=run_id,
+            mode=mode,
+            allowed_lateness=timedelta(milliseconds=allowed_lateness_ms),
+            # Real pacing only when the operator asked to watch it happen; every
+            # other mode records the waits it would have made and makes none.
+            pacer=RealTimePacer() if mode is ReplayMode.ORIGINAL_ARRIVAL else VirtualPacer(),
+            code_revision=code_revision,
+            working_tree=working_tree,
+        )
+    except ArgosError as exc:
+        _fail(exc)
+    finally:
+        store.close()
+
+    destination = manifest_out or db.parent / f"{run_id}.replay-manifest.json"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(
+        orjson.dumps(result.manifest.to_record(), option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
+    )
+
+    payload: dict[str, Any] = {
+        "replay_run_id": run_id,
+        "source_capture_run_id": capture_run_id,
+        "mode": mode.value,
+        "manifest_path": str(destination),
+        "state_hash": result.state_hash,
+        "state_hash_version": result.manifest.state_hash_version,
+        "counts": result.manifest.to_record()["output_record_counts"],
+        "projections": [
+            {"condition_id": condition_id, "token_id": token_id, "digest": projection.digest()}
+            for (condition_id, token_id), projection in sorted(
+                result.dispatcher.projections.items()
+            )
+        ],
+    }
+    if as_json:
+        typer.echo(_json(payload))
+        return
+
+    typer.echo(result.manifest.describe())
+    typer.echo(f"  manifest {destination}")
+    typer.echo(f"  state    {result.state_hash} ({result.manifest.state_hash_version})")
+    typer.echo(f"  arrivals {payload['counts']['arrivals']}")
+    typer.echo(f"  dispatch {payload['counts']['dispatch']}")
+    for entry in payload["projections"]:
+        typer.echo(f"  book     {entry['token_id']} -> {entry['digest'][:16]}")
+
+
+# --- evaluate ---------------------------------------------------------------------
+#
+# M4's operator surface. Both inputs are records -- a stored capture and a
+# recorded source payload -- and nothing is fetched here: an evaluation that
+# reached the network could give a different answer tomorrow from the same
+# arguments, which is the opposite of "reproducible from stored records".
+
+_EVAL_DB_OPTION: Final = typer.Option(
+    ..., "--db", help="SQLite event store holding the capture to evaluate."
+)
+_EVAL_RESOLUTION_OPTION: Final = typer.Option(
+    ...,
+    "--resolution",
+    help=(
+        "Path to a recorded market payload carrying the settlement. A file, not a "
+        "URL: the evaluation must give the same answer tomorrow."
+    ),
+)
+_EVAL_OUT_OPTION: Final = typer.Option(
+    None, "--report-out", help="Where to write the evaluation report. Defaults beside the db."
+)
+
+
+def _load_resolution(path: Path, token_id: str, clock: Clock) -> ResolutionV1:
+    """Read a recorded payload and normalize it, trying the CLOB shape first.
+
+    Two shapes rather than one because the two sources genuinely differ, and the
+    difference is not cosmetic: the CLOB record *states* the winner, while the
+    Gamma record leaves it to be inferred from `outcomePrices` -- and for the one
+    market this repository has captured, Gamma returns nothing at all
+    (`docs/research/m4-gamma-resolution.md`).
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        typer.echo(f"cannot read {path}: {error}", err=True)
+        raise typer.Exit(code=2) from error
+    try:
+        decoded = orjson.loads(raw)
+    except orjson.JSONDecodeError as error:
+        typer.echo(f"{path} is not valid JSON", err=True)
+        raise typer.Exit(code=2) from error
+
+    payload = decoded[0] if isinstance(decoded, list) and decoded else decoded
+    if not isinstance(payload, dict):
+        typer.echo(f"{path} does not contain a market object", err=True)
+        raise typer.Exit(code=2)
+
+    digest = hashlib.sha256(raw).hexdigest()
+    now = clock.now()
+    attempts: list[ResolutionRefusal] = []
+    candidates: list[ResolutionV1 | ResolutionRefusal] = [
+        normalize_clob_resolution(
+            payload, source_payload_sha256=digest, normalized_at=now, yes_token_id=token_id
+        ),
+        normalize_gamma_resolution(payload, source_payload_sha256=digest, normalized_at=now),
+    ]
+    for result in candidates:
+        if isinstance(result, ResolutionV1):
+            return result
+        attempts.append(result)
+
+    # Both refused. Report *both* reasons: "this is not a CLOB record" and "this
+    # is not a resolved Gamma record" are different problems with different
+    # fixes, and printing one would send the operator down the wrong path.
+    for refusal in attempts:
+        typer.echo(f"{refusal.reason.value}: {refusal.detail}", err=True)
+    raise typer.Exit(code=1)
+
+
+@evaluate_app.command("baseline")
+def evaluate_baseline(
+    capture_run_id: str = typer.Argument(help="The capture_run_id to evaluate."),
+    token_id: str = typer.Option(..., "--token-id", help="The token whose side is forecast."),
+    db: Path = _EVAL_DB_OPTION,
+    resolution_path: Path = _EVAL_RESOLUTION_OPTION,
+    report_out: Path | None = _EVAL_OUT_OPTION,
+    as_json: bool = typer.Option(False, "--json", help="Emit the report as JSON."),
+) -> None:
+    """Score market baselines from a stored capture against a recorded settlement.
+
+    Makes no edge claim and cannot: the report's `limitations` field is required
+    to be non-empty, and it always states that the scores are uncalibrated market
+    baselines rather than ARGOS probabilities (ADR-0006).
+    """
+    if not TOKEN_ID_PATTERN.fullmatch(token_id):
+        typer.echo(f"--token-id {token_id!r} does not match {TOKEN_ID_PATTERN.pattern}", err=True)
+        raise typer.Exit(code=2)
+
+    settings = _load_or_exit()
+    configure_logging(settings.log_level)
+    clock = LiveClock()
+    code_revision, _working_tree = _code_revision()
+    resolution = _load_resolution(resolution_path, token_id, clock)
+    run_id = f"eval-{clock.now():%Y%m%dT%H%M%SZ}-{uuid4().hex[:8]}"
+
+    store = _open_store_or_exit(db)
+    try:
+        result = evaluate_capture(
+            store=store,
+            capture_run_id=capture_run_id,
+            resolution=resolution,
+            token_id=token_id,
+            settings=settings,
+            clock=clock,
+            evaluation_run_id=run_id,
+            code_revision=code_revision,
+        )
+    except ArgosError as exc:
+        _fail(exc)
+    except ValueError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
+    finally:
+        store.close()
+
+    destination = report_out or db.parent / f"{run_id}.evaluation-report.json"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(
+        orjson.dumps(result.report.to_record(), option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS)
+    )
+
+    if as_json:
+        typer.echo(_json(result.report.to_record()))
+        return
+
+    report = result.report
+    typer.echo(report.describe())
+    typer.echo(f"  report     {destination}")
+    typer.echo(f"  resolution {resolution.winning_outcome.value} for token {token_id}")
+    typer.echo(f"  state      {report.source_state_hash}")
+    for method, summary in sorted(report.calibration.items()):
+        typer.echo(
+            f"  {method:<12} n={summary['sample_count']} "
+            f"brier={summary['mean_brier']} log_loss={summary['mean_log_loss']} "
+            f"clipped={summary['clipped_count']} ece={summary['expected_calibration_error']}"
+        )
+    typer.echo("  limitations:")
+    for limitation in report.limitations:
+        typer.echo(f"    - {limitation}")
 
 
 def _normalize_or_exit(response: Any, observed_at: Any) -> MarketDefinitionV1:

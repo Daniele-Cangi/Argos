@@ -5,6 +5,29 @@ Engineering rule: *every public schema and persistent record is versioned*.
 that does not declare its *own* ``schema_version`` fails at import time, not at
 read time three months into a capture.
 
+Since 2026-08-17 a subclass also **registers** its version, which does two
+things one mechanism (M3 blocker R2, ``docs/BACKLOG.md``):
+
+- it makes ``schema_version`` genuinely unique. The M2 security review
+  demonstrated that two classes both declaring ``order_book_snapshot.v1``
+  defeat :func:`argos.domain.observation.read_payload`'s version check — it
+  built a foreign model out of a book envelope with no error — and filed "a
+  registry check in ``__init_subclass__`` closes it". A collision now fails at
+  import time;
+- it lets a reader turn a stored ``payload_schema_version`` back into the model
+  that describes it (:func:`resolve_schema`). Without that, M3's replay
+  dispatcher would have to grow an ``if/elif`` chain over version strings —
+  inside the one module whose entire purpose is that live and replay run the
+  *same* handlers.
+
+The registry is module-global, which deserves a word given that CLAUDE.md
+prohibits hidden global state. It is populated at class-definition time and
+never written again, and :func:`resolve_schema` returns the same class no
+matter what order anything was processed in; the prohibition is about state
+that changes *output* with processing order, and this cannot. The one
+order-dependent thing about it is which of two colliding classes is named
+"first" in the error — and that error is a hard import failure, not an output.
+
 Container immutability is *not* structural yet: this module supplies :func:`freeze`
 and :func:`thaw`, but a subclass must opt in per field with a validator/serializer
 pair, as :class:`argos.config.manifest.RunManifest` does. A subclass declaring a
@@ -23,6 +46,8 @@ from pydantic import BaseModel, ConfigDict
 from argos.errors import SchemaVersionError
 
 SCHEMA_VERSION_KEY = "schema_version"
+
+_SCHEMA_REGISTRY: dict[str, type[VersionedModel]] = {}
 
 
 @final
@@ -111,13 +136,15 @@ class VersionedModel(BaseModel):
         super().__init_subclass__(**kwargs)
         # cls.__dict__, not getattr: an inherited version would let a subclass with
         # different fields write records labelled with its parent's schema.
-        if not cls.__dict__.get(SCHEMA_VERSION_KEY):
+        version = cls.__dict__.get(SCHEMA_VERSION_KEY)
+        if not version:
             raise SchemaVersionError(
                 f"{cls.__qualname__} must declare its own non-empty 'schema_version' "
                 "class variable; inheriting one from a parent would mislabel its records",
                 model=cls.__qualname__,
                 inherited=getattr(cls, SCHEMA_VERSION_KEY, None),
             )
+        _register_schema(str(version), cls)
 
     def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
         """Copy through validation, unlike pydantic's default.
@@ -152,6 +179,57 @@ class VersionedModel(BaseModel):
         payload = dict(record)
         ensure_supported_version(payload.pop(SCHEMA_VERSION_KEY, None), (cls.schema_version,))
         return cls.model_validate(payload)
+
+
+def _register_schema(version: str, model: type[VersionedModel]) -> None:
+    """Claim ``version`` for ``model``, refusing a second claimant.
+
+    The escape hatch is narrow and deliberate: a class whose ``__module__`` and
+    ``__qualname__`` both match the incumbent is the *same* class definition
+    running again, which is what a module reload does. Two genuinely different
+    models cannot collide that way, because they live in different modules or
+    carry different names — and letting a reload fail would make the registry a
+    trap for a tool this repository does not control.
+    """
+    incumbent = _SCHEMA_REGISTRY.get(version)
+    if incumbent is not None and (
+        incumbent.__module__ != model.__module__ or incumbent.__qualname__ != model.__qualname__
+    ):
+        raise SchemaVersionError(
+            "schema_version is already claimed by another model; two classes "
+            "sharing one version defeat every version check that reads a stored "
+            "record back, including read_payload",
+            version=version,
+            claimed_by=f"{incumbent.__module__}.{incumbent.__qualname__}",
+            attempted_by=f"{model.__module__}.{model.__qualname__}",
+        )
+    _SCHEMA_REGISTRY[version] = model
+
+
+def resolve_schema(version: str) -> type[VersionedModel]:
+    """Return the model that declares ``version``.
+
+    Raises :class:`SchemaVersionError` naming every version currently known, so
+    the far more likely failure — the declaring module was never imported — is
+    legible rather than looking like an unknown schema. A reader that resolves a
+    version it did not expect should still refuse it deliberately: resolution
+    answers "which model describes this", not "should this record be handled
+    here".
+    """
+    model = _SCHEMA_REGISTRY.get(version)
+    if model is None:
+        raise SchemaVersionError(
+            "no registered model declares this schema version; the declaring "
+            "module may simply not be imported in this process",
+            found=version,
+            supported=sorted(_SCHEMA_REGISTRY),
+        )
+    return model
+
+
+def registered_schemas() -> Mapping[str, type[VersionedModel]]:
+    """Every schema version currently claimed, for tests and diagnostics."""
+    return dict(_SCHEMA_REGISTRY)
 
 
 def ensure_supported_version(found: object, supported: Collection[str]) -> str:

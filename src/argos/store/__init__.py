@@ -9,6 +9,8 @@ section 4).
 """
 
 from argos.store.event_store import (
+    ARGOS_APPLICATION_ID,
+    EVENT_STORE_SCHEMA_VERSION,
     CaptureRunCounts,
     CaptureRunRecord,
     CompletionStatus,
@@ -19,9 +21,15 @@ from argos.store.event_store import (
     SQLiteEventStore,
     open_sqlite_event_store,
 )
-from argos.store.raw_archive import read_raw_payload, write_raw_payload
+from argos.store.raw_archive import (
+    archive_relative_location,
+    read_raw_payload,
+    write_raw_payload,
+)
 
 __all__ = [
+    "ARGOS_APPLICATION_ID",
+    "EVENT_STORE_SCHEMA_VERSION",
     "CaptureRunCounts",
     "CaptureRunRecord",
     "CompletionStatus",
@@ -30,6 +38,7 @@ __all__ = [
     "EventStore",
     "RejectionRecord",
     "SQLiteEventStore",
+    "archive_relative_location",
     "open_sqlite_event_store",
     "read_raw_payload",
     "write_raw_payload",

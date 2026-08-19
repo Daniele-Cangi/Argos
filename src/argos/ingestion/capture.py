@@ -165,9 +165,10 @@ from argos.ingestion.clob_price_change import (
     normalize_clob_price_change,
 )
 from argos.ingestion.clob_ws_book import CLOB_WS_BOOK_EVENT_TYPE, normalize_clob_ws_book
+from argos.projections.dispatch import ObservationDispatcher
 from argos.sources.clob_ws import MarketFrame
 from argos.store.event_store import CompletionStatus, Disposition, EventStore
-from argos.store.raw_archive import write_raw_payload
+from argos.store.raw_archive import archive_relative_location, write_raw_payload
 
 __all__ = ["CaptureHealth", "FrameSource", "run_capture"]
 
@@ -235,6 +236,17 @@ class _CaptureState:
     next_sequence: int = 1
     health: CaptureHealth = field(default_factory=CaptureHealth)
 
+    dispatcher: ObservationDispatcher | None = None
+    """The live half of core invariant 5, when a caller supplies one.
+
+    Optional because a capture is useful without it -- the store is the durable
+    artifact and the projection is derived -- but when it is present, this loop
+    and an M3 replay drive the *same object*, not two implementations of one
+    protocol (ADR-0012 section 8). Every accepted arrival is offered to it,
+    duplicates included, so that "a duplicate never moves state twice" is
+    exercised here by the same code that enforces it during replay rather than
+    by a second check this module would have to keep in step."""
+
     current_raw_location: str | None = None
     """Where the frame currently being consumed was archived, or ``None`` when
     raw archiving is switched off.
@@ -271,6 +283,7 @@ async def run_capture(
     capture_run_id: str,
     subscribed_token_ids: Iterable[str],
     raw_archive_dir: Path | None = None,
+    dispatcher: ObservationDispatcher | None = None,
     clock_skew_tolerance: timedelta = DEFAULT_CLOCK_SKEW_TOLERANCE,
 ) -> CaptureHealth:
     """Consume `frame_source` into `store` under one `capture_run`, until exhausted or failed.
@@ -293,7 +306,7 @@ async def run_capture(
     """
     tokens: Sequence[str] = sorted(frozenset(subscribed_token_ids))
     store.open_capture_run(capture_run_id, started_at=clock.now())
-    state = _CaptureState()
+    state = _CaptureState(dispatcher=dispatcher)
     try:
         async for frame in frame_source.frames():
             state.count(frames_consumed=1)
@@ -310,13 +323,18 @@ async def run_capture(
             # counted: continuing would keep producing records that silently
             # cannot be reproduced, which is worse than stopping loudly.
             if raw_archive_dir is not None:
-                state.current_raw_location = str(
-                    write_raw_payload(
-                        raw_archive_dir,
-                        raw=frame.text.encode("utf-8"),
-                        provenance=frame.provenance,
-                    )
+                write_raw_payload(
+                    raw_archive_dir,
+                    raw=frame.text.encode("utf-8"),
+                    provenance=frame.provenance,
                 )
+                # The archive-*relative* location, not the absolute path the
+                # write returns. An archive root is a fact about a run; a record
+                # that embeds one is only readable on the machine that wrote it,
+                # breaks silently when the capture is moved, and differs between
+                # two stores holding identical bytes. Same decision as keeping
+                # `data_dir` out of `config_fingerprint`, one layer down.
+                state.current_raw_location = archive_relative_location(frame.provenance)
             _consume_frame(
                 frame,
                 state=state,
@@ -533,6 +551,8 @@ def _consume_price_change_for_token(
             state.count(accepted=1)
         else:
             state.count(duplicate=1)
+        if state.dispatcher is not None:
+            state.dispatcher.dispatch(result)
     else:
         store.append_rejection(result, ingest_sequence=sequence)
         state.count(rejected=1)
@@ -583,6 +603,8 @@ def _consume_ws_book_for_token(
             state.count(accepted=1)
         else:
             state.count(duplicate=1)
+        if state.dispatcher is not None:
+            state.dispatcher.dispatch(result)
     else:
         store.append_rejection(result, ingest_sequence=sequence)
         state.count(rejected=1)

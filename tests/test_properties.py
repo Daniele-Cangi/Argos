@@ -18,7 +18,14 @@ from hypothesis import settings as hypothesis_settings
 from hypothesis import strategies as st
 
 from argos.clock import ReplayClock, ensure_utc
-from argos.config import RunManifest, RunMode, Settings, WorkingTreeStatus
+from argos.config import (
+    FingerprintScope,
+    RunManifest,
+    RunMode,
+    Settings,
+    WorkingTreeStatus,
+    fingerprint_scope,
+)
 from argos.config.settings import ENV_PREFIX, unknown_environment_keys
 from argos.domain.market import MarketDefinitionV1
 from argos.domain.provenance import SourceProvenanceV1, sha256_hex
@@ -166,7 +173,7 @@ MANIFESTS = _manifests()
 def test_a_record_survives_a_serialization_round_trip(manifest: RunManifest) -> None:
     record = manifest.to_record()
     assert RunManifest.from_record(record) == manifest
-    assert record["schema_version"] == "run_manifest.v3"
+    assert record["schema_version"] == "run_manifest.v5"
 
 
 @given(manifest=MANIFESTS)
@@ -199,9 +206,22 @@ def test_a_foreign_schema_version_is_never_accepted(manifest: RunManifest, forei
     # one below the ceiling: the property varies attempts + 1, which must stay legal
     attempts=st.integers(min_value=1, max_value=9),
 )
-def test_the_fingerprint_identifies_the_configuration_exactly(
+def test_the_fingerprint_identifies_the_experiment_exactly(
     log_level: str, timeout: float, attempts: int
 ) -> None:
+    """Every EXPERIMENT-scoped setting moves the fingerprint; no ENVIRONMENT one does.
+
+    Both halves are asserted over the whole field set rather than over a
+    hand-picked pair, so a field added later is covered by whichever half its
+    declared `FingerprintScope` puts it in — and a field that declares no scope
+    fails in `fingerprint_scope` before it reaches either.
+
+    `data_dir` moved from the first half to the second on 2026-08-17 (M3 blocker
+    R1): it names where output goes, which `docs/02_ARCHITECTURE.md` allows to
+    differ between live and replay, so a replay into a second directory must not
+    look like a second experiment.
+    """
+
     def build(**overrides: Any) -> Settings:
         base: dict[str, Any] = {
             "log_level": log_level,
@@ -211,11 +231,36 @@ def test_the_fingerprint_identifies_the_configuration_exactly(
         base.update(overrides)
         return Settings(**base)
 
+    # A legal, different value for every field, so the two halves below are
+    # driven by the declared scope rather than by which fields were listed.
+    alternatives: dict[str, Any] = {
+        "gamma_base_url": "https://gamma-api.polymarket.com/alt",
+        "data_base_url": "https://data-api.polymarket.com/alt",
+        "clob_base_url": "https://clob.polymarket.com/alt",
+        "clob_market_ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/market/alt",
+        "data_dir": "/somewhere/else",
+        "log_level": "DEBUG" if log_level != "DEBUG" else "ERROR",
+        "http_timeout_seconds": timeout / 2,
+        "http_max_attempts": attempts + 1,
+        "source_jitter_seed": 7,
+        # execution_enabled has exactly one legal value (ADR-0007), so there is
+        # no alternative to vary; it is excluded here and its scope is still
+        # asserted by tests/test_boundaries.py.
+    }
+    assert set(alternatives) | {"execution_enabled"} == set(Settings.model_fields), (
+        "a setting was added without giving this property a legal alternative value"
+    )
+
     reference = build()
     assert reference.fingerprint() == build().fingerprint()
     assert len(reference.fingerprint()) == 64
-    assert reference.fingerprint() != build(http_max_attempts=attempts + 1).fingerprint()
-    assert reference.fingerprint() != build(data_dir="/somewhere/else").fingerprint()
+
+    for name, alternative in alternatives.items():
+        varied = build(**{name: alternative}).fingerprint()
+        if fingerprint_scope(name) is FingerprintScope.EXPERIMENT:
+            assert varied != reference.fingerprint(), f"{name} must move the fingerprint"
+        else:
+            assert varied == reference.fingerprint(), f"{name} must not move the fingerprint"
 
 
 @given(

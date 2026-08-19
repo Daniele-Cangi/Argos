@@ -1,0 +1,11 @@
+{
+ "byte_length": 2316,
+ "note": "The CLOB market record for the exact market ARGOS captured on 2026-08-10 (tests/fixtures/clob/ws_market_price_change.raw.json), fetched after it resolved. Carries an explicit per-token winner flag rather than a price to infer from, and Gamma returns nothing at all for this condition_id.",
+ "parser_version": "clob-resolution-normalizer/1",
+ "payload_kind": "clob.markets.by_condition_id",
+ "raw_sha256": "b160d31cf285e241ce22bcd48350eb8ebd7423d3a1ee5ef1cdcd1640c94a960b",
+ "redaction": "none - the endpoint is public and unauthenticated, and no request carried credentials",
+ "retrieved_at": "2026-08-18T02:35:58Z",
+ "source": "clob_rest",
+ "source_endpoint": "https://clob.polymarket.com/markets/0x94a39addec8bd24a2d03deeaa43bdee6a2b11eca403cd12495eb24132cc23173"
+}

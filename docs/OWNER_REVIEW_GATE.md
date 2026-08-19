@@ -4,16 +4,63 @@ Claude must stop implementation when this gate is reached.
 
 ## Required repository state
 
-- [ ] Clean working tree or clearly documented local-only artifacts.
-- [ ] M0-M4 marked complete with evidence.
-- [ ] All CI/local quality gates pass.
-- [ ] No execution, wallet, private key, authenticated channel, or order code.
-- [ ] Public-source endpoints and schemas re-verified.
-- [ ] Sample discovery, capture, replay, and evaluation commands work from clean checkout.
-- [ ] Golden replay hash is stable.
-- [ ] At least one completed baseline evaluation exists, without edge claims.
-- [ ] Architecture, security, and test reviews have no critical blocker.
-- [ ] `HANDOFF_M4.md` is complete.
+Checked 2026-08-18, and re-checked after the M4.1 hardening pass
+(`docs/HANDOFF_M4.md` section 12). Every box below names what was verified
+rather than asserting the box; the commit is not pinned here because it moves
+with each slice, and `git log --oneline main..HEAD` is authoritative.
+
+- [x] Clean working tree or clearly documented local-only artifacts. Working
+      tree clean; `.data/`, `.venv/` and the caches are gitignored, and no
+      generated capture data is committed.
+- [x] M0-M4 marked complete with evidence. `docs/STATUS.md` carries a criterion
+      table per milestone; `docs/HANDOFF_M4.md` section 5 links M3 and M4 to the
+      test that closes each.
+- [x] All CI/local quality gates pass. ruff, ruff format, mypy strict on **58
+      source files**, **1,582 tests**; the coverage gate enforces
+      `docs/13_TEST_STRATEGY.md`'s per-area branch thresholds and passes.
+      **Reproduced on CI**: GitHub Actions run `32195822692`, commit
+      `26559f5`, `ubuntu-latest` / Python 3.12.13 — checkout, uv sync, Ruff,
+      format, mypy strict (58 source files), pytest (1,580 tests) and the
+      branch-coverage thresholds all passed. That is **independent
+      execution**, not an independent architectural or security review; the
+      review box below stays unticked regardless of how often CI is green.
+- [x] No execution, wallet, private key, authenticated channel, or order code.
+      Enforced mechanically by `tests/test_boundaries.py` (declared-name and
+      endpoint-literal scans) and by the configuration validator, not by review.
+- [x] Public-source endpoints and schemas re-verified. Re-measured against live
+      public traffic on 2026-08-18 and recorded in
+      `docs/research/m4-gamma-resolution.md`, which found that `closed == true`
+      does not imply a resolution and that Gamma does not cover ARGOS's own
+      captured market.
+- [x] Sample discovery, capture, replay, and evaluation commands work from clean
+      checkout. `docs/RUNBOOK.md` carries all four; replay and evaluation are
+      driven end to end through `CliRunner` in the suite, and discovery and
+      capture were verified against live traffic at M1 and M2.
+- [x] Golden replay hash is stable. `2a7fcb6a…`, identical across three runs and
+      all three pacing modes, and anchored to three snapshot-to-snapshot
+      checkpoints the source itself asserted.
+- [x] At least one completed baseline evaluation exists, without edge claims.
+      38 midpoint and 37 persistence forecasts from the real capture, scored
+      against the real settlement. **No edge claim is made, and the report's own
+      limitations field states why one could not be**: every forecast carries the
+      same score, so the effective sample size is 1.
+- [ ] Architecture, security, and test reviews have no critical blocker. **The
+      reviews found no critical blocker, and they are not independent** — they
+      were performed by the same author who wrote the code. See
+      `docs/STATUS.md`, "M2 closure reviews" and "M4 closure reviews". This box
+      is left unticked deliberately: an independent pass is the one thing this
+      gate asks for that has not been obtained, and ticking it would be the
+      claim the whole repository's discipline exists to prevent.
+
+      **A green CI run does not tick this box.** CI is independent
+      *execution* — it proves the gates reproduce on a machine nobody here
+      controls. It reads nothing, judges nothing, and has no opinion about the
+      architecture or the threat model. The one automated reviewer that did
+      read the diff found a real defect on its first pass
+      (`docs/HANDOFF_M4.md` section 12), which is evidence that reading this
+      code finds things, not evidence that it has been reviewed.
+- [x] `HANDOFF_M4.md` is complete. All eleven sections `docs/10_HANDOFF.md`
+      specifies, plus a twelfth recording the M4.1 hardening pass.
 
 ## Questions for Daniele and Nexus
 

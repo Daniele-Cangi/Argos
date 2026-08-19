@@ -5,12 +5,21 @@ assignment, so these tests pin the behaviour of the freeze itself.
 """
 
 import copy
+import importlib
 import pickle
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
-from argos.domain.versioning import FrozenDict, freeze, thaw
+from argos.domain.versioning import (
+    FrozenDict,
+    VersionedModel,
+    freeze,
+    registered_schemas,
+    resolve_schema,
+    thaw,
+)
+from argos.errors import SchemaVersionError
 
 NESTED: dict[str, Any] = {
     "level": "INFO",
@@ -81,3 +90,97 @@ def test_freeze_and_thaw_round_trip_is_stable() -> None:
 @pytest.mark.parametrize("scalar", [1, "text", 3.5, True, None, b"bytes"])
 def test_scalars_pass_through_untouched(scalar: object) -> None:
     assert freeze(scalar) is scalar
+
+
+# --- the schema registry (M3 blocker R2) ------------------------------------------
+
+
+def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
+    """The property M3 replay dispatch rests on.
+
+    Asserted as an exact set rather than a subset: a payload model whose module
+    is never imported is silently missing from the registry, and "the reader
+    could not resolve it" would then look identical to "the record named a
+    schema that does not exist".
+    """
+    # Imported for the side effect that matters here: defining the classes is
+    # what registers them. `importlib` rather than a bare `import ... # noqa`
+    # so the intent is stated in code rather than in a lint suppression.
+    for package in (
+        "argos.baselines",
+        "argos.compiler",
+        "argos.config",
+        "argos.domain",
+        "argos.evaluation",
+        "argos.replay",
+        "argos.resolution",
+    ):
+        importlib.import_module(package)
+
+    shipped = {
+        version: model.__qualname__
+        for version, model in registered_schemas().items()
+        if model.__module__.startswith("argos.")
+    }
+    assert shipped == {
+        "compiled_market_contract.v1": "CompiledMarketContractV1",
+        "evaluation_report.v1": "EvaluationReportV1",
+        "forecast_evaluation.v1": "ForecastEvaluationV1",
+        "market_baseline_forecast.v1": "MarketBaselineForecastV1",
+        "market_audit.v1": "MarketAuditV1",
+        "market_definition.v1": "MarketDefinitionV1",
+        "market_quote.v1": "MarketQuoteV1",
+        "observation_envelope.v1": "ObservationEnvelopeV1",
+        "order_book_snapshot.v1": "OrderBookSnapshotV1",
+        "price_change.v1": "PriceChangeV1",
+        "quarantined_market.v1": "QuarantinedMarketV1",
+        "rejected_observation.v1": "RejectedObservationV1",
+        "replay_manifest.v1": "ReplayManifestV1",
+        "resolution.v1": "ResolutionV1",
+        "run_manifest.v5": "RunManifest",
+        "source_provenance.v1": "SourceProvenanceV1",
+        "ws_book_snapshot.v1": "WsBookSnapshotV1",
+    }
+
+
+def test_two_models_cannot_claim_one_schema_version() -> None:
+    """The M2 security review's finding, closed structurally.
+
+    Review built a foreign model out of a book envelope with no error, because
+    two classes both declaring `order_book_snapshot.v1` defeat `read_payload`'s
+    version check -- the check compares strings, and both strings matched. The
+    collision was not hypothetical: `tests/test_observation_envelope.py` had a
+    stub declaring exactly that version, inside the test module for
+    `read_payload` itself.
+    """
+    with pytest.raises(SchemaVersionError) as caught:
+
+        class _Impostor(VersionedModel):
+            schema_version: ClassVar[str] = "order_book_snapshot.v1"
+
+    assert caught.value.context["claimed_by"].endswith("OrderBookSnapshotV1")
+
+
+def test_resolving_an_unknown_version_names_what_is_known() -> None:
+    """A version that resolves to nothing is far more often an unimported module
+    than an unknown schema, and the two need different fixes."""
+    with pytest.raises(SchemaVersionError) as caught:
+        resolve_schema("not_a_real_schema.v9")
+    supported = caught.value.context["supported"]
+    assert isinstance(supported, list)
+    assert "order_book_snapshot.v1" in supported
+
+
+def test_the_registry_returns_the_declaring_class_itself() -> None:
+    from argos.domain.pricechange import PriceChangeV1
+
+    assert resolve_schema("price_change.v1") is PriceChangeV1
+
+
+def test_registered_schemas_hands_back_a_copy() -> None:
+    """A caller mutating the registry through a diagnostic accessor would be
+    exactly the hidden global state the module docstring argues this is not."""
+    snapshot = registered_schemas()
+    snapshot["injected.v1"] = FrozenDict  # type: ignore[assignment]
+    with pytest.raises(SchemaVersionError):
+        resolve_schema("injected.v1")
