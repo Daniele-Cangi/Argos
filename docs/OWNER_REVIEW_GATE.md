@@ -8,7 +8,8 @@ Claude must stop implementation when this gate is reached.
 `docs/OWNER_TAKEOVER_M4_REVIEW.md` reproduced F2, F3, F4, F5 and F8 and found
 additional sample-unit, displayed-price, resolution-identity, integrity and
 portability defects. ADR-0013 records the corrective policy; ADR-0014 defines
-the prospective evidence and calibration-sufficiency boundary.
+the prospective evidence and calibration-sufficiency boundary; ADR-0015 keeps
+measurement-layer validation separate from calibration sufficiency.
 
 The checklist below is the dated 2026-08-18 submission and is retained as
 history, not as the current verdict. In particular, its M4-complete and
@@ -41,6 +42,12 @@ requires a bounded prospective
 multi-target experiment with contract persistence proven before forecast,
 predeclared source-terminal or first-observed-final cutoff evidence, and a
 predeclared sample/weighting/sufficiency rule. No M5-M8 work is authorized.
+
+The experiment branch now contains the versioned V3 prospective boundary,
+durable receipt contracts and equal-target aggregation. That infrastructure is
+necessary evidence, not a gate pass. Until the frozen two-target pilot resolves
+and reconstructs, the current measurement verdict remains at most
+`M4_PARTIALLY_VALIDATED`; calibration remains separately not established.
 
 ## Required repository state
 

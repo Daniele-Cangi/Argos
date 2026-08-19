@@ -330,12 +330,24 @@ ADR-0014 advances the active boundary to `EvaluationRunBundleV2`, containing:
 - explicit `EvaluationExclusionV1` records; and
 - a canonical digest over every nested, independently versioned record.
 
-The prospective M4 experiment must supersede this boundary again if necessary
-to bind versioned cutoff-provenance and contract-availability evidence. Those
-records must distinguish source time, retrieval time and selected cutoff, and
-must prove contract persistence before the earliest included forecast. Merely
-populating `ResolutionV1.resolved_at` or attaching a contract after resolution
-does not satisfy ADR-0014.
+The prospective boundary is `EvaluationRunBundleV3`. It embeds and
+cross-validates:
+
+- `ProspectiveExperimentProtocolV1` plus its durable persistence receipt;
+- the selected `MarketDefinitionV1`, `CompiledMarketContractV1` and
+  `ProspectiveTargetV1`, each with canonical digest and receipt;
+- a contiguous chain of receipt-bound `LifecycleObservationV1` records;
+- `ResolutionCutoffEvidenceV1` naming the first final observation or the
+  predeclared source-terminal alternative, plus its receipt;
+- the original `ResolutionV1`, `EvaluationReportV3`, forecasts, evaluations,
+  per-arrival decisions and exclusions; and
+- a canonical V3 digest over every nested record.
+
+`EvaluationReportV3.resolution_cutoff` means the cutoff proven by the cutoff
+record. It does not change the historical meaning of V2 and does not reinterpret
+`ResolutionV1.resolved_at`. Source time, retrieval time and selected cutoff are
+separate fields. Contract, market, target and protocol receipts must all precede
+every admitted forecast.
 
 `EvaluationReportV2` records separate arrival, target-information-state,
 forecast-point, scored-point, resolved-target and headline-eligible-target
@@ -349,3 +361,9 @@ resolution identity, digest, status, normalizer and cutoff; contract identity
 and digest; child counts and digests; forecast/evaluation scope; and exclusive
 scored-versus-excluded classification. Recomputing the outer digest over an
 internally contradictory bundle does not make it a valid claim.
+
+`ProspectiveExperimentBundleV1` is the multi-target boundary. It embeds the V3
+target bundles, persistent target exclusions, one last-admissible contribution
+per target and method, and a recomputable aggregate report. Duplicate targets
+cannot contribute twice. It publishes measurement-layer and calibration
+verdicts independently (ADR-0015).

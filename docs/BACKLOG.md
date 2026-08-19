@@ -42,7 +42,14 @@ sections below without deleting their audit trail.
       configured.
 - [ ] Pin a real standalone `last_trade_price` WebSocket fixture before
       modeling that event. Do not infer its exact persistent schema from docs
-      alone.
+      alone. A bounded 2026-08-19 probe did not observe one, so the item remains
+      open and the prospective policy excludes an affected target.
+- [x] Introduce V3 prospective protocol/receipt/target/lifecycle/cutoff
+      contracts and a digest-valid-but-false-semantics adversarial suite.
+- [x] Separate the M4 measurement verdict from calibration sufficiency and
+      implement equal-target, last-admissible-point aggregation (ADR-0015).
+- [x] Preflight bounded public discovery, lifecycle and WebSocket capture; do
+      not admit the probe frames into the prospective sample.
 - [ ] Run the smallest prospective multi-target experiment: bounded captures
       with contracts and persistence receipts recorded before forecasts;
       predeclared source-terminal or first-observed-final cutoff evidence;

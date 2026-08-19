@@ -27,6 +27,16 @@ correction is auditable; it is not current authority.
   cross-validating report policy/resolution/contract claims, counts and child
   digests, evaluation links, and scored-versus-excluded membership against the
   actual sibling records.
+- The prospective branch versions forward to `EvaluationRunBundleV3`: frozen
+  protocol, market/contract/target persistence receipts, ordered lifecycle
+  polls, first-final cutoff evidence and the original resolution are one
+  cross-validated boundary. `ProspectiveExperimentBundleV1` gives each resolved
+  target one contribution per method and publishes measurement and calibration
+  verdicts separately (ADR-0015).
+- A bounded public preflight found 37 market-channel frames / 40 stored events
+  with no rejection or unknown type. No standalone `last_trade_price` event was
+  observed; the schema remains unmodeled and the pilot predeclares target-level
+  exclusion if one occurs. These probe frames are not admitted experiment data.
 - Initial book-snapshot last trade is preserved separately from book state.
   Midpoint, last trade and the conditional displayed-price rule are distinct
   baselines. Standalone last-trade events remain unmodeled until a pinned raw
