@@ -262,13 +262,13 @@ class EvaluationRunBundleV3(VersionedModel):
             self.market.condition_id,
         ):
             raise ValueError("target scope disagrees with its persisted market definition")
-        try:
-            market_yes = self.market.token_id_for("Yes")
-            market_no = self.market.token_id_for("No")
-        except KeyError as error:
-            raise ValueError(
-                "prospective target market has no standard Yes/No token map"
-            ) from error
+        if set(self.market.outcomes) != {"Yes", "No"} or set(self.market.outcome_token_map) != {
+            "Yes",
+            "No",
+        }:
+            raise ValueError("prospective target market has no standard Yes/No token map")
+        market_yes = self.market.token_id_for("Yes")
+        market_no = self.market.token_id_for("No")
         if (self.target.yes_token_id, self.target.no_token_id) != (market_yes, market_no):
             raise ValueError("target token mapping disagrees with its market definition")
         if (
@@ -465,9 +465,7 @@ class EvaluationRunBundleV3(VersionedModel):
                     "protocol, contract and target receipts must precede every forecast"
                 )
         for evaluation in self.evaluations:
-            evaluated_forecast = forecasts_by_id.get(evaluation.forecast_id)
-            if evaluated_forecast is None:
-                raise ValueError("evaluation names a forecast absent from its bundle")
+            evaluated_forecast = forecasts_by_id[evaluation.forecast_id]
             if evaluated_forecast.as_of_received_time >= self.cutoff_evidence.selected_cutoff:
                 raise ValueError("an evaluated forecast is not strictly before the proven cutoff")
             if (
@@ -490,8 +488,8 @@ class EvaluationRunBundleV3(VersionedModel):
                 evaluated_forecast.calibration_status.value,
             ):
                 raise ValueError("evaluation disagrees with its forecast or claim boundary")
-        if any(item.forecast_id not in forecast_ids for item in self.exclusions):
-            raise ValueError("exclusion names a forecast absent from its bundle")
+        # The exact partition equality above already proves every exclusion and
+        # evaluation references one of this bundle's forecasts.
         sequences = {item.ingest_sequence for item in self.decisions}
         if len(sequences) != len(self.decisions):
             raise ValueError("ingest_sequence must be unique within bundle decisions")
