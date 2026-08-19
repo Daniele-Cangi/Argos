@@ -70,10 +70,10 @@ scored forecast points, resolved targets and headline-eligible targets.
 Successive trajectory points are diagnostics, not independent outcomes.
 
 The one-target evaluator leaves headline calibration empty. Its per-trajectory
-calibration is explicitly diagnostic. At least two independently resolved
-targets are required before calibration can be established; a future
-multi-target aggregation protocol must declare its weighting before making
-such a claim.
+calibration is explicitly diagnostic. Two independently resolved targets are
+only a structural floor, not scientific sufficiency; ADR-0014 supersedes the
+original wording of this paragraph and requires a predeclared multi-target
+protocol to define weighting and sufficiency before any calibration claim.
 
 ### 5. Market prices keep distinct meanings
 

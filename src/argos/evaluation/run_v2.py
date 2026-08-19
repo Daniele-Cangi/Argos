@@ -25,10 +25,10 @@ from argos.evaluation.bundle import (
     DecisionReason,
     EvaluationDecisionV1,
     EvaluationExclusionV1,
-    EvaluationPolicyV1,
-    EvaluationRunBundleV1,
+    EvaluationPolicyV2,
+    EvaluationRunBundleV2,
     ExclusionReason,
-    bundle_evidence_digest,
+    bundle_evidence_digest_v2,
     record_sha256,
 )
 from argos.evaluation.calibration import DEFAULT_BIN_COUNT, calibration_report
@@ -54,7 +54,7 @@ __all__ = ["EvaluationResult", "evaluate_capture"]
 class EvaluationResult:
     """The persisted bundle and convenient views of its child records."""
 
-    bundle: EvaluationRunBundleV1
+    bundle: EvaluationRunBundleV2
 
     @property
     def report(self) -> EvaluationReportV2:
@@ -98,7 +98,7 @@ def evaluate_capture(
     code_revision: str | None = None,
     working_tree: WorkingTreeStatus = WorkingTreeStatus.UNKNOWN,
     extra_limitations: tuple[str, ...] = (),
-    policy: EvaluationPolicyV1 | None = None,
+    policy: EvaluationPolicyV2 | None = None,
 ) -> EvaluationResult:
     """Evaluate target information-state changes, never transport arrivals.
 
@@ -108,7 +108,7 @@ def evaluate_capture(
     """
     require_epsilon(epsilon)
     require_bin_count(bin_count)
-    selected_policy = policy or EvaluationPolicyV1()
+    selected_policy = policy or EvaluationPolicyV2()
     if resolution.winning_token_id is None:
         raise ValueError("a final resolution must name the winning token")
     if resolution.resolution_status is not ResolutionStatus.FINAL:
@@ -283,8 +283,7 @@ def evaluate_capture(
 
     eligible_targets = 1 if evaluations and not blockers else 0
     headline_reasons = list(blockers)
-    if eligible_targets < selected_policy.minimum_resolved_targets_for_calibration:
-        headline_reasons.append("insufficient_resolved_targets_for_calibration")
+    headline_reasons.append("single_target_runner_cannot_establish_calibration")
     headline_status = (
         HeadlineStatus.ESTABLISHED if not headline_reasons else HeadlineStatus.NOT_ESTABLISHED
     )
@@ -348,7 +347,7 @@ def evaluate_capture(
         trajectory_diagnostics=trajectory_diagnostics,
         child_record_digests=child_digests,
     )
-    evidence_digest = bundle_evidence_digest(
+    evidence_digest = bundle_evidence_digest_v2(
         evaluation_run_id=evaluation_run_id,
         policy=selected_policy,
         resolution=resolution,
@@ -359,7 +358,7 @@ def evaluate_capture(
         decisions=decisions,
         exclusions=exclusions,
     )
-    bundle = EvaluationRunBundleV1(
+    bundle = EvaluationRunBundleV2(
         evaluation_run_id=evaluation_run_id,
         policy=selected_policy,
         resolution=resolution,
@@ -529,8 +528,9 @@ def _limitations(
         "Scores are uncalibrated market baselines, not ARGOS probabilities (ADR-0006).",
         "Forecast points within one capture are autocorrelated trajectory diagnostics, "
         "not independent resolved targets.",
-        "This runner evaluates one resolved target; calibration requires at least two "
-        "independent resolved targets and is therefore not a headline metric.",
+        "This runner evaluates one resolved target and cannot establish calibration. "
+        "Two independent targets are only a structural floor; scientific sufficiency "
+        "requires a predeclared multi-target protocol.",
         "No comparison against a non-market forecaster is made "
         f"({len(evaluations)} scored points).",
         *extra,

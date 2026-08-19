@@ -20,23 +20,24 @@ correction is auditable; it is not current authority.
   result is **zero admissible scored points and no headline claim**, not 75
   samples.
 - Counts now distinguish arrivals, information states, forecast points, scored
-  points and resolved targets. One resolved target cannot establish
-  calibration; trajectory metrics are diagnostics only.
+  points and resolved targets. ADR-0014 makes two targets a structural floor,
+  not calibration sufficiency; only a predeclared multi-target sample,
+  weighting and sufficiency rule can support that claim.
 - Initial book-snapshot last trade is preserved separately from book state.
   Midpoint, last trade and the conditional displayed-price rule are distinct
   baselines. Standalone last-trade events remain unmodeled until a pinned raw
   fixture establishes the exact schema.
-- Windows is now a first-class CI platform. The local Windows gate passes
-  ruff, mypy and **1,593 tests** (one symlink-capability skip). The full local
-  branch-coverage gate passes: 95% aggregate for reporting purposes, every
-  declared per-area threshold satisfied, and `run_v2.py` at 91.77% against
-  its 90% floor. Canonical GitHub Actions run `32269750425` independently
-  passes the Windows and Ubuntu jobs, including Ubuntu coverage.
+- Windows is now a first-class CI platform. The final local ADR-0014 gate
+  passes Ruff, format, strict mypy, and **1,595 tests** (one
+  symlink-capability skip). The branch-coverage gate passes at 95% aggregate;
+  `bundle.py` is 94.97% and `run_v2.py` 92.11%, both above their 90% floors.
+  PR #2 must retain green Windows and Ubuntu jobs before merge.
 
 The smallest next data experiment is not merely a larger capture. It must
-prospectively persist compiled contracts and exact finality/cutoff evidence for
-multiple independently resolved markets, then aggregate with a predeclared
-resolved-target weighting policy.
+persist each compiled contract before its first forecast and record either a
+verifiable source terminal time or the first observed final settlement with
+separate source/retrieval times and non-reconstructed provenance. Its sample,
+target weighting, stopping and sufficiency rules must be predeclared.
 
 ## Current state
 

@@ -7,7 +7,8 @@ Claude must stop implementation when this gate is reached.
 **BLOCKED. The gate has not passed.** The independent review in
 `docs/OWNER_TAKEOVER_M4_REVIEW.md` reproduced F2, F3, F4, F5 and F8 and found
 additional sample-unit, displayed-price, resolution-identity, integrity and
-portability defects. ADR-0013 records the corrective policy.
+portability defects. ADR-0013 records the corrective policy; ADR-0014 defines
+the prospective evidence and calibration-sufficiency boundary.
 
 The checklist below is the dated 2026-08-18 submission and is retained as
 history, not as the current verdict. In particular, its M4-complete and
@@ -28,11 +29,13 @@ The corrective implementation now:
   displayed-price rule; and
 - runs the ordinary gate on Windows as well as Ubuntu.
 
-The local coverage threshold passes (1,593 tests; `run_v2.py` 91.77% against
-90%). Canonical GitHub Actions run `32269750425` also passes on Windows and
-Ubuntu, including coverage. Gate closure now requires a bounded prospective
-multi-target experiment with persisted contracts and exact resolution
-cutoff/finality evidence. No M5-M8 work is authorized.
+The final local ADR-0014 gate passes (1,595 tests plus one Windows symlink
+skip; 95% aggregate coverage; `bundle.py` 94.97% and `run_v2.py` 92.11%). PR
+#2 remains subject to green Windows and Ubuntu checks before merge. Gate
+closure still requires a bounded prospective
+multi-target experiment with contract persistence proven before forecast,
+predeclared source-terminal or first-observed-final cutoff evidence, and a
+predeclared sample/weighting/sufficiency rule. No M5-M8 work is authorized.
 
 ## Required repository state
 
@@ -100,7 +103,8 @@ with each slice, and `git log --oneline main..HEAD` is authoritative.
 2. Which external evidence sources are acceptable and affordable?
 3. Should the market compiler use LLM assistance, and under what human-review policy?
 4. Which RESON channels should be independent in the first experiment?
-5. What minimum resolved sample is required before calibration/fusion claims?
+5. What predeclared sample, dispersion and uncertainty rule is sufficient for
+   calibration claims in the prospective experiment?
 6. Should the next interface remain CLI/report-first or introduce a research UI?
 7. Should execution remain a separate repository permanently?
 

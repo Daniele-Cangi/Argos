@@ -174,7 +174,7 @@ async def test_a_known_cutoff_and_contract_allow_point_scoring_but_not_calibrati
     assert result.report.calibration == {}
     assert result.report.trajectory_diagnostics["midpoint"]["sample_count"] > 0
     assert result.report.headline_status == "not_established"
-    assert "insufficient_resolved_targets_for_calibration" in result.report.headline_reasons
+    assert "single_target_runner_cannot_establish_calibration" in result.report.headline_reasons
 
 
 async def test_post_resolution_points_are_excluded_not_bucketed_into_scores() -> None:

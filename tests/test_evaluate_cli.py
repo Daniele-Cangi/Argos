@@ -66,7 +66,8 @@ async def test_the_real_capture_refuses_to_claim_a_score_without_cutoff_or_contr
     bundle: dict[str, Any] = orjson.loads(result.stdout)
     report = bundle["report"]
 
-    assert bundle["schema_version"] == "evaluation_run_bundle.v1"
+    assert bundle["schema_version"] == "evaluation_run_bundle.v2"
+    assert bundle["policy"]["schema_version"] == "evaluation_policy.v2"
     assert report["schema_version"] == "evaluation_report.v2"
     assert report["scored_count"] == 0
     assert report["headline_status"] == "not_established"
@@ -158,7 +159,7 @@ async def test_the_report_is_written_beside_the_database(tmp_path: Path) -> None
     written = list(tmp_path.glob("*.evaluation-bundle.json"))
     assert len(written) == 1
     record = json.loads(written[0].read_text(encoding="utf-8"))
-    assert record["schema_version"] == "evaluation_run_bundle.v1"
+    assert record["schema_version"] == "evaluation_run_bundle.v2"
     assert record["report"]["schema_version"] == "evaluation_report.v2"
     # The human summary never omits the sample size, and always prints the
     # limitations -- a report whose caveats are one flag away is a report whose

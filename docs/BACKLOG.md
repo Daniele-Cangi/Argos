@@ -13,12 +13,15 @@ sections below without deleting their audit trail.
 - [x] Enforce final-only resolution, exact cutoff, post-resolution exclusion,
       persisted contract identity and capture/replay integrity as explicit
       scoring admissibility rules.
-- [x] Persist `EvaluationRunBundleV1` with canonical evidence digest, nested
+- [x] Persist `EvaluationRunBundleV2` with canonical evidence digest, nested
       version checks, trajectory/resolution/contract identity, forecasts,
       evaluations, decisions and exclusions.
 - [x] Separate arrivals, target information states, forecast points, scored
       points and resolved-target counts. Keep one-target calibration out of the
       headline.
+- [x] Replace the ambiguous two-target calibration threshold with a structural
+      floor in `EvaluationPolicyV2`; require a predeclared protocol to define
+      sample size, weighting and scientific sufficiency (ADR-0014).
 - [x] Preserve `last_trade_price` supplied by initial REST/WebSocket book
       snapshots as auxiliary evidence, outside the order-book state hash.
 - [x] Restore the distinct displayed-price method: midpoint for spread at most
@@ -27,18 +30,20 @@ sections below without deleting their audit trail.
       `O_NOFOLLOW`, platform-correct archive durability behavior and a
       Windows/Ubuntu CI matrix.
 - [x] Meet per-file branch-coverage thresholds for the corrected contracts and
-      evaluator. Local Windows result: 1,593 passed, one privilege-dependent
-      symlink skip; `run_v2.py` 91.77% against its 90% floor.
-- [x] Pass the complete two-platform CI matrix on canonical PR #2. GitHub
-      Actions run `32269750425`: Windows passed in 1m56s; Ubuntu plus coverage
-      passed in 3m41s.
+      evaluator. Final ADR-0014 local Windows result: 1,595 passed, one
+      privilege-dependent symlink skip; `bundle.py` 94.97% and `run_v2.py`
+      92.11% against their 90% floors.
+- [x] Make the complete Windows/Ubuntu CI matrix a required pre-merge check on
+      canonical PR #2; its final head is not made ready or merged until both
+      jobs pass, including Ubuntu coverage.
 - [ ] Pin a real standalone `last_trade_price` WebSocket fixture before
       modeling that event. Do not infer its exact persistent schema from docs
       alone.
 - [ ] Run the smallest prospective multi-target experiment: bounded captures
-      with persisted compiled contracts plus exact resolution cutoff/finality,
-      enough independently resolved targets for a predeclared target-weighted
-      comparison, and no M5 feature work.
+      with contracts and persistence receipts recorded before forecasts;
+      predeclared source-terminal or first-observed-final cutoff evidence;
+      and a predeclared sample, weighting and sufficiency rule. No M5, RESON,
+      AI-forecasting or execution work.
 
 ## Must close before M3 — from the M3 readiness audit (2026-08-17)
 

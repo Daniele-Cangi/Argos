@@ -14,8 +14,20 @@ from argos.baselines import BaselineMethod
 from argos.clock import ReplayClock
 from argos.compiler import CompiledMarketContractV1
 from argos.config import Settings
-from argos.evaluation import EvaluationResult, EvaluationRunBundleV1, evaluate_capture
-from argos.evaluation.bundle import DecisionReason
+from argos.evaluation import (
+    EvaluationResult,
+    EvaluationRunBundleV1,
+    EvaluationRunBundleV2,
+    evaluate_capture,
+)
+from argos.evaluation.bundle import (
+    DecisionReason,
+    EvaluationExclusionV1,
+    EvaluationPolicyV1,
+    EvaluationPolicyV2,
+    ExclusionReason,
+    bundle_evidence_digest,
+)
 from argos.ingestion.capture import run_capture
 from argos.resolution import ResolutionV1, normalize_clob_resolution
 from argos.store.event_store import EventStore, open_sqlite_event_store
@@ -159,10 +171,76 @@ async def test_bundle_round_trip_verifies_every_child_digest() -> None:
         )
         record = result.bundle.to_record()
         assert result.evaluations == result.bundle.evaluations
-        assert EvaluationRunBundleV1.from_record(record) == result.bundle
+        assert EvaluationRunBundleV2.from_record(record) == result.bundle
         record["evidence_digest"] = "0" * 64
         with pytest.raises(ValueError, match="evidence_digest"):
-            EvaluationRunBundleV1.from_record(record)
+            EvaluationRunBundleV2.from_record(record)
+
+        legacy_policy = EvaluationPolicyV1()
+        legacy_report = result.report.model_copy(
+            update={"evaluation_policy_version": legacy_policy.schema_version}
+        )
+        legacy = EvaluationRunBundleV1(
+            evaluation_run_id=result.bundle.evaluation_run_id,
+            policy=legacy_policy,
+            resolution=result.bundle.resolution,
+            contract=result.bundle.contract,
+            report=legacy_report,
+            forecasts=result.forecasts,
+            evaluations=result.evaluations,
+            decisions=result.decisions,
+            exclusions=result.exclusions,
+            evidence_digest=bundle_evidence_digest(
+                evaluation_run_id=result.bundle.evaluation_run_id,
+                policy=legacy_policy,
+                resolution=result.bundle.resolution,
+                contract=result.bundle.contract,
+                report=legacy_report,
+                forecasts=result.forecasts,
+                evaluations=result.evaluations,
+                decisions=result.decisions,
+                exclusions=result.exclusions,
+            ),
+        )
+        assert EvaluationRunBundleV1.from_record(legacy.to_record()) == legacy
+    finally:
+        store.close()
+
+
+async def test_bundle_links_are_validated_before_the_digest() -> None:
+    store = await _capture("bundle-links")
+    try:
+        result = evaluate_capture(
+            store=store,
+            capture_run_id="bundle-links",
+            resolution=_resolution(),
+            token_id=TOKEN,
+            settings=Settings(),
+            clock=ReplayClock(NOW),
+            evaluation_run_id="evaluation-bundle-links",
+            contract=_contract(),
+            methods=(BaselineMethod.MIDPOINT,),
+        )
+        bundle = result.bundle
+        with pytest.raises(ValueError, match="different evaluation runs"):
+            bundle.model_copy(
+                update={
+                    "report": result.report.model_copy(
+                        update={"evaluation_run_id": "different-run"}
+                    )
+                }
+            )
+        with pytest.raises(ValueError, match="forecast_id must be unique"):
+            bundle.model_copy(update={"forecasts": (result.forecasts[0],) * 2})
+        with pytest.raises(ValueError, match="evaluation names a forecast absent"):
+            bundle.model_copy(update={"forecasts": ()})
+        missing = EvaluationExclusionV1(
+            forecast_id="forecast-absent-from-bundle",
+            reason=ExclusionReason.ABSTAINED,
+            detail="adversarial link test",
+        )
+        with pytest.raises(ValueError, match="exclusion names a forecast absent"):
+            bundle.model_copy(update={"exclusions": (*result.exclusions, missing)})
     finally:
         store.close()
 
@@ -207,3 +285,11 @@ def test_resolution_identity_changes_when_yes_mapping_changes() -> None:
     assert isinstance(first, ResolutionV1) and isinstance(second, ResolutionV1)
     assert first.winning_outcome != second.winning_outcome
     assert first.resolution_id != second.resolution_id
+
+
+def test_two_targets_are_a_structural_floor_not_calibration_sufficiency() -> None:
+    policy = EvaluationPolicyV2()
+    assert policy.structural_minimum_independent_resolved_targets == 2
+    assert policy.calibration_claim_policy == "predeclared_multi_target_protocol_required"
+    with pytest.raises(AttributeError, match="structural floor"):
+        _ = policy.minimum_resolved_targets_for_calibration

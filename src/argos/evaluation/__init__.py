@@ -15,7 +15,9 @@ from argos.evaluation.bundle import (
     EvaluationDecisionV1,
     EvaluationExclusionV1,
     EvaluationPolicyV1,
+    EvaluationPolicyV2,
     EvaluationRunBundleV1,
+    EvaluationRunBundleV2,
 )
 from argos.evaluation.calibration import (
     DEFAULT_BIN_COUNT,
@@ -59,10 +61,12 @@ __all__ = [
     "EvaluationDecisionV1",
     "EvaluationExclusionV1",
     "EvaluationPolicyV1",
+    "EvaluationPolicyV2",
     "EvaluationReportV1",
     "EvaluationReportV2",
     "EvaluationResult",
     "EvaluationRunBundleV1",
+    "EvaluationRunBundleV2",
     "ForecastEvaluationV1",
     "ForecastEvaluationV2",
     "HeadlineStatus",

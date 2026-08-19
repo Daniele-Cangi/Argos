@@ -318,15 +318,24 @@ include the evaluation-run id.
 `ForecastEvaluationV2` links an evaluation to the exact forecast,
 evaluation run and compiled contract.
 
-`EvaluationRunBundleV1` is the persistent claim boundary and contains:
+`EvaluationRunBundleV1` remains readable as the first corrected claim boundary.
+ADR-0014 advances the active boundary to `EvaluationRunBundleV2`, containing:
 
-- `EvaluationPolicyV1`;
+- `EvaluationPolicyV2`, where two targets are named only as a structural floor
+  and calibration claims require a predeclared multi-target protocol;
 - the exact `ResolutionV1` and optional `CompiledMarketContractV1`;
 - `EvaluationReportV2`;
 - ordered v2 forecasts and evaluations;
 - one `EvaluationDecisionV1` per replay arrival;
 - explicit `EvaluationExclusionV1` records; and
 - a canonical digest over every nested, independently versioned record.
+
+The prospective M4 experiment must supersede this boundary again if necessary
+to bind versioned cutoff-provenance and contract-availability evidence. Those
+records must distinguish source time, retrieval time and selected cutoff, and
+must prove contract persistence before the earliest included forecast. Merely
+populating `ResolutionV1.resolved_at` or attaching a contract after resolution
+does not satisfy ADR-0014.
 
 `EvaluationReportV2` records separate arrival, target-information-state,
 forecast-point, scored-point, resolved-target and headline-eligible-target
