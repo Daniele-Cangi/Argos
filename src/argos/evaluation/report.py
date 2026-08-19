@@ -25,7 +25,12 @@ from argos.clock import ensure_utc
 from argos.config.manifest import WorkingTreeStatus
 from argos.domain.versioning import VersionedModel, freeze, thaw
 
-__all__ = ["EvaluationReportV1", "EvaluationReportV2", "HeadlineStatus"]
+__all__ = [
+    "EvaluationReportV1",
+    "EvaluationReportV2",
+    "EvaluationReportV3",
+    "HeadlineStatus",
+]
 
 
 class HeadlineStatus(StrEnum):
@@ -186,3 +191,34 @@ class EvaluationReportV2(EvaluationReportV1):
             f"states={self.target_information_state_count} "
             f"scored_points={self.scored_forecast_point_count}"
         )
+
+
+class EvaluationReportV3(EvaluationReportV2):
+    """Prospective report whose cutoff comes from explicit lifecycle evidence.
+
+    ``EvaluationReportV2.resolution_cutoff`` described the timestamp carried by
+    ``ResolutionV1.resolved_at``.  V3 deliberately changes that meaning under a
+    new schema: it is the selected cutoff proven by ``ResolutionCutoffEvidenceV1``.
+    The source timestamp and retrieval timestamp remain separate below.
+    """
+
+    schema_version: ClassVar[str] = "evaluation_report.v3"
+
+    experiment_id: str = Field(min_length=1)
+    protocol_record_sha256: str = Field(min_length=64, max_length=64)
+    protocol_receipt_id: str = Field(min_length=1)
+    target_id: str = Field(min_length=1)
+    target_receipt_id: str = Field(min_length=1)
+    market_receipt_id: str = Field(min_length=1)
+    contract_receipt_id: str = Field(min_length=1)
+    cutoff_evidence_id: str = Field(min_length=1)
+    cutoff_receipt_id: str = Field(min_length=1)
+    cutoff_basis: str = Field(min_length=1)
+    resolution_source_time: datetime | None = None
+    resolution_retrieved_at: datetime
+    lifecycle_observation_count: int = Field(gt=0)
+
+    @field_validator("resolution_source_time", "resolution_retrieved_at")
+    @classmethod
+    def _anchor_prospective_times(cls, value: datetime | None) -> datetime | None:
+        return None if value is None else ensure_utc(value)
