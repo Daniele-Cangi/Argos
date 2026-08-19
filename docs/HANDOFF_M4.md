@@ -257,15 +257,13 @@ Prioritized, and deliberately not started.
 
 - **Canonical repository**: `Daniele-Cangi/Argos`. It is the only repository
   this work is pushed to; nothing is pushed to any other copy.
-- **Branch**: `m3-deterministic-replay`, ahead of `main`, pushed to `origin`.
-  **Pull request #1 is the open review surface and must not be merged** without
-  owner review.
-- **Head at the time of writing**: the M4.1 hygiene commit, which is the last
-  of the four M4.1 slices. `git log --oneline main..HEAD` is the authoritative
-  list; this document deliberately no longer pins a hash that goes stale on the
-  next commit.
+- **Branch**: **merged.** Pull request #1 landed on `main` as `a8371d5e` on
+  2026-08-19. `m3-deterministic-replay` is no longer ahead of anything, and
+  there is no open pull request.
+- **M0 through M4.1 are on `main`.** That is the single source of truth. The
+  owner review begins from **`a8371d5e`**, not from a branch.
 - **Uncommitted changes**: none.
-- **Continuous integration**: **green.** Every push to pull request #1 runs the
+- **Continuous integration**: **green.** Every push to pull request #1 ran the
   full workflow. Run **`32195822692`** (commit `26559f5`) and run
   **`32198450524`** (commit `b0ddff5`, 1,582 tests) each completed successfully,
   every step passing: checkout, `uv sync --all-groups`, Ruff, format check,

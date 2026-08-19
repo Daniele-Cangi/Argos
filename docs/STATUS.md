@@ -10,8 +10,9 @@ Last updated: 2026-08-18
   one; its full record is `docs/HANDOFF_M4.md` section 12, which is not
   repeated here. Suite now **1,582 tests** on **58 source files**, and the
   gates are reproduced on GitHub Actions (run `32195822692`) as well as
-  locally. The canonical repository is `Daniele-Cangi/Argos` and the open
-  review surface is pull request #1, which must not be merged. M0 and M1 are
+  locally. The canonical repository is `Daniele-Cangi/Argos`, and **M0 through
+  M4.1 are merged on `main`** as of `a8371d5e` — that branch is the single
+  source of truth, and the owner review starts there. M0 and M1 are
   closed. **M2 is functionally complete and is closed on evidence rather than
   on an independent verdict** — see "M2 closure" below, which does not claim
   more than that, and "M3 readiness audit" for what was re-derived from `main`
