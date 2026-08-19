@@ -30,7 +30,8 @@ correction is auditable; it is not current authority.
   ruff, mypy and **1,593 tests** (one symlink-capability skip). The full local
   branch-coverage gate passes: 95% aggregate for reporting purposes, every
   declared per-area threshold satisfied, and `run_v2.py` at 91.77% against
-  its 90% floor.
+  its 90% floor. Canonical GitHub Actions run `32269750425` independently
+  passes the Windows and Ubuntu jobs, including Ubuntu coverage.
 
 The smallest next data experiment is not merely a larger capture. It must
 prospectively persist compiled contracts and exact finality/cutoff evidence for

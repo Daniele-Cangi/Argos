@@ -29,7 +29,9 @@ sections below without deleting their audit trail.
 - [x] Meet per-file branch-coverage thresholds for the corrected contracts and
       evaluator. Local Windows result: 1,593 passed, one privilege-dependent
       symlink skip; `run_v2.py` 91.77% against its 90% floor.
-- [ ] Pass the complete two-platform CI matrix on the canonical pull request.
+- [x] Pass the complete two-platform CI matrix on canonical PR #2. GitHub
+      Actions run `32269750425`: Windows passed in 1m56s; Ubuntu plus coverage
+      passed in 3m41s.
 - [ ] Pin a real standalone `last_trade_price` WebSocket fixture before
       modeling that event. Do not infer its exact persistent schema from docs
       alone.

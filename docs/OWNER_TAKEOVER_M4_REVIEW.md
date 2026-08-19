@@ -281,8 +281,12 @@ coverage passes every declared threshold; the corrected evaluator is 91.77%
 against its 90% floor. One symlink test is skipped because the Windows account
 lacks symlink privilege and remains active on Ubuntu CI.
 
+Canonical PR #2 independently reproduces the result on GitHub Actions run
+`32269750425`: Windows passes in 1m56s and Ubuntu, including coverage, passes
+in 3m41s.
+
 This implementation removes the known code-level blockers but does **not**
 change the owner verdict. The current historical evidence still lacks an exact
 resolution cutoff and persisted contract, so it establishes no headline
-result. M4 remains blocked pending canonical two-platform CI and the prospective
-multi-target experiment described above.
+result. M4 remains blocked pending the prospective multi-target experiment
+described above.

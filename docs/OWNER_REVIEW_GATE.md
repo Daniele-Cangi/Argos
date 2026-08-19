@@ -28,11 +28,11 @@ The corrective implementation now:
   displayed-price rule; and
 - runs the ordinary gate on Windows as well as Ubuntu.
 
-The local coverage threshold now passes (1,593 tests; `run_v2.py` 91.77%
-against 90%). Gate closure still requires the two-platform canonical CI matrix
-to pass, then a bounded prospective multi-target experiment with persisted
-contracts and exact resolution cutoff/finality evidence. No M5-M8 work is
-authorized.
+The local coverage threshold passes (1,593 tests; `run_v2.py` 91.77% against
+90%). Canonical GitHub Actions run `32269750425` also passes on Windows and
+Ubuntu, including coverage. Gate closure now requires a bounded prospective
+multi-target experiment with persisted contracts and exact resolution
+cutoff/finality evidence. No M5-M8 work is authorized.
 
 ## Required repository state
 
