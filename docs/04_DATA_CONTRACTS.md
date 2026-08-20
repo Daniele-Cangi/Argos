@@ -387,6 +387,28 @@ frozen capture code rejected a standalone `last_trade_price` event:
   protocol, requires the rejection to fall inside the observation window, and
   rederives contributions, report, verdicts and the canonical evidence digest.
 
+ADR-0017 versions the operational boundary forward without changing those
+historical records:
+
+- `ProspectiveExperimentProtocolV2` carries the typed lifecycle deadline,
+  polling interval, per-target seconds/frames, separate-database requirement,
+  exact two-token subscription requirement and raw-archive policy.
+- `EvaluationRunBundleV4` embeds the exact `RunManifest`, binds it into a V4
+  digest and requires both cutoff retrieval and selected cutoff at or before
+  the protocol deadline. Manifest run identity, clean revision, configuration,
+  token set and capture bounds must agree with the protocol and target.
+- `ProspectiveExperimentBundleV3` requires V4 included bundles and V2
+  proof-backed exclusions under one V2 protocol, validates capture limits and
+  prevents two targets from sharing a capture run.
+- `ProspectiveClaimArtifactIndexV1` publishes a repository-relative aggregate
+  path with schema, evidence digest, byte length, SHA-256 and original receipt.
+  Verification rejects traversal/symlinks, hashes exact bytes, parses the
+  versioned bundle and rechecks receipt and semantic identity.
+
+Experiment deadline closure, selected-target accounting and lifecycle polling
+continuity are distinct result fields. Aggregate `observation_complete` must
+not be read as proof that every cadence interval was observed.
+
 The V1 schemas remain readable with their historical meaning. They are not the
 active claim boundary for proof-backed exclusions and are not silently
 reinterpreted.

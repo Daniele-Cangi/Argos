@@ -1,0 +1,23 @@
+{
+  "schema_version": "prospective_claim_artifact_index.v1",
+  "experiment_id": "m4-pilot-20260819-v2",
+  "bundle_relative_path": "claim-bundle-v2.json",
+  "bundle_schema_version": "prospective_experiment_bundle.v2",
+  "bundle_evidence_digest": "48f535a8b355e41cb879c1af46adef3e1798d402d31ac3d79a7216ba4e1cea03",
+  "bundle_artifact_sha256": "8c24e919d586bc81b523bddb129378bf23f79f6c478ae10be330a789bb6e1034",
+  "bundle_byte_length": 17036,
+  "aggregate_receipt": {
+    "schema_version": "evidence_persistence_receipt.v1",
+    "receipt_id": "receipt-c16170a6ddb5591b1565af412c92fab1",
+    "experiment_id": "m4-pilot-20260819-v2",
+    "artifact_kind": "experiment_aggregate",
+    "artifact_id": "48f535a8b355e41cb879c1af46adef3e1798d402d31ac3d79a7216ba4e1cea03",
+    "artifact_schema_version": "prospective_experiment_bundle.v2",
+    "artifact_sha256": "8c24e919d586bc81b523bddb129378bf23f79f6c478ae10be330a789bb6e1034",
+    "artifact_byte_length": 17036,
+    "storage_backend": "content_addressed_raw_archive.v1",
+    "storage_identity": "argos_evidence/8c24e919d586bc81b523bddb129378bf23f79f6c478ae10be330a789bb6e1034.raw.json",
+    "persisted_at": "2026-08-20T07:10:19.038673Z"
+  },
+  "published_from_storage_identity": "argos_evidence/8c24e919d586bc81b523bddb129378bf23f79f6c478ae10be330a789bb6e1034.raw.json"
+}

@@ -15,6 +15,7 @@ from test_replay import CAPTURE_START
 from argos.baselines import BaselineMethod
 from argos.clock import ReplayClock
 from argos.config import Settings
+from argos.config.manifest import RunManifest, RunMode, WorkingTreeStatus, build_run_manifest
 from argos.domain.market import MarketDefinitionV1
 from argos.evaluation.bundle import EvaluationExclusionV1, ExclusionReason, record_sha256
 from argos.evaluation.prospective import (
@@ -22,6 +23,7 @@ from argos.evaluation.prospective import (
     EvidenceArtifactKind,
     EvidencePersistenceReceiptV1,
     LifecycleObservationV1,
+    ProspectiveExperimentProtocolV2,
     ProspectiveTargetV1,
     ResolutionCutoffEvidenceV1,
     build_cutoff_evidence_id,
@@ -30,6 +32,10 @@ from argos.evaluation.prospective import (
     persist_evidence_record,
 )
 from argos.evaluation.prospective_bundle import EvaluationRunBundleV3
+from argos.evaluation.prospective_bundle_v4 import (
+    EvaluationRunBundleV4,
+    bundle_evidence_digest_v4,
+)
 from argos.evaluation.run_v3 import ProspectiveEvaluationResult, evaluate_prospective_capture
 from argos.resolution import ResolutionStatus, ResolutionV1
 
@@ -111,16 +117,37 @@ def _observation(
     return LifecycleObservationV1.model_validate(fields)
 
 
-async def _valid_result(tmp_path: Path) -> ProspectiveEvaluationResult:
+async def _valid_result(
+    tmp_path: Path,
+    *,
+    protocol_v2: bool = False,
+) -> ProspectiveEvaluationResult:
     settings = Settings()
-    protocol = _protocol(
+    base_protocol = _protocol(
         experiment_id=EXPERIMENT_ID,
         declared_at=DECLARED,
         observation_window_start=OBSERVATION_START,
-        observation_window_end=CUTOFF + timedelta(days=1),
+        observation_window_end=(
+            CUTOFF - timedelta(hours=2) if protocol_v2 else CUTOFF + timedelta(days=1)
+        ),
         code_revision="a" * 40,
         config_fingerprint=settings.fingerprint(),
     )
+    if protocol_v2:
+        protocol = ProspectiveExperimentProtocolV2.model_validate(
+            {
+                **base_protocol.model_dump(mode="python"),
+                "lifecycle_deadline": CUTOFF + timedelta(hours=1),
+                "lifecycle_poll_interval_seconds": 300,
+                "capture_max_seconds_per_target": 120,
+                "capture_max_frames_per_target": 500,
+                "capture_separate_database_per_target": True,
+                "capture_subscribe_both_tokens": True,
+                "capture_raw_archive": True,
+            }
+        )
+    else:
+        protocol = base_protocol
     protocol_receipt = _persist(
         tmp_path,
         protocol,
@@ -283,6 +310,21 @@ async def _valid_result(tmp_path: Path) -> ProspectiveEvaluationResult:
     )
 
     store = await _capture("prospective-bundle")
+    capture_manifest = build_run_manifest(
+        settings=settings,
+        clock=ReplayClock(CAPTURE_START + timedelta(hours=2)),
+        run_id="prospective-bundle",
+        mode=RunMode.CAPTURE,
+        code_revision=protocol.code_revision,
+        working_tree=WorkingTreeStatus.CLEAN,
+        capture_run_id="prospective-bundle",
+        run_parameters={
+            "subscribed_token_ids": [target.yes_token_id, target.no_token_id],
+            "max_seconds": 120,
+            "max_frames": 500,
+            "raw_archive": True,
+        },
+    )
     try:
         return evaluate_prospective_capture(
             store=store,
@@ -304,6 +346,7 @@ async def _valid_result(tmp_path: Path) -> ProspectiveEvaluationResult:
             clock=ReplayClock(FINAL_RETRIEVED + timedelta(hours=1)),
             evaluation_run_id="prospective-evaluation",
             methods=(BaselineMethod.MIDPOINT,),
+            capture_run_manifest=capture_manifest if protocol_v2 else None,
         )
     finally:
         store.close()
@@ -342,12 +385,60 @@ def _redigest(record: dict[str, Any]) -> None:
     )
 
 
+def _redigest_v4(record: dict[str, Any]) -> None:
+    _redigest(record)
+    manifest = RunManifest.from_record(record["capture_run_manifest"])
+    record["evidence_digest"] = bundle_evidence_digest_v4(record["evidence_digest"], manifest)
+
+
 async def test_prospective_bundle_round_trip_uses_proven_cutoff(tmp_path: Path) -> None:
     result = await _valid_result(tmp_path)
     assert result.bundle.resolution.resolved_at < OBSERVATION_START
     assert result.report.resolution_cutoff == FINAL_RETRIEVED
     assert result.report.scored_count > 0
     assert EvaluationRunBundleV3.from_record(result.bundle.to_record()) == result.bundle
+
+
+async def test_v4_round_trip_binds_deadline_and_capture_manifest(tmp_path: Path) -> None:
+    result = await _valid_result(tmp_path, protocol_v2=True)
+    assert isinstance(result.bundle, EvaluationRunBundleV4)
+    assert result.bundle.capture_run_manifest.capture_run_id == "prospective-bundle"
+    assert EvaluationRunBundleV4.from_record(result.bundle.to_record()) == result.bundle
+
+
+async def test_global_redigest_cannot_move_cutoff_after_v2_deadline(
+    tmp_path: Path,
+) -> None:
+    record = deepcopy(
+        (await _valid_result(tmp_path / "source", protocol_v2=True)).bundle.to_record()
+    )
+    protocol_record = deepcopy(record["protocol"])
+    protocol_record["lifecycle_deadline"] = (CUTOFF - timedelta(minutes=1)).isoformat()
+    attacked_protocol = ProspectiveExperimentProtocolV2.from_record(protocol_record)
+    receipt = _persist(
+        tmp_path / "attacked-protocol",
+        attacked_protocol,
+        EvidenceArtifactKind.EXPERIMENT_PROTOCOL,
+        attacked_protocol.experiment_id,
+        DECLARED,
+    )
+    record["protocol"] = attacked_protocol.to_record()
+    record["protocol_receipt"] = receipt.to_record()
+    record["report"]["protocol_record_sha256"] = receipt.artifact_sha256
+    record["report"]["protocol_receipt_id"] = receipt.receipt_id
+    _redigest_v4(record)
+
+    with pytest.raises(ValueError, match="after the frozen lifecycle deadline"):
+        EvaluationRunBundleV4.from_record(record)
+
+
+async def test_global_redigest_cannot_expand_v2_capture_limits(tmp_path: Path) -> None:
+    record = deepcopy((await _valid_result(tmp_path, protocol_v2=True)).bundle.to_record())
+    record["capture_run_manifest"]["run_parameters"]["max_seconds"] = 121
+    _redigest_v4(record)
+
+    with pytest.raises(ValueError, match="capture duration disagrees"):
+        EvaluationRunBundleV4.from_record(record)
 
 
 @pytest.mark.parametrize(

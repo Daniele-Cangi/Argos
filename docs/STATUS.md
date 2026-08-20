@@ -24,7 +24,11 @@ sequence, raw UTF-8 payload, raw hash/location and clean capture manifest;
 target; `ProspectiveExperimentBundleV2` rechecks protocol revision,
 configuration, window, target scope, contributions, report and digest. Tests
 include globally re-digested false-semantic attacks rather than hash-only
-tampering.
+tampering. ADR-0017 versions the future operational boundary forward again:
+`ProspectiveExperimentProtocolV2` binds deadline, cadence and capture limits;
+`EvaluationRunBundleV4` digest-binds the exact capture manifest and refuses a
+post-deadline cutoff; and `ProspectiveExperimentBundleV3` enforces those bounds
+and unique per-target capture runs.
 
 The materialized result contains two selected targets, two exclusions, zero
 resolved target bundles and zero contributions. Its independent verdicts are
@@ -33,14 +37,23 @@ negative prospective result: the protocol worked by refusing evidence its
 frozen code could not interpret. It is not an ARGOS probability result and does
 not establish calibration. Lifecycle polling closed at the frozen
 `2026-08-20T06:00:00Z` deadline without a first-final cutoff. The last valid
-in-window poll was ordinal 70; both markets were still `proposed`.
-`observation_complete` is true because the protocol deadline elapsed, not
-because either target resolved.
+in-window poll was ordinal 70; both markets were still `proposed`. The immutable
+V2 aggregate's `observation_complete = true` means the selected target partition
+is closed and fully accounted for; it does not claim continuous lifecycle
+polling or target resolution.
 
 A host-clock jump while the monitor was waiting caused it to append poll 71 at
 approximately `07:09Z`, after the deadline. The append-only record is preserved
 and reported, but is inadmissible as cutoff evidence and changed no exclusion,
-contribution or verdict.
+contribution or verdict. The gap from the last in-window polls near `05:35Z` to
+the deadline exceeds the frozen five-minute cadence by multiple intervals, so
+the corrected summary records `experiment_closed_by_frozen_deadline = true`
+and `lifecycle_record_complete = false`.
+
+The complete 17,036-byte proof-bearing aggregate is now published with a
+verifiable receipt index under `experiments/m4-pilot-20260819/proof/`; its
+SHA-256 remains `8c24e919…e1034`. The historical bytes, digest and receipt were
+copied exactly, not regenerated or reinterpreted.
 
 Commit `9904b54` models the now-observed standalone event as auxiliary evidence
 for future captures without changing the order-book state hash. It does not

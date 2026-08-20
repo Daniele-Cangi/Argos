@@ -51,16 +51,24 @@ permanently excluded. The proof-backed V2 aggregate therefore reports zero
 contributions, `M4_BLOCKED` and `CALIBRATION_NOT_EVALUABLE`; later finality
 cannot promote those verdicts. The frozen lifecycle deadline elapsed without
 any first-final cutoff. At the last valid in-window poll (ordinal 70), both
-markets remained `proposed`; `observation_complete` is true because the
-deadline closed the operational record. A host-clock jump caused the monitor to
-append poll 71 after the deadline. That deviation is preserved for audit but
-inadmissible as cutoff evidence, and affected no exclusion, contribution or
-verdict.
+markets remained `proposed`. Historical aggregate `observation_complete` means
+closed selected-target accounting, not continuous lifecycle coverage. A
+host-clock jump caused the monitor to append poll 71 after the deadline. That
+deviation is preserved for audit but inadmissible as cutoff evidence; the gap
+leaves `lifecycle_record_complete = false` even though
+`experiment_closed_by_frozen_deadline = true`, and affected no exclusion,
+contribution or verdict.
 
 ADR-0016 advances exclusions to an exact-raw, rejection-, manifest-, receipt-
 and target-bound claim. Standalone trade modeling added after capture is for a
 future protocol only and does not rescue or reinterpret the pilot. Gate A stays
 blocked and no M5-M8 work is authorized.
+
+ADR-0017 binds future deadlines, cadence and capture limits in protocol V2;
+V4 target bundles bind the exact capture manifest and refuse post-deadline
+cutoffs; V3 aggregates enforce those limits. The historical V2 aggregate is
+published byte-for-byte with a verifiable index under
+`experiments/m4-pilot-20260819/proof/`. No new experiment has been run.
 
 ## Required repository state
 

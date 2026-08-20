@@ -62,12 +62,23 @@ sections below without deleting their audit trail.
 - [x] Complete lifecycle polling for the excluded V2 targets. The frozen
       `2026-08-20T06:00:00Z` deadline elapsed without a first-final cutoff; at
       the last valid in-window poll (ordinal 70), both markets were still
-      `proposed`, so `observation_complete` is true with zero resolved targets.
-      A host-clock jump caused one append-only poll (ordinal 71) after the
-      deadline. It is preserved and reported but inadmissible as cutoff
-      evidence, and changed no exclusion, contribution or experiment verdict.
+      `proposed`. Aggregate `observation_complete` closes selected-target
+      accounting, while the missing cadence coverage before the deadline keeps
+      `lifecycle_record_complete` false. A host-clock jump caused one append-only
+      poll (ordinal 71) after the deadline. It is preserved and reported but
+      inadmissible as cutoff evidence, and changed no exclusion, contribution or
+      experiment verdict.
+- [x] Harden the prospective operational boundary without running a new
+      experiment (ADR-0017): bind deadline, cadence and capture limits in
+      `ProspectiveExperimentProtocolV2`; require `retrieved_at` and selected
+      cutoff at or before the deadline; bind the exact capture manifest in
+      `EvaluationRunBundleV4`; enforce limits and per-target capture separation
+      in `ProspectiveExperimentBundleV3`; and publish the immutable historical
+      V2 aggregate plus receipt index under
+      `experiments/m4-pilot-20260819/proof/`.
 - [ ] If the owner authorizes another M4 experiment, freeze a new protocol and
-      collect fresh captures using the modeled standalone last-trade schema.
+      collect fresh targets and captures using the modeled standalone
+      last-trade schema and the merged V2 operational protocol boundary.
       Do not rescue, replace or reuse the V1/V2 targets or captured evidence.
       No M5, RESON, AI forecasting, UI, wallet, authentication or execution.
 

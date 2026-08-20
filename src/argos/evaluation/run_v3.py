@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from argos.baselines import BaselineMethod, MarketBaselineForecastV2
 from argos.clock import Clock
 from argos.compiler.contract import CompiledMarketContractV1
+from argos.config.manifest import RunManifest
 from argos.config.settings import Settings
 from argos.domain.market import MarketDefinitionV1
 from argos.evaluation.bundle import (
@@ -19,12 +20,17 @@ from argos.evaluation.prospective import (
     EvidencePersistenceReceiptV1,
     LifecycleObservationV1,
     ProspectiveExperimentProtocolV1,
+    ProspectiveExperimentProtocolV2,
     ProspectiveTargetV1,
     ResolutionCutoffEvidenceV1,
 )
 from argos.evaluation.prospective_bundle import (
     EvaluationRunBundleV3,
     bundle_evidence_digest_v3,
+)
+from argos.evaluation.prospective_bundle_v4 import (
+    EvaluationRunBundleV4,
+    bundle_evidence_digest_v4,
 )
 from argos.evaluation.report import EvaluationReportV3
 from argos.evaluation.run_v2 import evaluate_capture
@@ -90,6 +96,7 @@ def evaluate_prospective_capture(
     ),
     policy: EvaluationPolicyV2 | None = None,
     extra_limitations: tuple[str, ...] = (),
+    capture_run_manifest: RunManifest | None = None,
 ) -> ProspectiveEvaluationResult:
     """Evaluate one target without treating ``ResolutionV1.resolved_at`` as its cutoff.
 
@@ -99,6 +106,14 @@ def evaluate_prospective_capture(
     never persisted: the resulting V3 bundle carries the original resolution
     record and the separate cutoff evidence that justified temporal admission.
     """
+    if isinstance(protocol, ProspectiveExperimentProtocolV2) and capture_run_manifest is None:
+        raise ValueError("V2 prospective evaluation requires the capture run manifest")
+    if not isinstance(protocol, ProspectiveExperimentProtocolV2) and capture_run_manifest:
+        raise ValueError("capture manifest binding requires a V2 prospective protocol")
+    if isinstance(protocol, ProspectiveExperimentProtocolV2) and (
+        cutoff_evidence.retrieved_at > protocol.lifecycle_deadline
+    ):
+        raise ValueError("resolution cutoff is after the frozen lifecycle deadline")
     if settings.fingerprint() != protocol.config_fingerprint:
         raise ValueError("runtime settings disagree with the frozen protocol")
     selected_policy = policy or EvaluationPolicyV2()
@@ -161,7 +176,7 @@ def evaluate_prospective_capture(
         }
     )
     report = EvaluationReportV3.model_validate(report_fields)
-    digest = bundle_evidence_digest_v3(
+    v3_digest = bundle_evidence_digest_v3(
         evaluation_run_id=evaluation_run_id,
         policy=selected_policy,
         protocol=protocol,
@@ -183,27 +198,39 @@ def evaluate_prospective_capture(
         decisions=v2.decisions,
         exclusions=v2.exclusions,
     )
-    bundle = EvaluationRunBundleV3(
-        evaluation_run_id=evaluation_run_id,
-        policy=selected_policy,
-        protocol=protocol,
-        protocol_receipt=protocol_receipt,
-        market=market,
-        market_receipt=market_receipt,
-        contract=contract,
-        contract_receipt=contract_receipt,
-        target=target,
-        target_receipt=target_receipt,
-        lifecycle_observations=lifecycle_observations,
-        lifecycle_receipts=lifecycle_receipts,
-        cutoff_evidence=cutoff_evidence,
-        cutoff_receipt=cutoff_receipt,
-        resolution=resolution,
-        report=report,
-        forecasts=v2.forecasts,
-        evaluations=v2.evaluations,
-        decisions=v2.decisions,
-        exclusions=v2.exclusions,
-        evidence_digest=digest,
-    )
+    if isinstance(protocol, ProspectiveExperimentProtocolV2):
+        assert capture_run_manifest is not None
+        digest = bundle_evidence_digest_v4(v3_digest, capture_run_manifest)
+    else:
+        digest = v3_digest
+    bundle_payload = {
+        "evaluation_run_id": evaluation_run_id,
+        "policy": selected_policy,
+        "protocol": protocol,
+        "protocol_receipt": protocol_receipt,
+        "market": market,
+        "market_receipt": market_receipt,
+        "contract": contract,
+        "contract_receipt": contract_receipt,
+        "target": target,
+        "target_receipt": target_receipt,
+        "lifecycle_observations": lifecycle_observations,
+        "lifecycle_receipts": lifecycle_receipts,
+        "cutoff_evidence": cutoff_evidence,
+        "cutoff_receipt": cutoff_receipt,
+        "resolution": resolution,
+        "report": report,
+        "forecasts": v2.forecasts,
+        "evaluations": v2.evaluations,
+        "decisions": v2.decisions,
+        "exclusions": v2.exclusions,
+        "evidence_digest": digest,
+    }
+    bundle: EvaluationRunBundleV3
+    if isinstance(protocol, ProspectiveExperimentProtocolV2):
+        assert capture_run_manifest is not None
+        bundle_payload["capture_run_manifest"] = capture_run_manifest
+        bundle = EvaluationRunBundleV4.model_validate(bundle_payload)
+    else:
+        bundle = EvaluationRunBundleV3.model_validate(bundle_payload)
     return ProspectiveEvaluationResult(bundle=bundle)

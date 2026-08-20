@@ -137,7 +137,10 @@
     "materializer_revision": "742c111b33d58a0153b98f7488c82dbcba4464f3",
     "capture_evidence_schema": "capture_rejection_evidence.v1",
     "exclusion_schema": "prospective_target_exclusion.v2",
-    "aggregate_schema": "prospective_experiment_bundle.v2"
+    "aggregate_schema": "prospective_experiment_bundle.v2",
+    "operational_hardening_decision": "ADR-0017",
+    "historical_protocol_schema": "prospective_experiment_protocol.v1",
+    "future_protocol_schema": "prospective_experiment_protocol.v2"
   },
   "aggregate": {
     "materialized_at": "2026-08-20T07:10:19.038673Z",
@@ -149,14 +152,28 @@
     "excluded_target_count": 2,
     "contribution_count": 0,
     "observation_complete": true,
+    "observation_complete_meaning": "closed_selected_target_accounting_not_lifecycle_continuity",
     "measurement_layer_verdict": "M4_BLOCKED",
     "calibration_verdict": "CALIBRATION_NOT_EVALUABLE",
     "uncertainty_status": "not_estimated",
     "uncertainty_reason": "protocol_scientific_sufficiency_not_met"
   },
+  "published_claim_artifact": {
+    "index_path": "experiments/m4-pilot-20260819/proof/claim-index-v1.json",
+    "bundle_path": "experiments/m4-pilot-20260819/proof/claim-bundle-v2.json",
+    "bundle_byte_length": 17036,
+    "bundle_sha256": "8c24e919d586bc81b523bddb129378bf23f79f6c478ae10be330a789bb6e1034",
+    "bundle_evidence_digest": "48f535a8b355e41cb879c1af46adef3e1798d402d31ac3d79a7216ba4e1cea03",
+    "receipt_id": "receipt-c16170a6ddb5591b1565af412c92fab1"
+  },
   "lifecycle_completion": {
-    "basis": "frozen_deadline_elapsed",
+    "basis": "legacy_spec_deadline_elapsed_with_incomplete_poll_continuity",
     "deadline": "2026-08-20T06:00:00Z",
+    "deadline_is_protocol_evidence_bound": false,
+    "experiment_closed_by_frozen_deadline": true,
+    "target_accounting_complete": true,
+    "lifecycle_record_complete": false,
+    "continuity_rule": "no absent complete polling window; gaps over twice the declared cadence are incomplete",
     "cutoff_observed_count": 0,
     "last_in_window_poll_ordinal": 70,
     "last_in_window_targets": [
@@ -179,7 +196,7 @@
   },
   "interpretation": {
     "scientific_result": "completed_negative_measurement_experiment",
-    "lifecycle_record_complete": true,
+    "lifecycle_record_complete": false,
     "later_finality_can_change_exclusions_or_verdicts": false,
     "argos_probability_claim": false,
     "calibration_claim": false,

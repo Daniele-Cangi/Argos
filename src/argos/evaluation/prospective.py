@@ -46,6 +46,7 @@ __all__ = [
     "EvidencePersistenceReceiptV1",
     "LifecycleObservationV1",
     "ProspectiveExperimentProtocolV1",
+    "ProspectiveExperimentProtocolV2",
     "ProspectiveTargetV1",
     "ResolutionCutoffEvidenceV1",
     "StandaloneLastTradePolicy",
@@ -197,6 +198,47 @@ class ProspectiveExperimentProtocolV1(VersionedModel):
             raise ValueError("the prospective protocol must retain all required scoring metrics")
         if self.working_tree is not WorkingTreeStatus.CLEAN:
             raise ValueError("a frozen prospective protocol must identify a clean revision")
+        return self
+
+
+class ProspectiveExperimentProtocolV2(ProspectiveExperimentProtocolV1):
+    """Protocol whose operational stopping and capture bounds are evidence-bound."""
+
+    schema_version: ClassVar[str] = "prospective_experiment_protocol.v2"
+
+    lifecycle_deadline: datetime
+    lifecycle_poll_interval_seconds: int = Field(gt=0)
+    capture_max_seconds_per_target: int = Field(gt=0)
+    capture_max_frames_per_target: int = Field(gt=0)
+    capture_separate_database_per_target: bool
+    capture_subscribe_both_tokens: bool
+    capture_raw_archive: bool
+
+    @field_validator("lifecycle_deadline")
+    @classmethod
+    def _anchor_lifecycle_deadline(cls, value: datetime) -> datetime:
+        return ensure_utc(value)
+
+    @model_validator(mode="after")
+    def _operational_bounds_are_coherent(self) -> ProspectiveExperimentProtocolV2:
+        if self.lifecycle_deadline <= self.observation_window_end:
+            raise ValueError("lifecycle deadline must follow the observation window")
+        lifecycle_seconds = int(
+            (self.lifecycle_deadline - self.observation_window_end).total_seconds()
+        )
+        if self.lifecycle_poll_interval_seconds > lifecycle_seconds:
+            raise ValueError("lifecycle cadence must fit before the frozen deadline")
+        observation_seconds = int(
+            (self.observation_window_end - self.observation_window_start).total_seconds()
+        )
+        if self.capture_max_seconds_per_target > observation_seconds:
+            raise ValueError("per-target capture duration exceeds the observation window")
+        if not self.capture_separate_database_per_target:
+            raise ValueError("prospective captures require a separate database per target")
+        if not self.capture_subscribe_both_tokens:
+            raise ValueError("prospective captures must subscribe both target tokens")
+        if not self.capture_raw_archive:
+            raise ValueError("prospective captures require immutable raw archival")
         return self
 
 

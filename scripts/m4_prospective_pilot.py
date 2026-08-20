@@ -8,8 +8,9 @@ one-shot lifecycle polls that may later establish a cutoff.
 from __future__ import annotations
 
 import argparse
+import itertools
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ from argos.evaluation.prospective import (
     EvidencePersistenceReceiptV1,
     LifecycleObservationV1,
     ProspectiveExperimentProtocolV1,
+    ProspectiveExperimentProtocolV2,
     ProspectiveTargetV1,
     ResolutionCutoffEvidenceV1,
     build_cutoff_evidence_id,
@@ -38,10 +40,14 @@ from argos.evaluation.prospective import (
     persist_evidence_record,
 )
 from argos.evaluation.prospective_aggregation_v2 import (
+    ProspectiveExperimentBundleV2,
     ProspectiveTargetExclusionV2,
     aggregate_prospective_experiment_v2,
     build_capture_rejection_evidence,
     build_target_exclusion_v2,
+)
+from argos.evaluation.prospective_aggregation_v3 import (
+    aggregate_prospective_experiment_v3,
 )
 from argos.ingestion.gamma_markets import normalize_markets
 from argos.resolution import (
@@ -84,8 +90,25 @@ def freeze_experiment(spec_path: Path, experiment_dir: Path) -> int:
     protocol_fields = _object(spec.get("protocol"), "protocol")
     if protocol_fields.get("code_revision") != "$PROTOCOL_COMMIT":
         raise ValueError("the committed protocol must resolve code_revision mechanically")
+    capture_config = _object(spec.get("capture"), "capture configuration")
+    protocol_fields.update(
+        {
+            "lifecycle_deadline": capture_config.get("lifecycle_deadline"),
+            "lifecycle_poll_interval_seconds": capture_config.get(
+                "lifecycle_poll_interval_seconds"
+            ),
+            "capture_max_seconds_per_target": capture_config.get("max_seconds_per_target"),
+            "capture_max_frames_per_target": capture_config.get("max_frames_per_target"),
+            "capture_separate_database_per_target": capture_config.get(
+                "separate_database_per_target"
+            ),
+            "capture_subscribe_both_tokens": capture_config.get("subscribe_both_tokens"),
+            "capture_raw_archive": capture_config.get("raw_archive"),
+        }
+    )
     protocol_fields["code_revision"] = revision
-    protocol = ProspectiveExperimentProtocolV1.model_validate(protocol_fields)
+    protocol = ProspectiveExperimentProtocolV2.model_validate(protocol_fields)
+    _validate_capture_configuration(protocol, capture_config)
     now = LiveClock().now()
     if now >= protocol.observation_window_start:
         raise ValueError("protocol freeze missed its predeclared observation start")
@@ -205,7 +228,7 @@ def freeze_experiment(spec_path: Path, experiment_dir: Path) -> int:
             "quarantined_count": len(normalization.quarantined),
             "eligible_count": len(candidates),
         },
-        "capture": spec.get("capture"),
+        "capture": capture_config,
         "targets": targets,
     }
     _write_state(experiment_dir / "state.json", state)
@@ -217,12 +240,13 @@ def poll_experiment(experiment_dir: Path) -> int:
     _clean_revision()
     state_path = experiment_dir / "state.json"
     state = _object(orjson.loads(state_path.read_bytes()), "experiment state")
-    protocol = ProspectiveExperimentProtocolV1.from_record(
-        _object(state.get("protocol"), "protocol record")
-    )
+    protocol = _protocol_from_record(_object(state.get("protocol"), "protocol record"))
+    deadline = _protocol_lifecycle_deadline(protocol, state)
     evidence_dir = experiment_dir / "evidence"
     source_dir = experiment_dir / "source"
     for target_state_raw in _list(state.get("targets"), "targets"):
+        if LiveClock().now() > deadline:
+            break
         target_state = _object(target_state_raw, "target state")
         target = ProspectiveTargetV1.from_record(
             _object(target_state.get("target"), "target record")
@@ -280,7 +304,11 @@ def poll_experiment(experiment_dir: Path) -> int:
         target_state["lifecycle"] = lifecycle
         if resolution is not None:
             target_state["resolution"] = resolution.to_record()
-        if finality is ResolutionStatus.FINAL and target_state.get("cutoff") is None:
+        if (
+            finality is ResolutionStatus.FINAL
+            and observation.retrieved_at <= deadline
+            and target_state.get("cutoff") is None
+        ):
             assert resolution is not None
             cutoff = _cutoff(protocol, target, observation, resolution)
             cutoff_receipt = persist_evidence_record(
@@ -306,9 +334,7 @@ def materialize_exclusions(experiment_dir: Path) -> int:
     materializer_revision = _clean_revision()
     state_path = experiment_dir / "state.json"
     state = _object(orjson.loads(state_path.read_bytes()), "experiment state")
-    protocol = ProspectiveExperimentProtocolV1.from_record(
-        _object(state.get("protocol"), "protocol record")
-    )
+    protocol = _protocol_from_record(_object(state.get("protocol"), "protocol record"))
     protocol_receipt = EvidencePersistenceReceiptV1.from_record(
         _object(state.get("protocol_receipt"), "protocol receipt")
     )
@@ -412,20 +438,45 @@ def materialize_exclusions(experiment_dir: Path) -> int:
         )
 
     capture_config = _object(state.get("capture"), "capture configuration")
-    lifecycle_deadline = _time(str(capture_config["lifecycle_deadline"]))
+    if isinstance(protocol, ProspectiveExperimentProtocolV2):
+        _validate_capture_configuration(protocol, capture_config)
+    lifecycle_deadline = _protocol_lifecycle_deadline(protocol, state)
+    lifecycle_interval = _protocol_lifecycle_poll_interval(protocol, state)
     targets = _list(state.get("targets"), "targets")
-    lifecycle_complete = all(
-        _object(item, "target state").get("cutoff") is not None for item in targets
+    all_targets_final = _all_targets_have_admissible_cutoff(
+        targets,
+        lifecycle_deadline,
     )
-    observation_complete = lifecycle_complete or now >= lifecycle_deadline
-    aggregate = aggregate_prospective_experiment_v2(
+    experiment_closed = now >= lifecycle_deadline
+    lifecycle_record_complete = _lifecycle_record_complete(
         protocol=protocol,
-        protocol_receipt=protocol_receipt,
-        target_bundles=(),
-        target_exclusions=exclusions,
-        created_at=now,
-        observation_complete=observation_complete,
+        targets=targets,
+        deadline=lifecycle_deadline,
+        poll_interval_seconds=lifecycle_interval,
     )
+    target_accounting_complete = len(exclusions) == len(targets)
+    observation_complete = target_accounting_complete and (all_targets_final or experiment_closed)
+    aggregate: ProspectiveExperimentBundleV2
+    if isinstance(protocol, ProspectiveExperimentProtocolV2):
+        aggregate = aggregate_prospective_experiment_v3(
+            protocol=protocol,
+            protocol_receipt=protocol_receipt,
+            target_bundles=(),
+            target_exclusions=exclusions,
+            created_at=now,
+            observation_complete=observation_complete,
+        )
+        result_version = 3
+    else:
+        aggregate = aggregate_prospective_experiment_v2(
+            protocol=protocol,
+            protocol_receipt=protocol_receipt,
+            target_bundles=(),
+            target_exclusions=exclusions,
+            created_at=now,
+            observation_complete=observation_complete,
+        )
+        result_version = 2
     aggregate_receipt = persist_evidence_record(
         evidence_dir,
         record=aggregate,
@@ -435,7 +486,7 @@ def materialize_exclusions(experiment_dir: Path) -> int:
         persisted_at=now,
     )
     result = {
-        "format": "m4_prospective_pilot_result.v2",
+        "format": f"m4_prospective_pilot_result.v{result_version}",
         "experiment_id": protocol.experiment_id,
         "materialized_at": now.isoformat(),
         "materializer_revision": materializer_revision,
@@ -443,10 +494,19 @@ def materialize_exclusions(experiment_dir: Path) -> int:
         "target_exclusions": persisted_exclusions,
         "aggregate": aggregate.to_record(),
         "aggregate_receipt": aggregate_receipt.to_record(),
+        "lifecycle_completion": {
+            "frozen_deadline": lifecycle_deadline.isoformat(),
+            "poll_interval_seconds": lifecycle_interval,
+            "target_accounting_complete": target_accounting_complete,
+            "all_targets_final_by_frozen_deadline": all_targets_final,
+            "experiment_closed_by_frozen_deadline": experiment_closed,
+            "lifecycle_record_complete": lifecycle_record_complete,
+        },
     }
-    state["result_v2"] = result
+    result_key = f"result_v{result_version}"
+    state[result_key] = result
     _write_state(state_path, state)
-    _write_state(experiment_dir / "result-v2.json", result)
+    _write_state(experiment_dir / f"result-v{result_version}.json", result)
     print(orjson.dumps(result, option=orjson.OPT_INDENT_2).decode())
     return 0
 
@@ -578,6 +638,10 @@ def _cutoff(
 ) -> ResolutionCutoffEvidenceV1:
     if protocol.cutoff_basis is not CutoffBasis.FIRST_OBSERVED_FINAL_SETTLEMENT:
         raise ValueError("pilot helper currently supports only first-observed-final cutoff")
+    if isinstance(protocol, ProspectiveExperimentProtocolV2) and (
+        observation.retrieved_at > protocol.lifecycle_deadline
+    ):
+        raise ValueError("resolution cutoff is after the frozen lifecycle deadline")
     fields = {
         "experiment_id": protocol.experiment_id,
         "target_id": target.target_id,
@@ -617,6 +681,128 @@ def _cutoff(
             **fields,
         }
     )
+
+
+def _protocol_from_record(
+    record: dict[str, Any],
+) -> ProspectiveExperimentProtocolV1 | ProspectiveExperimentProtocolV2:
+    schema_version = record.get("schema_version")
+    if schema_version == ProspectiveExperimentProtocolV2.schema_version:
+        return ProspectiveExperimentProtocolV2.from_record(record)
+    if schema_version == ProspectiveExperimentProtocolV1.schema_version:
+        return ProspectiveExperimentProtocolV1.from_record(record)
+    raise ValueError(f"unsupported prospective protocol schema: {schema_version!r}")
+
+
+def _protocol_lifecycle_deadline(
+    protocol: ProspectiveExperimentProtocolV1 | ProspectiveExperimentProtocolV2,
+    state: dict[str, Any],
+) -> datetime:
+    if isinstance(protocol, ProspectiveExperimentProtocolV2):
+        return protocol.lifecycle_deadline
+    capture = _object(state.get("capture"), "legacy capture configuration")
+    return _time(str(capture["lifecycle_deadline"]))
+
+
+def _protocol_lifecycle_poll_interval(
+    protocol: ProspectiveExperimentProtocolV1 | ProspectiveExperimentProtocolV2,
+    state: dict[str, Any],
+) -> int:
+    if isinstance(protocol, ProspectiveExperimentProtocolV2):
+        return protocol.lifecycle_poll_interval_seconds
+    capture = _object(state.get("capture"), "legacy capture configuration")
+    interval = capture.get("lifecycle_poll_interval_seconds")
+    if not isinstance(interval, int) or isinstance(interval, bool) or interval <= 0:
+        raise ValueError("legacy lifecycle cadence must be a positive integer")
+    return interval
+
+
+def _validate_capture_configuration(
+    protocol: ProspectiveExperimentProtocolV2,
+    capture: dict[str, Any],
+) -> None:
+    expected: dict[str, Any] = {
+        "lifecycle_deadline": protocol.lifecycle_deadline,
+        "lifecycle_poll_interval_seconds": protocol.lifecycle_poll_interval_seconds,
+        "max_seconds_per_target": protocol.capture_max_seconds_per_target,
+        "max_frames_per_target": protocol.capture_max_frames_per_target,
+        "separate_database_per_target": protocol.capture_separate_database_per_target,
+        "subscribe_both_tokens": protocol.capture_subscribe_both_tokens,
+        "raw_archive": protocol.capture_raw_archive,
+    }
+    for key, expected_value in expected.items():
+        actual = capture.get(key)
+        if key == "lifecycle_deadline":
+            try:
+                actual = _time(str(actual))
+            except (TypeError, ValueError) as error:
+                raise ValueError("capture lifecycle deadline is invalid") from error
+        if actual != expected_value or type(actual) is not type(expected_value):
+            raise ValueError(f"capture configuration disagrees with protocol field {key!r}")
+
+
+def _all_targets_have_admissible_cutoff(
+    targets: list[Any],
+    deadline: datetime,
+) -> bool:
+    complete = True
+    for raw_target in targets:
+        target = _object(raw_target, "target state")
+        raw_cutoff = target.get("cutoff")
+        if raw_cutoff is None:
+            complete = False
+            continue
+        cutoff_container = _object(raw_cutoff, "cutoff container")
+        cutoff = ResolutionCutoffEvidenceV1.from_record(
+            _object(cutoff_container.get("evidence"), "cutoff evidence")
+        )
+        if cutoff.retrieved_at > deadline or cutoff.selected_cutoff > deadline:
+            raise ValueError("persisted resolution cutoff is after the frozen deadline")
+    return complete
+
+
+def _lifecycle_record_complete(
+    *,
+    protocol: ProspectiveExperimentProtocolV1 | ProspectiveExperimentProtocolV2,
+    targets: list[Any],
+    deadline: datetime,
+    poll_interval_seconds: int,
+) -> bool:
+    """Return whether no complete polling window is absent before closure."""
+
+    maximum_gap = timedelta(seconds=poll_interval_seconds * 2)
+    for raw_target in targets:
+        target = _object(raw_target, "target state")
+        coverage_end = deadline
+        raw_cutoff = target.get("cutoff")
+        if raw_cutoff is not None:
+            cutoff = ResolutionCutoffEvidenceV1.from_record(
+                _object(_object(raw_cutoff, "cutoff container").get("evidence"), "cutoff evidence")
+            )
+            if cutoff.retrieved_at > deadline or cutoff.selected_cutoff > deadline:
+                raise ValueError("persisted resolution cutoff is after the frozen deadline")
+            coverage_end = cutoff.retrieved_at
+        observations = []
+        for raw_entry in _list(target.get("lifecycle"), "lifecycle"):
+            entry = _object(raw_entry, "lifecycle entry")
+            observation = LifecycleObservationV1.from_record(
+                _object(entry.get("observation"), "lifecycle observation")
+            )
+            if observation.retrieved_at <= coverage_end:
+                observations.append(observation.retrieved_at)
+        points = [protocol.observation_window_end]
+        points.extend(
+            sorted(
+                observed_at
+                for observed_at in observations
+                if observed_at > protocol.observation_window_end
+            )
+        )
+        if any(later - earlier > maximum_gap for earlier, later in itertools.pairwise(points)):
+            return False
+        if coverage_end - points[-1] > maximum_gap:
+            return False
+    return True
 
 
 def _public_get(url: str, params: dict[str, Any]) -> tuple[bytes, str, datetime]:

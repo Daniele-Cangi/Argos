@@ -28,6 +28,10 @@ from argos.evaluation.calibration import (
     cohort_report,
     spread_bucket,
 )
+from argos.evaluation.claim_artifact import (
+    ProspectiveClaimArtifactIndexV1,
+    verify_published_claim_artifact,
+)
 from argos.evaluation.numeric import (
     EVALUATION_DECIMAL_CONTEXT,
     EVALUATION_PRECISION,
@@ -43,6 +47,7 @@ from argos.evaluation.prospective import (
     EvidencePersistenceReceiptV1,
     LifecycleObservationV1,
     ProspectiveExperimentProtocolV1,
+    ProspectiveExperimentProtocolV2,
     ProspectiveTargetV1,
     ResolutionCutoffEvidenceV1,
     StandaloneLastTradePolicy,
@@ -68,7 +73,12 @@ from argos.evaluation.prospective_aggregation_v2 import (
     build_target_exclusion_v2,
     prospective_experiment_digest_v2,
 )
+from argos.evaluation.prospective_aggregation_v3 import (
+    ProspectiveExperimentBundleV3,
+    aggregate_prospective_experiment_v3,
+)
 from argos.evaluation.prospective_bundle import EvaluationRunBundleV3
+from argos.evaluation.prospective_bundle_v4 import EvaluationRunBundleV4
 from argos.evaluation.report import (
     EvaluationReportV1,
     EvaluationReportV2,
@@ -112,6 +122,7 @@ __all__ = [
     "EvaluationRunBundleV1",
     "EvaluationRunBundleV2",
     "EvaluationRunBundleV3",
+    "EvaluationRunBundleV4",
     "EvidenceArtifactKind",
     "EvidencePersistenceReceiptV1",
     "ForecastEvaluationV1",
@@ -119,10 +130,13 @@ __all__ = [
     "HeadlineStatus",
     "LifecycleObservationV1",
     "MeasurementLayerVerdict",
+    "ProspectiveClaimArtifactIndexV1",
     "ProspectiveEvaluationResult",
     "ProspectiveExperimentBundleV1",
     "ProspectiveExperimentBundleV2",
+    "ProspectiveExperimentBundleV3",
     "ProspectiveExperimentProtocolV1",
+    "ProspectiveExperimentProtocolV2",
     "ProspectiveExperimentReportV1",
     "ProspectiveTargetContributionV1",
     "ProspectiveTargetExclusionReason",
@@ -134,6 +148,7 @@ __all__ = [
     "WithinTargetAggregation",
     "aggregate_prospective_experiment",
     "aggregate_prospective_experiment_v2",
+    "aggregate_prospective_experiment_v3",
     "brier_score",
     "build_capture_rejection_evidence",
     "build_target_exclusion",
@@ -149,4 +164,5 @@ __all__ = [
     "require_epsilon",
     "score_forecast",
     "spread_bucket",
+    "verify_published_claim_artifact",
 ]

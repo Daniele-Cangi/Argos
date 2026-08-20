@@ -124,6 +124,7 @@ def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
     }
     assert shipped == {
         "capture_rejection_evidence.v1": "CaptureRejectionEvidenceV1",
+        "prospective_claim_artifact_index.v1": "ProspectiveClaimArtifactIndexV1",
         "compiled_market_contract.v1": "CompiledMarketContractV1",
         "evaluation_decision.v1": "EvaluationDecisionV1",
         "evaluation_exclusion.v1": "EvaluationExclusionV1",
@@ -136,6 +137,7 @@ def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
         "evaluation_run_bundle.v2": "EvaluationRunBundleV2",
         "evaluation_run_bundle.v3": "EvaluationRunBundleV3",
         "evidence_persistence_receipt.v1": "EvidencePersistenceReceiptV1",
+        "evaluation_run_bundle.v4": "EvaluationRunBundleV4",
         "forecast_evaluation.v1": "ForecastEvaluationV1",
         "forecast_evaluation.v2": "ForecastEvaluationV2",
         "market_baseline_forecast.v1": "MarketBaselineForecastV1",
@@ -151,7 +153,9 @@ def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
         "prospective_experiment_bundle.v1": "ProspectiveExperimentBundleV1",
         "prospective_experiment_bundle.v2": "ProspectiveExperimentBundleV2",
         "prospective_experiment_protocol.v1": "ProspectiveExperimentProtocolV1",
+        "prospective_experiment_bundle.v3": "ProspectiveExperimentBundleV3",
         "prospective_experiment_report.v1": "ProspectiveExperimentReportV1",
+        "prospective_experiment_protocol.v2": "ProspectiveExperimentProtocolV2",
         "prospective_target.v1": "ProspectiveTargetV1",
         "prospective_target_contribution.v1": "ProspectiveTargetContributionV1",
         "prospective_target_exclusion.v1": "ProspectiveTargetExclusionV1",

@@ -157,7 +157,13 @@ class EvaluationRunBundleV3(VersionedModel):
         self._validate_report_links()
         self._validate_children()
 
-        expected = bundle_evidence_digest_v3(
+        expected = self._expected_evidence_digest()
+        if self.evidence_digest != expected:
+            raise ValueError("evidence_digest disagrees with the prospective bundle records")
+        return self
+
+    def _expected_evidence_digest(self) -> str:
+        return bundle_evidence_digest_v3(
             evaluation_run_id=self.evaluation_run_id,
             policy=self.policy,
             protocol=self.protocol,
@@ -179,9 +185,6 @@ class EvaluationRunBundleV3(VersionedModel):
             decisions=self.decisions,
             exclusions=self.exclusions,
         )
-        if self.evidence_digest != expected:
-            raise ValueError("evidence_digest disagrees with the prospective bundle records")
-        return self
 
     def _validate_receipts(self) -> None:
         expected = (
