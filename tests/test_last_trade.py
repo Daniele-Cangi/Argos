@@ -47,6 +47,14 @@ def _event() -> dict[str, Any]:
 
 def _provenance(**updates: Any) -> SourceProvenanceV1:
     record = orjson.loads(META_PATH.read_bytes())
+    for fixture_metadata_key in (
+        "note",
+        "parser_version",
+        "payload_kind",
+        "redaction",
+        "source_endpoint",
+    ):
+        record.pop(fixture_metadata_key)
     record.pop("schema_version")
     record.update(updates)
     return SourceProvenanceV1(**record)

@@ -123,6 +123,7 @@ def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
         if model.__module__.startswith("argos.")
     }
     assert shipped == {
+        "capture_rejection_evidence.v1": "CaptureRejectionEvidenceV1",
         "compiled_market_contract.v1": "CompiledMarketContractV1",
         "evaluation_decision.v1": "EvaluationDecisionV1",
         "evaluation_exclusion.v1": "EvaluationExclusionV1",
@@ -148,11 +149,13 @@ def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
         "order_book_snapshot.v1": "OrderBookSnapshotV1",
         "price_change.v1": "PriceChangeV1",
         "prospective_experiment_bundle.v1": "ProspectiveExperimentBundleV1",
+        "prospective_experiment_bundle.v2": "ProspectiveExperimentBundleV2",
         "prospective_experiment_protocol.v1": "ProspectiveExperimentProtocolV1",
         "prospective_experiment_report.v1": "ProspectiveExperimentReportV1",
         "prospective_target.v1": "ProspectiveTargetV1",
         "prospective_target_contribution.v1": "ProspectiveTargetContributionV1",
         "prospective_target_exclusion.v1": "ProspectiveTargetExclusionV1",
+        "prospective_target_exclusion.v2": "ProspectiveTargetExclusionV2",
         "quarantined_market.v1": "QuarantinedMarketV1",
         "rejected_observation.v1": "RejectedObservationV1",
         "replay_manifest.v1": "ReplayManifestV1",
