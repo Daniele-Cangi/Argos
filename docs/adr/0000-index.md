@@ -17,5 +17,6 @@
 | 0013 | Evaluation claims require admissible, digest-bound evidence | Accepted |
 | 0014 | Prospective evidence and protocol-defined calibration sufficiency | Accepted |
 | 0015 | Prospective measurement validation is not calibration | Accepted |
+| 0016 | Prospective exclusions require exact capture proof | Accepted |
 
 Create new ADRs by copying the structure used below. Never rewrite an accepted ADR to hide a changed decision; supersede it.

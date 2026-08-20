@@ -40,21 +40,33 @@ sections below without deleting their audit trail.
       passed, including Ubuntu coverage (`32279416650`). This was operational
       discipline; GitHub branch protection/status enforcement is not currently
       configured.
-- [ ] Pin a real standalone `last_trade_price` WebSocket fixture before
-      modeling that event. Do not infer its exact persistent schema from docs
-      alone. A bounded 2026-08-19 probe did not observe one, so the item remains
-      open and the prospective policy excludes an affected target.
+- [x] Pin a real standalone `last_trade_price` WebSocket fixture before
+      modeling that event. The frozen V2 pilot observed exact public payloads
+      on both selected targets; commit `9904b54` models the event as auxiliary
+      evidence without changing the order-book state hash or retroactively
+      reinterpreting those captures.
 - [x] Introduce V3 prospective protocol/receipt/target/lifecycle/cutoff
       contracts and a digest-valid-but-false-semantics adversarial suite.
 - [x] Separate the M4 measurement verdict from calibration sufficiency and
       implement equal-target, last-admissible-point aggregation (ADR-0015).
 - [x] Preflight bounded public discovery, lifecycle and WebSocket capture; do
       not admit the probe frames into the prospective sample.
-- [ ] Run the smallest prospective multi-target experiment: bounded captures
-      with contracts and persistence receipts recorded before forecasts;
-      predeclared source-terminal or first-observed-final cutoff evidence;
-      and a predeclared sample, weighting and sufficiency rule. No M5, RESON,
-      AI-forecasting or execution work.
+- [x] Run the smallest prospective multi-target experiment with contracts and
+      receipts persisted before capture and predeclared selection, stopping,
+      cutoff, weighting, missingness and sufficiency rules. The V2 pilot
+      selected two targets and captured each separately, but both produced a
+      standalone `last_trade_price` that the frozen revision did not model.
+      The predeclared rule permanently excludes both: measurement is
+      `M4_BLOCKED`, calibration is `CALIBRATION_NOT_EVALUABLE`, and there are
+      zero contributions. This is a completed negative experiment, not a pass.
+- [ ] Complete lifecycle polling for the excluded V2 targets until first final
+      observations or the frozen `2026-08-20T06:00:00Z` deadline. This closes
+      the operational record but cannot change either target's exclusion or the
+      experiment verdict.
+- [ ] If the owner authorizes another M4 experiment, freeze a new protocol and
+      collect fresh captures using the modeled standalone last-trade schema.
+      Do not rescue, replace or reuse the V1/V2 targets or captured evidence.
+      No M5, RESON, AI forecasting, UI, wallet, authentication or execution.
 
 ## Must close before M3 — from the M3 readiness audit (2026-08-17)
 

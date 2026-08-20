@@ -119,6 +119,20 @@ proxy uses last trade when bid/ask spread is greater than 0.10 and midpoint
 otherwise; it abstains when the required input is absent. Last trade is
 auxiliary evidence and never an order-book level.
 
+A target excluded because frozen capture code did not model a standalone last
+trade must carry the source claim, not only an authenticated reason string. The
+active exclusion boundary embeds the exact rejected observation, exact raw
+UTF-8 bytes, clean capture manifest, ingest sequence and durable receipts. It
+recomputes source hash, byte length, archive location, rejection identity,
+chronology, protocol revision/configuration/window, subscriptions and target
+scope before admitting the exclusion to an aggregate. Re-digesting a globally
+self-consistent artifact cannot make false internal semantics admissible.
+
+Modeling an event after an experiment does not retroactively change what its
+frozen capture revision understood. Such a change requires a new predeclared
+protocol and fresh captures; old exclusions, stopping rules and target choices
+remain immutable evidence.
+
 Later selective-prediction metrics:
 
 - risk–coverage curve;

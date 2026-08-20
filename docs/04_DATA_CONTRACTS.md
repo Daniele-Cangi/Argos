@@ -367,3 +367,26 @@ target bundles, persistent target exclusions, one last-admissible contribution
 per target and method, and a recomputable aggregate report. Duplicate targets
 cannot contribute twice. It publishes measurement-layer and calibration
 verdicts independently (ADR-0015).
+
+ADR-0016 versions that aggregate boundary forward when an exclusion claims that
+frozen capture code rejected a standalone `last_trade_price` event:
+
+- `CaptureRejectionEvidenceV1` embeds the clean capture `RunManifest`, exact
+  `RejectedObservationV1`, ingest sequence, exact UTF-8 source bytes and
+  content-addressed archive location. It recomputes the rejection identity,
+  byte length, SHA-256 and archive path, then strictly parses the bytes as
+  `LastTradePriceV1` and checks source, event type, reason, chronology,
+  condition and token scope. The manifest must prove raw archival, the frozen
+  code revision, configuration fingerprint and subscribed token pair.
+- `ProspectiveTargetExclusionV2` embeds that proof and its persistence receipt,
+  plus the target and target receipt. It permits only the predeclared
+  `unmodeled_standalone_last_trade_price` reason and fixes `excluded_at` to the
+  proven source receipt time.
+- `ProspectiveExperimentBundleV2` accepts only proof-backed V2 exclusions. It
+  cross-checks each capture revision and configuration against the frozen
+  protocol, requires the rejection to fall inside the observation window, and
+  rederives contributions, report, verdicts and the canonical evidence digest.
+
+The V1 schemas remain readable with their historical meaning. They are not the
+active claim boundary for proof-backed exclusions and are not silently
+reinterpreted.

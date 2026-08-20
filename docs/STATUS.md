@@ -1,6 +1,46 @@
 # ARGOS status
 
-Last updated: 2026-08-19
+Last updated: 2026-08-20
+
+## 2026-08-20 prospective pilot result
+
+The smallest permitted real M4 experiment was frozen before observation and
+executed only against public Polymarket sources. V1 terminated before its
+observation window because canonical JSON key sorting made persisted outcome
+maps unreadable; commit `4c96150` fixed the round-trip and V2 performed a fresh
+one-shot selection with no reused target or evidence.
+
+V2 persisted protocol `m4-pilot-20260819-v2` at clean revision `877060b`, then
+selected and separately captured two markets from distinct Gamma events. Both
+captures produced a genuine standalone `last_trade_price` event inside the
+frozen observation window. The protocol had predeclared target-level exclusion,
+no replacement and no rescue when that then-unmodeled event appeared. Both
+targets are therefore permanently excluded and contribute no score.
+
+The active claim boundary is versioned forward by ADR-0016:
+`CaptureRejectionEvidenceV1` binds each exact rejected observation, ingest
+sequence, raw UTF-8 payload, raw hash/location and clean capture manifest;
+`ProspectiveTargetExclusionV2` binds that proof and both receipts to the exact
+target; `ProspectiveExperimentBundleV2` rechecks protocol revision,
+configuration, window, target scope, contributions, report and digest. Tests
+include globally re-digested false-semantic attacks rather than hash-only
+tampering.
+
+The materialized result contains two selected targets, two exclusions, zero
+resolved target bundles and zero contributions. Its independent verdicts are
+**`M4_BLOCKED`** and **`CALIBRATION_NOT_EVALUABLE`**. This is an informative
+negative prospective result: the protocol worked by refusing evidence its
+frozen code could not interpret. It is not an ARGOS probability result and does
+not establish calibration. Lifecycle polling continues until first final
+observations or the frozen `2026-08-20T06:00:00Z` deadline, but cannot change
+the exclusions or promote either verdict.
+
+Commit `9904b54` models the now-observed standalone event as auxiliary evidence
+for future captures without changing the order-book state hash. It does not
+retroactively alter revision `877060b`. Any follow-up requires owner
+authorization, a new frozen protocol and fresh capture; M5, RESON, LLM
+forecasting, UI, wallets, authenticated trading and execution remain out of
+scope.
 
 ## 2026-08-19 owner correction — M4 reopened
 

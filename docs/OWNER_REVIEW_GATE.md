@@ -43,11 +43,19 @@ multi-target experiment with contract persistence proven before forecast,
 predeclared source-terminal or first-observed-final cutoff evidence, and a
 predeclared sample/weighting/sufficiency rule. No M5-M8 work is authorized.
 
-The experiment branch now contains the versioned V3 prospective boundary,
-durable receipt contracts and equal-target aggregation. That infrastructure is
-necessary evidence, not a gate pass. Until the frozen two-target pilot resolves
-and reconstructs, the current measurement verdict remains at most
-`M4_PARTIALLY_VALIDATED`; calibration remains separately not established.
+The smallest frozen two-target pilot has now executed against public sources.
+Both separately captured targets emitted a real standalone
+`last_trade_price` event that revision `877060b` did not model. Under the
+predeclared target-level exclusion and no-replacement rules, both targets are
+permanently excluded. The proof-backed V2 aggregate therefore reports zero
+contributions, `M4_BLOCKED` and `CALIBRATION_NOT_EVALUABLE`; later finality
+cannot promote those verdicts. Lifecycle polling remains active only to close
+the frozen operational record.
+
+ADR-0016 advances exclusions to an exact-raw, rejection-, manifest-, receipt-
+and target-bound claim. Standalone trade modeling added after capture is for a
+future protocol only and does not rescue or reinterpret the pilot. Gate A stays
+blocked and no M5-M8 work is authorized.
 
 ## Required repository state
 

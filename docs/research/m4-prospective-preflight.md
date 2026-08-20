@@ -59,6 +59,19 @@ The frozen pilot policy is target-level exclusion if a standalone occurrence
 is unhandled. Each target is captured separately so an occurrence cannot hide
 which target was affected or automatically invalidate unrelated evidence.
 
+### Later prospective observation
+
+The statement above is scoped only to this 45-second readiness probe. The later
+V2 pilot captured real standalone events on both selected targets: the earliest
+rejections were received at `2026-08-19T22:20:44.059730Z` and
+`2026-08-19T22:24:48.145796Z`. Their exact raw payloads are content-addressed by
+SHA-256 `9a6d43ed15d780707b4e47694337cd7ef4e4c4f4deb9e0d52a562810f9666601`
+and `70877c8d3b91c31cc9ed310888c7e84e06bedec19ae1c31e1ef1c5ce7751794f`.
+That evidence falsifies any universal reading of “no standalone event” while
+leaving the bounded preflight observation true. The frozen exclusion policy was
+applied to both targets; subsequent schema modeling cannot reinterpret those
+captures.
+
 ## Readiness conclusion
 
 The bounded path demonstrated discovery, contract inputs, public capture, raw
