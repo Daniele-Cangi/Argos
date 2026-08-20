@@ -1,4 +1,4 @@
-"""Freeze and poll the bounded public M4 prospective pilot.
+"""Freeze, poll and materialize the bounded public M4 prospective pilot.
 
 The capture itself deliberately stays on the shipped ``argos capture market``
 path. This helper owns only evidence that must exist before capture and the
@@ -19,8 +19,10 @@ import orjson
 
 from argos.clock import LiveClock, ensure_utc
 from argos.compiler import CompiledMarketContractV1, compile_market_contract
+from argos.config.manifest import RunManifest
 from argos.domain.market import MarketDefinitionV1
 from argos.domain.provenance import SourceProvenanceV1, sha256_hex
+from argos.errors import RejectionReason
 from argos.evaluation.bundle import record_sha256
 from argos.evaluation.prospective import (
     CutoffBasis,
@@ -35,11 +37,22 @@ from argos.evaluation.prospective import (
     build_target_id,
     persist_evidence_record,
 )
+from argos.evaluation.prospective_aggregation_v2 import (
+    ProspectiveTargetExclusionV2,
+    aggregate_prospective_experiment_v2,
+    build_capture_rejection_evidence,
+    build_target_exclusion_v2,
+)
 from argos.ingestion.gamma_markets import normalize_markets
 from argos.resolution import (
     ResolutionStatus,
     ResolutionV1,
     normalize_gamma_resolution,
+)
+from argos.store import (
+    CompletionStatus,
+    open_sqlite_event_store,
+    read_raw_payload,
 )
 from argos.store.raw_archive import archive_relative_location, write_raw_payload
 
@@ -55,10 +68,14 @@ def main() -> int:
     freeze.add_argument("--experiment-dir", type=Path, required=True)
     poll = subparsers.add_parser("poll")
     poll.add_argument("--experiment-dir", type=Path, required=True)
+    materialize = subparsers.add_parser("materialize-exclusions")
+    materialize.add_argument("--experiment-dir", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "freeze":
         return freeze_experiment(args.spec, args.experiment_dir)
-    return poll_experiment(args.experiment_dir)
+    if args.command == "poll":
+        return poll_experiment(args.experiment_dir)
+    return materialize_exclusions(args.experiment_dir)
 
 
 def freeze_experiment(spec_path: Path, experiment_dir: Path) -> int:
@@ -280,6 +297,157 @@ def poll_experiment(experiment_dir: Path) -> int:
             }
         _write_state(state_path, state)
     print(orjson.dumps(state, option=orjson.OPT_INDENT_2).decode())
+    return 0
+
+
+def materialize_exclusions(experiment_dir: Path) -> int:
+    """Persist proof-backed exclusions and the current aggregate verdict."""
+
+    materializer_revision = _clean_revision()
+    state_path = experiment_dir / "state.json"
+    state = _object(orjson.loads(state_path.read_bytes()), "experiment state")
+    protocol = ProspectiveExperimentProtocolV1.from_record(
+        _object(state.get("protocol"), "protocol record")
+    )
+    protocol_receipt = EvidencePersistenceReceiptV1.from_record(
+        _object(state.get("protocol_receipt"), "protocol receipt")
+    )
+    now = LiveClock().now()
+    evidence_dir = experiment_dir / "evidence"
+    exclusions: list[ProspectiveTargetExclusionV2] = []
+    persisted_exclusions: list[dict[str, Any]] = []
+
+    for target_state_raw in _list(state.get("targets"), "targets"):
+        target_state = _object(target_state_raw, "target state")
+        target = ProspectiveTargetV1.from_record(
+            _object(target_state.get("target"), "target record")
+        )
+        target_receipt = EvidencePersistenceReceiptV1.from_record(
+            _object(target_state.get("target_receipt"), "target receipt")
+        )
+        capture_dir = experiment_dir / "capture" / f"target-{target.selection_rank}"
+        capture_run_id = f"{protocol.experiment_id}-target-{target.selection_rank}"
+        manifest_path = capture_dir / f"{capture_run_id}.manifest.json"
+        manifest = RunManifest.from_record(
+            _object(orjson.loads(manifest_path.read_bytes()), "capture manifest")
+        )
+
+        store = open_sqlite_event_store(capture_dir / "events.sqlite3")
+        try:
+            run = store.get_capture_run(capture_run_id)
+            if run is None or run.completion_status is not CompletionStatus.COMPLETED:
+                raise ValueError("target capture is not durably completed")
+            candidates = [
+                item
+                for item in store.iter_rejections(capture_run_id)
+                if item.rejection.reason is RejectionReason.UNKNOWN_EVENT_TYPE
+                and item.rejection.source_event_type == "last_trade_price"
+                and item.rejection.condition_id == target.condition_id
+                and item.rejection.token_id in {target.yes_token_id, target.no_token_id}
+                and protocol.observation_window_start
+                <= item.rejection.received_time
+                <= protocol.observation_window_end
+            ]
+        finally:
+            store.close()
+        if not candidates:
+            raise ValueError(
+                f"target {target.target_id} has no qualifying standalone last_trade_price rejection"
+            )
+        first = min(
+            candidates,
+            key=lambda item: (
+                item.rejection.received_time,
+                item.ingest_sequence,
+            ),
+        )
+        raw, raw_provenance = read_raw_payload(
+            capture_dir / "raw",
+            first.rejection.raw_payload_sha256,
+        )
+        if raw_provenance != first.rejection.provenance:
+            raise ValueError("raw archive sidecar disagrees with the rejection ledger")
+
+        raw_location = archive_relative_location(first.rejection.provenance)
+        proof = build_capture_rejection_evidence(
+            experiment_id=protocol.experiment_id,
+            target_id=target.target_id,
+            capture_run_manifest=manifest,
+            ingest_sequence=first.ingest_sequence,
+            rejection=first.rejection,
+            raw_payload=raw,
+            raw_payload_location=raw_location,
+        )
+        proof_receipt = persist_evidence_record(
+            evidence_dir,
+            record=proof,
+            experiment_id=protocol.experiment_id,
+            artifact_kind=EvidenceArtifactKind.CAPTURE_REJECTION,
+            artifact_id=proof.evidence_id,
+            persisted_at=now,
+        )
+        exclusion = build_target_exclusion_v2(
+            experiment_id=protocol.experiment_id,
+            target=target,
+            target_receipt=target_receipt,
+            capture_evidence=proof,
+            capture_evidence_receipt=proof_receipt,
+        )
+        exclusion_receipt = persist_evidence_record(
+            evidence_dir,
+            record=exclusion,
+            experiment_id=protocol.experiment_id,
+            artifact_kind=EvidenceArtifactKind.TARGET_EXCLUSION,
+            artifact_id=exclusion.exclusion_id,
+            persisted_at=now,
+        )
+        exclusions.append(exclusion)
+        persisted_exclusions.append(
+            {
+                "capture_evidence": proof.to_record(),
+                "capture_evidence_receipt": proof_receipt.to_record(),
+                "exclusion": exclusion.to_record(),
+                "exclusion_receipt": exclusion_receipt.to_record(),
+            }
+        )
+
+    capture_config = _object(state.get("capture"), "capture configuration")
+    lifecycle_deadline = _time(str(capture_config["lifecycle_deadline"]))
+    targets = _list(state.get("targets"), "targets")
+    lifecycle_complete = all(
+        _object(item, "target state").get("cutoff") is not None for item in targets
+    )
+    observation_complete = lifecycle_complete or now >= lifecycle_deadline
+    aggregate = aggregate_prospective_experiment_v2(
+        protocol=protocol,
+        protocol_receipt=protocol_receipt,
+        target_bundles=(),
+        target_exclusions=exclusions,
+        created_at=now,
+        observation_complete=observation_complete,
+    )
+    aggregate_receipt = persist_evidence_record(
+        evidence_dir,
+        record=aggregate,
+        experiment_id=protocol.experiment_id,
+        artifact_kind=EvidenceArtifactKind.EXPERIMENT_AGGREGATE,
+        artifact_id=aggregate.evidence_digest,
+        persisted_at=now,
+    )
+    result = {
+        "format": "m4_prospective_pilot_result.v2",
+        "experiment_id": protocol.experiment_id,
+        "materialized_at": now.isoformat(),
+        "materializer_revision": materializer_revision,
+        "observation_complete": observation_complete,
+        "target_exclusions": persisted_exclusions,
+        "aggregate": aggregate.to_record(),
+        "aggregate_receipt": aggregate_receipt.to_record(),
+    }
+    state["result_v2"] = result
+    _write_state(state_path, state)
+    _write_state(experiment_dir / "result-v2.json", result)
+    print(orjson.dumps(result, option=orjson.OPT_INDENT_2).decode())
     return 0
 
 

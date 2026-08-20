@@ -95,6 +95,9 @@ class EvidenceArtifactKind(StrEnum):
     TARGET_DECLARATION = "target_declaration"
     LIFECYCLE_OBSERVATION = "lifecycle_observation"
     RESOLUTION_CUTOFF = "resolution_cutoff"
+    CAPTURE_REJECTION = "capture_rejection_evidence"
+    TARGET_EXCLUSION = "target_exclusion"
+    EXPERIMENT_AGGREGATE = "experiment_aggregate"
 
 
 class ProspectiveExperimentProtocolV1(VersionedModel):
