@@ -9,6 +9,7 @@ from runpy import run_path
 import pytest
 from test_prospective_bundle import _observation, _valid_result
 
+from argos.evaluation.prospective import ProspectiveExperimentProtocolV2
 from argos.resolution import ResolutionStatus
 
 _PILOT = run_path(str(Path(__file__).resolve().parents[1] / "scripts" / "m4_prospective_pilot.py"))
@@ -67,3 +68,32 @@ async def test_capture_configuration_cannot_drift_from_protocol(tmp_path) -> Non
 
     with pytest.raises(ValueError, match="max_frames_per_target"):
         _validate_capture_configuration(protocol, capture)
+
+
+async def test_protocol_v2_rejects_every_incoherent_operational_bound(tmp_path) -> None:
+    protocol = (await _valid_result(tmp_path, protocol_v2=True)).bundle.protocol
+    lifecycle_seconds = int(
+        (protocol.lifecycle_deadline - protocol.observation_window_end).total_seconds()
+    )
+    observation_seconds = int(
+        (protocol.observation_window_end - protocol.observation_window_start).total_seconds()
+    )
+    cases = [
+        ({"lifecycle_deadline": protocol.observation_window_end}, "deadline must follow"),
+        (
+            {"lifecycle_poll_interval_seconds": lifecycle_seconds + 1},
+            "cadence must fit",
+        ),
+        (
+            {"capture_max_seconds_per_target": observation_seconds + 1},
+            "duration exceeds",
+        ),
+        ({"capture_separate_database_per_target": False}, "separate database"),
+        ({"capture_subscribe_both_tokens": False}, "subscribe both"),
+        ({"capture_raw_archive": False}, "raw archival"),
+    ]
+    for updates, message in cases:
+        with pytest.raises(ValueError, match=message):
+            ProspectiveExperimentProtocolV2.model_validate(
+                {**protocol.model_dump(mode="python"), **updates}
+            )
