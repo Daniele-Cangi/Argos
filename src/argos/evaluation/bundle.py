@@ -291,13 +291,109 @@ class EvaluationRunBundleV2(VersionedModel):
     def _evidence_is_bound_and_linked(self) -> EvaluationRunBundleV2:
         if self.report.evaluation_run_id != self.evaluation_run_id:
             raise ValueError("bundle and report name different evaluation runs")
+
+        expected_contract_id = self.contract.contract_id if self.contract else None
+        expected_contract_digest = (
+            record_sha256(self.contract.to_record()) if self.contract else None
+        )
+        report_links: dict[str, object] = {
+            "evaluation_policy_version": self.policy.schema_version,
+            "resolution_id": self.resolution.resolution_id,
+            "resolution_record_sha256": record_sha256(self.resolution.to_record()),
+            "resolution_status": self.resolution.resolution_status.value,
+            "resolution_normalizer_version": self.resolution.normalizer_version,
+            "resolution_cutoff": self.resolution.resolved_at,
+            "contract_id": expected_contract_id,
+            "contract_record_sha256": expected_contract_digest,
+        }
+        for field_name, expected in report_links.items():
+            if getattr(self.report, field_name) != expected:
+                raise ValueError(f"report.{field_name} disagrees with its bundle evidence")
+
         forecast_ids = {forecast.forecast_id for forecast in self.forecasts}
         if len(forecast_ids) != len(self.forecasts):
             raise ValueError("forecast_id must be unique within an evaluation bundle")
-        if any(item.forecast_id not in forecast_ids for item in self.evaluations):
+        evaluation_forecast_ids = [item.forecast_id for item in self.evaluations]
+        exclusion_forecast_ids = [item.forecast_id for item in self.exclusions]
+        if len(set(evaluation_forecast_ids)) != len(evaluation_forecast_ids):
+            raise ValueError("a forecast may be evaluated at most once within a bundle")
+        if len(set(exclusion_forecast_ids)) != len(exclusion_forecast_ids):
+            raise ValueError("a forecast may be excluded at most once within a bundle")
+        if any(forecast_id not in forecast_ids for forecast_id in evaluation_forecast_ids):
             raise ValueError("an evaluation names a forecast absent from its bundle")
-        if any(item.forecast_id not in forecast_ids for item in self.exclusions):
+        if any(forecast_id not in forecast_ids for forecast_id in exclusion_forecast_ids):
             raise ValueError("an exclusion names a forecast absent from its bundle")
+        evaluated = set(evaluation_forecast_ids)
+        excluded = set(exclusion_forecast_ids)
+        if evaluated & excluded:
+            raise ValueError("a forecast cannot be both scored and excluded")
+        if evaluated | excluded != forecast_ids:
+            raise ValueError("every forecast must be scored or excluded exactly once")
+
+        forecasts_by_id = {forecast.forecast_id: forecast for forecast in self.forecasts}
+        for forecast in self.forecasts:
+            if forecast.evaluation_run_id != self.evaluation_run_id:
+                raise ValueError("a forecast names a different evaluation run than its bundle")
+            if forecast.contract_id != expected_contract_id:
+                raise ValueError("a forecast names a different contract than its bundle")
+            if (forecast.market_id, forecast.condition_id) != (
+                self.resolution.market_id,
+                self.resolution.condition_id,
+            ):
+                raise ValueError("a forecast names a different market than its resolution")
+
+        for evaluation in self.evaluations:
+            if evaluation.evaluation_run_id != self.evaluation_run_id:
+                raise ValueError("an evaluation names a different run than its bundle")
+            if evaluation.resolution_id != self.resolution.resolution_id:
+                raise ValueError("an evaluation names a different resolution than its bundle")
+            if evaluation.contract_id != expected_contract_id:
+                raise ValueError("an evaluation names a different contract than its bundle")
+            forecast = forecasts_by_id[evaluation.forecast_id]
+            if (
+                evaluation.forecast_method,
+                evaluation.condition_id,
+                evaluation.token_id,
+                evaluation.score,
+                evaluation.calibration_status,
+            ) != (
+                forecast.method.value,
+                forecast.condition_id,
+                forecast.token_id,
+                forecast.raw_score,
+                forecast.calibration_status.value,
+            ):
+                raise ValueError("an evaluation disagrees with the forecast it scores")
+
+        decision_sequences = {decision.ingest_sequence for decision in self.decisions}
+        if len(decision_sequences) != len(self.decisions):
+            raise ValueError("ingest_sequence must be unique within bundle decisions")
+        report_counts = {
+            "arrival_count": len(self.decisions),
+            "target_information_state_count": sum(
+                decision.target_state_included for decision in self.decisions
+            ),
+            "forecast_count": len(self.forecasts),
+            "forecast_point_count": len(self.forecasts),
+            "scored_count": len(self.evaluations),
+            "scored_forecast_point_count": len(self.evaluations),
+            "abstention_count": sum(forecast.abstained for forecast in self.forecasts),
+            "unresolved_count": 0,
+            "resolved_target_count": 1,
+        }
+        for field_name, expected_count in report_counts.items():
+            if getattr(self.report, field_name) != expected_count:
+                raise ValueError(f"report.{field_name} disagrees with its child records")
+
+        expected_child_digests = {
+            "forecasts": record_sha256([item.to_record() for item in self.forecasts]),
+            "evaluations": record_sha256([item.to_record() for item in self.evaluations]),
+            "decisions": record_sha256([item.to_record() for item in self.decisions]),
+            "exclusions": record_sha256([item.to_record() for item in self.exclusions]),
+        }
+        if dict(self.report.child_record_digests) != expected_child_digests:
+            raise ValueError("report.child_record_digests disagrees with its child records")
+
         expected = bundle_evidence_digest_v2(
             evaluation_run_id=self.evaluation_run_id,
             policy=self.policy,

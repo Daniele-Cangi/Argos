@@ -4,29 +4,35 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from test_replay import CAPTURE_START, TOKEN, _ListFrameSource, _recorded_frames
 
-from argos.baselines import BaselineMethod
+from argos.baselines import BaselineMethod, MarketBaselineForecastV2
 from argos.clock import ReplayClock
 from argos.compiler import CompiledMarketContractV1
 from argos.config import Settings
 from argos.evaluation import (
+    EvaluationReportV2,
     EvaluationResult,
     EvaluationRunBundleV1,
     EvaluationRunBundleV2,
+    ForecastEvaluationV2,
     evaluate_capture,
 )
 from argos.evaluation.bundle import (
     DecisionReason,
+    EvaluationDecisionV1,
     EvaluationExclusionV1,
     EvaluationPolicyV1,
     EvaluationPolicyV2,
     ExclusionReason,
     bundle_evidence_digest,
+    bundle_evidence_digest_v2,
 )
 from argos.ingestion.capture import run_capture
 from argos.resolution import ResolutionV1, normalize_clob_resolution
@@ -106,6 +112,40 @@ def _series(result: EvaluationResult) -> list[tuple[str, str | None, bool]]:
         )
         for item in result.forecasts
     ]
+
+
+def _redigest_bundle_record(record: dict[str, Any]) -> None:
+    """Make outer bytes valid after an adversarial sibling-record mutation."""
+    policy = EvaluationPolicyV2.from_record(dict(record["policy"]))
+    resolution = ResolutionV1.from_record(dict(record["resolution"]))
+    contract_record = record["contract"]
+    contract = (
+        CompiledMarketContractV1.from_record(dict(contract_record))
+        if contract_record is not None
+        else None
+    )
+    report = EvaluationReportV2.from_record(dict(record["report"]))
+    forecasts = tuple(
+        MarketBaselineForecastV2.from_record(dict(item)) for item in record["forecasts"]
+    )
+    evaluations = tuple(
+        ForecastEvaluationV2.from_record(dict(item)) for item in record["evaluations"]
+    )
+    decisions = tuple(EvaluationDecisionV1.from_record(dict(item)) for item in record["decisions"])
+    exclusions = tuple(
+        EvaluationExclusionV1.from_record(dict(item)) for item in record["exclusions"]
+    )
+    record["evidence_digest"] = bundle_evidence_digest_v2(
+        evaluation_run_id=str(record["evaluation_run_id"]),
+        policy=policy,
+        resolution=resolution,
+        contract=contract,
+        report=report,
+        forecasts=forecasts,
+        evaluations=evaluations,
+        decisions=decisions,
+        exclusions=exclusions,
+    )
 
 
 async def test_duplicate_and_sibling_traffic_cannot_reweight_the_target() -> None:
@@ -241,6 +281,155 @@ async def test_bundle_links_are_validated_before_the_digest() -> None:
         )
         with pytest.raises(ValueError, match="exclusion names a forecast absent"):
             bundle.model_copy(update={"exclusions": (*result.exclusions, missing)})
+    finally:
+        store.close()
+
+
+async def test_digest_valid_report_contradictions_are_refused() -> None:
+    store = await _capture("bundle-report-claims")
+    try:
+        result = evaluate_capture(
+            store=store,
+            capture_run_id="bundle-report-claims",
+            resolution=_resolution(),
+            token_id=TOKEN,
+            settings=Settings(),
+            clock=ReplayClock(NOW),
+            evaluation_run_id="evaluation-bundle-report-claims",
+            contract=_contract(),
+            methods=(BaselineMethod.MIDPOINT,),
+        )
+        source = result.bundle.to_record()
+        report_links: dict[str, Any] = {
+            "evaluation_policy_version": "evaluation_policy.v1",
+            "resolution_id": "resolution-contradiction",
+            "resolution_record_sha256": "0" * 64,
+            "resolution_status": "proposed",
+            "resolution_normalizer_version": "contradictory-normalizer/1",
+            "resolution_cutoff": datetime(2026, 8, 19, tzinfo=UTC).isoformat(),
+            "contract_id": "contract-contradiction",
+            "contract_record_sha256": "0" * 64,
+        }
+        for field_name, contradictory_value in report_links.items():
+            record = deepcopy(source)
+            record["report"][field_name] = contradictory_value
+            _redigest_bundle_record(record)
+            with pytest.raises(ValueError, match=rf"report\.{field_name} disagrees"):
+                EvaluationRunBundleV2.from_record(record)
+
+        report_count_fields = (
+            "arrival_count",
+            "target_information_state_count",
+            "forecast_count",
+            "forecast_point_count",
+            "scored_count",
+            "scored_forecast_point_count",
+            "abstention_count",
+            "unresolved_count",
+            "resolved_target_count",
+        )
+        for field_name in report_count_fields:
+            record = deepcopy(source)
+            record["report"][field_name] += 1
+            _redigest_bundle_record(record)
+            with pytest.raises(ValueError, match=rf"report\.{field_name} disagrees"):
+                EvaluationRunBundleV2.from_record(record)
+
+        record = deepcopy(source)
+        record["report"]["child_record_digests"]["forecasts"] = "0" * 64
+        _redigest_bundle_record(record)
+        with pytest.raises(ValueError, match="child_record_digests disagrees"):
+            EvaluationRunBundleV2.from_record(record)
+    finally:
+        store.close()
+
+
+async def test_digest_valid_child_contradictions_are_refused() -> None:
+    store = await _capture("bundle-child-claims")
+    try:
+        result = evaluate_capture(
+            store=store,
+            capture_run_id="bundle-child-claims",
+            resolution=_resolution(),
+            token_id=TOKEN,
+            settings=Settings(),
+            clock=ReplayClock(NOW),
+            evaluation_run_id="evaluation-bundle-child-claims",
+            contract=_contract(),
+            methods=(BaselineMethod.MIDPOINT,),
+        )
+        source = result.bundle.to_record()
+
+        evaluation_links = {
+            "evaluation_run_id": ("different-run", "different run"),
+            "resolution_id": ("different-resolution", "different resolution"),
+            "contract_id": ("different-contract", "different contract"),
+        }
+        for field_name, (contradictory_value, message) in evaluation_links.items():
+            record = deepcopy(source)
+            record["evaluations"][0][field_name] = contradictory_value
+            _redigest_bundle_record(record)
+            with pytest.raises(ValueError, match=message):
+                EvaluationRunBundleV2.from_record(record)
+
+        forecast_links = {
+            "evaluation_run_id": ("different-run", "different evaluation run"),
+            "contract_id": ("different-contract", "different contract"),
+            "market_id": ("different-market", "different market"),
+        }
+        for field_name, (contradictory_value, message) in forecast_links.items():
+            record = deepcopy(source)
+            record["forecasts"][0][field_name] = contradictory_value
+            _redigest_bundle_record(record)
+            with pytest.raises(ValueError, match=message):
+                EvaluationRunBundleV2.from_record(record)
+
+        record = deepcopy(source)
+        record["evaluations"][0]["forecast_method"] = BaselineMethod.LAST_TRADE.value
+        _redigest_bundle_record(record)
+        with pytest.raises(ValueError, match="disagrees with the forecast"):
+            EvaluationRunBundleV2.from_record(record)
+
+        record = deepcopy(source)
+        record["exclusions"].append(
+            EvaluationExclusionV1(
+                forecast_id=str(record["evaluations"][0]["forecast_id"]),
+                reason=ExclusionReason.ABSTAINED,
+                detail="digest-valid scored/excluded contradiction",
+            ).to_record()
+        )
+        _redigest_bundle_record(record)
+        with pytest.raises(ValueError, match="both scored and excluded"):
+            EvaluationRunBundleV2.from_record(record)
+
+        record = deepcopy(source)
+        record["evaluations"].pop()
+        _redigest_bundle_record(record)
+        with pytest.raises(ValueError, match="scored or excluded exactly once"):
+            EvaluationRunBundleV2.from_record(record)
+
+        record = deepcopy(source)
+        record["evaluations"].append(deepcopy(record["evaluations"][0]))
+        _redigest_bundle_record(record)
+        with pytest.raises(ValueError, match="evaluated at most once"):
+            EvaluationRunBundleV2.from_record(record)
+
+        record = deepcopy(source)
+        exclusion = EvaluationExclusionV1(
+            forecast_id=str(record["evaluations"][0]["forecast_id"]),
+            reason=ExclusionReason.ABSTAINED,
+            detail="duplicate exclusion contradiction",
+        ).to_record()
+        record["exclusions"].extend((exclusion, exclusion))
+        _redigest_bundle_record(record)
+        with pytest.raises(ValueError, match="excluded at most once"):
+            EvaluationRunBundleV2.from_record(record)
+
+        record = deepcopy(source)
+        record["decisions"].append(deepcopy(record["decisions"][0]))
+        _redigest_bundle_record(record)
+        with pytest.raises(ValueError, match="ingest_sequence must be unique"):
+            EvaluationRunBundleV2.from_record(record)
     finally:
         store.close()
 

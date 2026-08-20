@@ -8,7 +8,8 @@ Claude must stop implementation when this gate is reached.
 `docs/OWNER_TAKEOVER_M4_REVIEW.md` reproduced F2, F3, F4, F5 and F8 and found
 additional sample-unit, displayed-price, resolution-identity, integrity and
 portability defects. ADR-0013 records the corrective policy; ADR-0014 defines
-the prospective evidence and calibration-sufficiency boundary.
+the prospective evidence and calibration-sufficiency boundary; ADR-0015 keeps
+measurement-layer validation separate from calibration sufficiency.
 
 The checklist below is the dated 2026-08-18 submission and is retained as
 history, not as the current verdict. In particular, its M4-complete and
@@ -23,19 +24,51 @@ The corrective implementation now:
   unknown cutoff a no-score result;
 - persists a digest-bound evaluation bundle and explicit per-arrival decisions
   and per-forecast exclusions;
+- rejects a correctly re-digested but internally contradictory bundle by
+  cross-validating report claims and child links against sibling records;
 - distinguishes arrivals, information states, forecast points and resolved
   targets, with no one-target calibration headline;
 - preserves snapshot last trade separately and implements the conditional
   displayed-price rule; and
 - runs the ordinary gate on Windows as well as Ubuntu.
 
-The final local ADR-0014 gate passes (1,595 tests plus one Windows symlink
-skip; 95% aggregate coverage; `bundle.py` 94.97% and `run_v2.py` 92.11%). PR
-#2 remains subject to green Windows and Ubuntu checks before merge. Gate
-closure still requires a bounded prospective
+The final local prospective bundle-hardening gate passes (1,597 tests plus one
+Windows symlink skip; 95% aggregate coverage; `bundle.py` 96.47% and
+`run_v2.py` 92.11%). PR #2 was merged as `bd2ca1c` after final run
+`32279416650` passed on Windows and
+Ubuntu. GitHub branch protection/status enforcement is not configured; the
+green-before-merge rule was operational discipline. Gate closure still
+requires a bounded prospective
 multi-target experiment with contract persistence proven before forecast,
 predeclared source-terminal or first-observed-final cutoff evidence, and a
 predeclared sample/weighting/sufficiency rule. No M5-M8 work is authorized.
+
+The smallest frozen two-target pilot has now executed against public sources.
+Both separately captured targets emitted a real standalone
+`last_trade_price` event that revision `877060b` did not model. Under the
+predeclared target-level exclusion and no-replacement rules, both targets are
+permanently excluded. The proof-backed V2 aggregate therefore reports zero
+contributions, `M4_BLOCKED` and `CALIBRATION_NOT_EVALUABLE`; later finality
+cannot promote those verdicts. The frozen lifecycle deadline elapsed without
+any first-final cutoff. At the last valid in-window poll (ordinal 70), both
+markets remained `proposed`. Historical aggregate `observation_complete` means
+closed selected-target accounting, not continuous lifecycle coverage. A
+host-clock jump caused the monitor to append poll 71 after the deadline. That
+deviation is preserved for audit but inadmissible as cutoff evidence; the gap
+leaves `lifecycle_record_complete = false` even though
+`experiment_closed_by_frozen_deadline = true`, and affected no exclusion,
+contribution or verdict.
+
+ADR-0016 advances exclusions to an exact-raw, rejection-, manifest-, receipt-
+and target-bound claim. Standalone trade modeling added after capture is for a
+future protocol only and does not rescue or reinterpret the pilot. Gate A stays
+blocked and no M5-M8 work is authorized.
+
+ADR-0017 binds future deadlines, cadence and capture limits in protocol V2;
+V4 target bundles bind the exact capture manifest and refuse post-deadline
+cutoffs; V3 aggregates enforce those limits. The historical V2 aggregate is
+published byte-for-byte with a verifiable index under
+`experiments/m4-pilot-20260819/proof/`. No new experiment has been run.
 
 ## Required repository state
 

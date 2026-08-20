@@ -18,7 +18,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import ClassVar, cast
 
-from pydantic import Field, field_serializer, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_serializer, field_validator, model_validator
 
 from argos.clock import ensure_utc
 from argos.domain.provenance import SHA256_LENGTH
@@ -86,7 +86,14 @@ class MarketDefinitionV1(VersionedModel):
 
     @field_validator("outcome_token_map")
     @classmethod
-    def _freeze_token_map(cls, value: Mapping[str, str]) -> Mapping[str, str]:
+    def _freeze_token_map(cls, value: Mapping[str, str], info: ValidationInfo) -> Mapping[str, str]:
+        # JSON object member order is not evidence. Canonical record bytes sort
+        # keys, so a Yes/No map reloads as No/Yes even though the mapping is
+        # unchanged. Restore the explicit outcome order before freezing; the
+        # model validator below still refuses missing or extra labels.
+        outcomes = info.data.get("outcomes")
+        if isinstance(outcomes, tuple) and set(value) == set(outcomes):
+            value = {outcome: value[outcome] for outcome in outcomes}
         return cast(Mapping[str, str], freeze(value))
 
     @field_serializer("outcome_token_map")

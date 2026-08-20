@@ -1,0 +1,15 @@
+{
+  "byte_length": 392,
+  "endpoint": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+  "http_status": null,
+  "note": "Verbatim public standalone last_trade_price event captured by the frozen M4 V2 pilot and pinned before its schema was modeled.",
+  "parser_version": "clob-ws-last-trade-normalizer/1",
+  "payload_kind": "clob.market_ws.last_trade_price",
+  "raw_sha256": "9a6d43ed15d780707b4e47694337cd7ef4e4c4f4deb9e0d52a562810f9666601",
+  "redaction": "none - the market channel is public and unauthenticated; no subscribe frame or header carried a credential",
+  "reconstructed": false,
+  "retrieved_at": "2026-08-19T22:20:44.059730Z",
+  "schema_version": "source_provenance.v1",
+  "source": "clob_market_ws",
+  "source_endpoint": "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+}

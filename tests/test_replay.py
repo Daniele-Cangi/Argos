@@ -387,6 +387,7 @@ GOLDEN_ARRIVAL_COUNTS = {
 GOLDEN_DISPATCH_COUNTS = {
     "applied_snapshots": 4,
     "applied_deltas": 34,
+    "applied_auxiliary": 0,
     "skipped_duplicates": 0,
     "unhandled_payloads": 0,
     "unscoped": 0,

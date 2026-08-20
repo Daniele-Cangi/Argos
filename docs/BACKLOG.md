@@ -16,6 +16,9 @@ sections below without deleting their audit trail.
 - [x] Persist `EvaluationRunBundleV2` with canonical evidence digest, nested
       version checks, trajectory/resolution/contract identity, forecasts,
       evaluations, decisions and exclusions.
+- [x] Reject digest-valid but internally contradictory v2 bundles by checking
+      report claims, child counts/digests, evaluation links, and exclusive
+      scored/excluded membership against the actual sibling records.
 - [x] Separate arrivals, target information states, forecast points, scored
       points and resolved-target counts. Keep one-target calibration out of the
       headline.
@@ -30,20 +33,54 @@ sections below without deleting their audit trail.
       `O_NOFOLLOW`, platform-correct archive durability behavior and a
       Windows/Ubuntu CI matrix.
 - [x] Meet per-file branch-coverage thresholds for the corrected contracts and
-      evaluator. Final ADR-0014 local Windows result: 1,595 passed, one
-      privilege-dependent symlink skip; `bundle.py` 94.97% and `run_v2.py`
-      92.11% against their 90% floors.
-- [x] Make the complete Windows/Ubuntu CI matrix a required pre-merge check on
-      canonical PR #2; its final head is not made ready or merged until both
-      jobs pass, including Ubuntu coverage.
-- [ ] Pin a real standalone `last_trade_price` WebSocket fixture before
-      modeling that event. Do not infer its exact persistent schema from docs
-      alone.
-- [ ] Run the smallest prospective multi-target experiment: bounded captures
-      with contracts and persistence receipts recorded before forecasts;
-      predeclared source-terminal or first-observed-final cutoff evidence;
-      and a predeclared sample, weighting and sufficiency rule. No M5, RESON,
-      AI-forecasting or execution work.
+      evaluator. Final prospective bundle-hardening local Windows result:
+      1,597 passed, one privilege-dependent symlink skip; `bundle.py` 96.47%
+      and `run_v2.py` 92.11% against their 90% floors.
+- [x] Merge canonical PR #2 only after its complete Windows/Ubuntu CI matrix
+      passed, including Ubuntu coverage (`32279416650`). This was operational
+      discipline; GitHub branch protection/status enforcement is not currently
+      configured.
+- [x] Pin a real standalone `last_trade_price` WebSocket fixture before
+      modeling that event. The frozen V2 pilot observed exact public payloads
+      on both selected targets; commit `9904b54` models the event as auxiliary
+      evidence without changing the order-book state hash or retroactively
+      reinterpreting those captures.
+- [x] Introduce V3 prospective protocol/receipt/target/lifecycle/cutoff
+      contracts and a digest-valid-but-false-semantics adversarial suite.
+- [x] Separate the M4 measurement verdict from calibration sufficiency and
+      implement equal-target, last-admissible-point aggregation (ADR-0015).
+- [x] Preflight bounded public discovery, lifecycle and WebSocket capture; do
+      not admit the probe frames into the prospective sample.
+- [x] Run the smallest prospective multi-target experiment with contracts and
+      receipts persisted before capture and predeclared selection, stopping,
+      cutoff, weighting, missingness and sufficiency rules. The V2 pilot
+      selected two targets and captured each separately, but both produced a
+      standalone `last_trade_price` that the frozen revision did not model.
+      The predeclared rule permanently excludes both: measurement is
+      `M4_BLOCKED`, calibration is `CALIBRATION_NOT_EVALUABLE`, and there are
+      zero contributions. This is a completed negative experiment, not a pass.
+- [x] Complete lifecycle polling for the excluded V2 targets. The frozen
+      `2026-08-20T06:00:00Z` deadline elapsed without a first-final cutoff; at
+      the last valid in-window poll (ordinal 70), both markets were still
+      `proposed`. Aggregate `observation_complete` closes selected-target
+      accounting, while the missing cadence coverage before the deadline keeps
+      `lifecycle_record_complete` false. A host-clock jump caused one append-only
+      poll (ordinal 71) after the deadline. It is preserved and reported but
+      inadmissible as cutoff evidence, and changed no exclusion, contribution or
+      experiment verdict.
+- [x] Harden the prospective operational boundary without running a new
+      experiment (ADR-0017): bind deadline, cadence and capture limits in
+      `ProspectiveExperimentProtocolV2`; require `retrieved_at` and selected
+      cutoff at or before the deadline; bind the exact capture manifest in
+      `EvaluationRunBundleV4`; enforce limits and per-target capture separation
+      in `ProspectiveExperimentBundleV3`; and publish the immutable historical
+      V2 aggregate plus receipt index under
+      `experiments/m4-pilot-20260819/proof/`.
+- [ ] If the owner authorizes another M4 experiment, freeze a new protocol and
+      collect fresh targets and captures using the modeled standalone
+      last-trade schema and the merged V2 operational protocol boundary.
+      Do not rescue, replace or reuse the V1/V2 targets or captured evidence.
+      No M5, RESON, AI forecasting, UI, wallet, authentication or execution.
 
 ## Must close before M3 — from the M3 readiness audit (2026-08-17)
 

@@ -101,15 +101,37 @@ availability.
 
 Two independently resolved targets are only a structural floor. Before the
 first included forecast, the experiment protocol must persist its population,
-selection and stopping rules, minimum target count with rationale,
+selection and stopping rules, the intended pilot count and the separate
+scientific minimum with rationale,
 within-target aggregation, resolved-target weighting, metrics and bins,
 missingness/exclusion treatment, uncertainty reporting, and sufficiency rule.
 No generic constant can promote calibration to `established`.
+
+The supported prospective aggregation selects the last admissible pre-cutoff
+point per method inside each dependent target trajectory and gives each
+independently resolved target weight one. The aggregate publishes a separate
+measurement-layer verdict and calibration verdict. Reaching the structural
+floor may validate the measurement layer while calibration remains
+`CALIBRATION_NOT_ESTABLISHED`; neither verdict authorizes M5.
 
 Displayed price, midpoint and last trade remain separate methods. The displayed
 proxy uses last trade when bid/ask spread is greater than 0.10 and midpoint
 otherwise; it abstains when the required input is absent. Last trade is
 auxiliary evidence and never an order-book level.
+
+A target excluded because frozen capture code did not model a standalone last
+trade must carry the source claim, not only an authenticated reason string. The
+active exclusion boundary embeds the exact rejected observation, exact raw
+UTF-8 bytes, clean capture manifest, ingest sequence and durable receipts. It
+recomputes source hash, byte length, archive location, rejection identity,
+chronology, protocol revision/configuration/window, subscriptions and target
+scope before admitting the exclusion to an aggregate. Re-digesting a globally
+self-consistent artifact cannot make false internal semantics admissible.
+
+Modeling an event after an experiment does not retroactively change what its
+frozen capture revision understood. Such a change requires a new predeclared
+protocol and fresh captures; old exclusions, stopping rules and target choices
+remain immutable evidence.
 
 Later selective-prediction metrics:
 

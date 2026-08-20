@@ -160,6 +160,10 @@ from argos.domain.observation import (
     build_rejected_observation,
 )
 from argos.errors import RejectionReason
+from argos.ingestion.clob_last_trade import (
+    CLOB_WS_LAST_TRADE_EVENT_TYPE,
+    normalize_clob_last_trade,
+)
 from argos.ingestion.clob_price_change import (
     CLOB_WS_PRICE_CHANGE_EVENT_TYPE,
     normalize_clob_price_change,
@@ -484,8 +488,22 @@ def _consume_event(
             )
         return
 
-    # Covers `last_trade_price`, `tick_size_change`, any other source-defined
-    # event_type, and an absent/non-string event_type -- "anything unknown"
+    if event_type_label == CLOB_WS_LAST_TRADE_EVENT_TYPE:
+        for token_id in tokens:
+            _consume_last_trade_for_token(
+                event,
+                token_id=token_id,
+                frame=frame,
+                state=state,
+                store=store,
+                clock=clock,
+                capture_run_id=capture_run_id,
+                clock_skew_tolerance=clock_skew_tolerance,
+            )
+        return
+
+    # Covers tick_size_change, any other source-defined event_type, and an
+    # absent/non-string event_type -- "anything unknown"
     # per the task brief. No payload model is wired for any of these here;
     # refusing rather than guessing at a model is the point (see the module
     # docstring, "Do not invent one").
@@ -597,6 +615,49 @@ def _consume_ws_book_for_token(
     committed = state.commit_sequence()
     assert committed == sequence, "sequence advanced between peek and commit"
 
+    if isinstance(result, ObservationEnvelopeV1):
+        delivery = store.append_observation(result)
+        if delivery.disposition is Disposition.ACCEPTED_NEW:
+            state.count(accepted=1)
+        else:
+            state.count(duplicate=1)
+        if state.dispatcher is not None:
+            state.dispatcher.dispatch(result)
+    else:
+        store.append_rejection(result, ingest_sequence=sequence)
+        state.count(rejected=1)
+
+
+def _consume_last_trade_for_token(
+    event: Any,
+    *,
+    token_id: str,
+    frame: MarketFrame,
+    state: _CaptureState,
+    store: EventStore,
+    clock: Clock,
+    capture_run_id: str,
+    clock_skew_tolerance: timedelta,
+) -> None:
+    """Normalize one standalone trade for one configured token."""
+    sequence = state.peek_sequence()
+    result = normalize_clob_last_trade(
+        event=event,
+        provenance=frame.provenance,
+        raw_payload_location=state.current_raw_location,
+        requested_token_id=token_id,
+        received_time=frame.received_time,
+        rejected_at=clock.now(),
+        ingest_sequence=sequence,
+        capture_run_id=capture_run_id,
+        clock_skew_tolerance=clock_skew_tolerance,
+    )
+    if result is None:
+        state.count(not_applicable=1)
+        return
+
+    committed = state.commit_sequence()
+    assert committed == sequence, "sequence advanced between peek and commit"
     if isinstance(result, ObservationEnvelopeV1):
         delivery = store.append_observation(result)
         if delivery.disposition is Disposition.ACCEPTED_NEW:

@@ -109,6 +109,17 @@ def test_a_record_round_trips_through_storage() -> None:
     assert MarketDefinitionV1.from_record(market.to_record()) == market
 
 
+def test_canonical_key_sorting_does_not_change_outcome_mapping_semantics() -> None:
+    market = _normalize(_market())
+    record = market.to_record()
+    record["outcome_token_map"] = dict(sorted(record["outcome_token_map"].items()))
+
+    restored = MarketDefinitionV1.from_record(record)
+
+    assert restored == market
+    assert tuple(restored.outcome_token_map) == restored.outcomes
+
+
 # --- token mapping failures ---------------------------------------------------------
 
 

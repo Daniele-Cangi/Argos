@@ -1,6 +1,66 @@
 # ARGOS status
 
-Last updated: 2026-08-19
+Last updated: 2026-08-20
+
+## 2026-08-20 prospective pilot result
+
+The smallest permitted real M4 experiment was frozen before observation and
+executed only against public Polymarket sources. V1 terminated before its
+observation window because canonical JSON key sorting made persisted outcome
+maps unreadable; commit `4c96150` fixed the round-trip and V2 performed a fresh
+one-shot selection with no reused target or evidence.
+
+V2 persisted protocol `m4-pilot-20260819-v2` at clean revision `877060b`, then
+selected and separately captured two markets from distinct Gamma events. Both
+captures produced a genuine standalone `last_trade_price` event inside the
+frozen observation window. The protocol had predeclared target-level exclusion,
+no replacement and no rescue when that then-unmodeled event appeared. Both
+targets are therefore permanently excluded and contribute no score.
+
+The active claim boundary is versioned forward by ADR-0016:
+`CaptureRejectionEvidenceV1` binds each exact rejected observation, ingest
+sequence, raw UTF-8 payload, raw hash/location and clean capture manifest;
+`ProspectiveTargetExclusionV2` binds that proof and both receipts to the exact
+target; `ProspectiveExperimentBundleV2` rechecks protocol revision,
+configuration, window, target scope, contributions, report and digest. Tests
+include globally re-digested false-semantic attacks rather than hash-only
+tampering. ADR-0017 versions the future operational boundary forward again:
+`ProspectiveExperimentProtocolV2` binds deadline, cadence and capture limits;
+`EvaluationRunBundleV4` digest-binds the exact capture manifest and refuses a
+post-deadline cutoff; and `ProspectiveExperimentBundleV3` enforces those bounds
+and unique per-target capture runs.
+
+The materialized result contains two selected targets, two exclusions, zero
+resolved target bundles and zero contributions. Its independent verdicts are
+**`M4_BLOCKED`** and **`CALIBRATION_NOT_EVALUABLE`**. This is an informative
+negative prospective result: the protocol worked by refusing evidence its
+frozen code could not interpret. It is not an ARGOS probability result and does
+not establish calibration. Lifecycle polling closed at the frozen
+`2026-08-20T06:00:00Z` deadline without a first-final cutoff. The last valid
+in-window poll was ordinal 70; both markets were still `proposed`. The immutable
+V2 aggregate's `observation_complete = true` means the selected target partition
+is closed and fully accounted for; it does not claim continuous lifecycle
+polling or target resolution.
+
+A host-clock jump while the monitor was waiting caused it to append poll 71 at
+approximately `07:09Z`, after the deadline. The append-only record is preserved
+and reported, but is inadmissible as cutoff evidence and changed no exclusion,
+contribution or verdict. The gap from the last in-window polls near `05:35Z` to
+the deadline exceeds the frozen five-minute cadence by multiple intervals, so
+the corrected summary records `experiment_closed_by_frozen_deadline = true`
+and `lifecycle_record_complete = false`.
+
+The complete 17,036-byte proof-bearing aggregate is now published with a
+verifiable receipt index under `experiments/m4-pilot-20260819/proof/`; its
+SHA-256 remains `8c24e919…e1034`. The historical bytes, digest and receipt were
+copied exactly, not regenerated or reinterpreted.
+
+Commit `9904b54` models the now-observed standalone event as auxiliary evidence
+for future captures without changing the order-book state hash. It does not
+retroactively alter revision `877060b`. Any follow-up requires owner
+authorization, a new frozen protocol and fresh capture; M5, RESON, LLM
+forecasting, UI, wallets, authenticated trading and execution remain out of
+scope.
 
 ## 2026-08-19 owner correction — M4 reopened
 
@@ -23,15 +83,32 @@ correction is auditable; it is not current authority.
   points and resolved targets. ADR-0014 makes two targets a structural floor,
   not calibration sufficiency; only a predeclared multi-target sample,
   weighting and sufficiency rule can support that claim.
+- `EvaluationRunBundleV2` now rejects digest-valid internal contradictions by
+  cross-validating report policy/resolution/contract claims, counts and child
+  digests, evaluation links, and scored-versus-excluded membership against the
+  actual sibling records.
+- The prospective branch versions forward to `EvaluationRunBundleV3`: frozen
+  protocol, market/contract/target persistence receipts, ordered lifecycle
+  polls, first-final cutoff evidence and the original resolution are one
+  cross-validated boundary. `ProspectiveExperimentBundleV1` gives each resolved
+  target one contribution per method and publishes measurement and calibration
+  verdicts separately (ADR-0015).
+- A bounded public preflight found 37 market-channel frames / 40 stored events
+  with no rejection or unknown type. No standalone `last_trade_price` event was
+  observed; the schema remains unmodeled and the pilot predeclares target-level
+  exclusion if one occurs. These probe frames are not admitted experiment data.
 - Initial book-snapshot last trade is preserved separately from book state.
   Midpoint, last trade and the conditional displayed-price rule are distinct
   baselines. Standalone last-trade events remain unmodeled until a pinned raw
   fixture establishes the exact schema.
-- Windows is now a first-class CI platform. The final local ADR-0014 gate
-  passes Ruff, format, strict mypy, and **1,595 tests** (one
-  symlink-capability skip). The branch-coverage gate passes at 95% aggregate;
-  `bundle.py` is 94.97% and `run_v2.py` 92.11%, both above their 90% floors.
-  PR #2 must retain green Windows and Ubuntu jobs before merge.
+- Windows is now a first-class CI platform. The final local prospective
+  bundle-hardening gate passes Ruff, format, strict mypy, and **1,597 tests**
+  (one symlink-capability skip). The branch-coverage gate passes at 95% aggregate;
+  `bundle.py` is 96.47% and `run_v2.py` 92.11%, both above their 90% floors.
+  PR #2 was merged as `bd2ca1c` only after final GitHub Actions run
+  `32279416650` passed on Windows and Ubuntu. GitHub branch protection/status
+  enforcement is not configured, so this was an observed operational gate,
+  not a repository-enforced barrier.
 
 The smallest next data experiment is not merely a larger capture. It must
 persist each compiled contract before its first forecast and record either a

@@ -6,6 +6,7 @@ injected :mod:`argos.clock` protocol. ``tests/test_boundaries.py`` enforces this
 mechanically.
 """
 
+from argos.domain.lasttrade import LastTradePriceV1, TradeSide, parse_last_trade_price
 from argos.domain.observation import (
     EventTimeStatus,
     ObservationEnvelopeV1,
@@ -50,6 +51,7 @@ from argos.domain.wsbook import WsBookSnapshotV1, parse_ws_book_snapshot
 __all__ = [
     "BookSide",
     "EventTimeStatus",
+    "LastTradePriceV1",
     "NoEntriesForToken",
     "ObservationEnvelopeV1",
     "ObservationQualityFlag",
@@ -63,6 +65,7 @@ __all__ = [
     "PriceLevelChangeKind",
     "PriceLevelChangeV1",
     "RejectedObservationV1",
+    "TradeSide",
     "VersionedModel",
     "WsBookSnapshotV1",
     "build_observation_envelope",
@@ -72,6 +75,7 @@ __all__ = [
     "neutralize_and_bound",
     "neutralize_untrusted_text",
     "normalize_decimal",
+    "parse_last_trade_price",
     "parse_order_book_snapshot",
     "parse_price_change_group",
     "parse_wire_decimal",

@@ -1,0 +1,206 @@
+{
+  "schema_version": "m4_prospective_pilot_committed_summary.v1",
+  "experiment_id": "m4-pilot-20260819-v2",
+  "status_as_of": "2026-08-20T07:10:19.038673Z",
+  "starting_revision": "ae649009667c06c6fc15ee088d515d60146ba5ca",
+  "v1_supersession": {
+    "experiment_id": "m4-pilot-20260819-v1",
+    "status": "terminated_before_observation",
+    "reason": "Canonical JSON key sorting made persisted outcome maps unreadable.",
+    "corrective_revision": "4c96150",
+    "target_or_evidence_reuse": false
+  },
+  "protocol": {
+    "source_path": "experiments/m4-pilot-20260819/protocol-v2.json",
+    "code_revision": "877060bb7d3f23c4b897fde3feea39c8392be8ef",
+    "evidence_digest": "3c5f955223c2e8cf71c59fec61f2a9da0078f38c91597c450236a591c42ca9c1",
+    "receipt_id": "receipt-e8807da5f75ce869d223241ee8c44765",
+    "persisted_at": "2026-08-19T22:04:46.860289Z",
+    "observation_window_start": "2026-08-19T22:20:00Z",
+    "observation_window_end": "2026-08-19T22:45:00Z",
+    "lifecycle_deadline": "2026-08-20T06:00:00Z",
+    "lifecycle_poll_interval_seconds": 300,
+    "cutoff_basis": "first_observed_final_settlement",
+    "standalone_last_trade_policy": "exclude_target",
+    "target_replacement_policy": "none_after_one_shot_selection",
+    "capture_stop": {
+      "max_seconds_per_target": 120,
+      "max_frames_per_target": 500,
+      "separate_database_per_target": true,
+      "subscribe_both_tokens": true,
+      "raw_archive": true
+    },
+    "structural_minimum_independent_resolved_targets": 2,
+    "intended_resolved_target_count": 2,
+    "scientific_minimum_resolved_target_count": 30,
+    "scientific_minimum_category_count": 2,
+    "scientific_minimum_yes_outcomes": 5,
+    "scientific_minimum_no_outcomes": 5,
+    "within_target_aggregation": "last_admissible_pre_cutoff_point_per_method",
+    "across_target_weighting": "equal_weight_per_independently_resolved_target"
+  },
+  "discovery": {
+    "raw_sha256": "4f050080cffe1839b6ef902815586c37eb3f01a7bcd3802662a2455698a367c9",
+    "raw_byte_length": 787634,
+    "normalized_market_count": 100,
+    "eligible_market_count": 40
+  },
+  "targets": [
+    {
+      "target_id": "target-f1f87938a02ef0c1e4f005c3e58ebefd",
+      "selection_rank": 1,
+      "market_id": "3381603",
+      "proposition": "Will FC Cincinnati win on 2026-08-19?",
+      "end_boundary": "2026-08-19T23:30:00Z",
+      "condition_id": "0x4b520df237d5ea575233cebef0c23895afb1f69b7436b4cf1d412e6ea4b88775",
+      "yes_token_id": "72524354305074802179776970471253785890775894791734656584623668204695639445292",
+      "no_token_id": "83002214334081634686977291419563962458246456620357515715713481762414608708134",
+      "capture": {
+        "source_frame_count": 135,
+        "stored_event_count": 136,
+        "accepted_dispatch_count": 264,
+        "duplicate_delivery_count": 2,
+        "rejected_observation_count": 1,
+        "unknown_event_type_count": 1
+      },
+      "first_qualifying_rejection": {
+        "evidence_id": "capture-rejection-4936a3b404bf1b36a5d72c27a07cfc59",
+        "rejection_id": "rejection-a2a3fa257e8f6fb2d98968cf6cb0a9bb",
+        "ingest_sequence": 7,
+        "received_time": "2026-08-19T22:20:44.059730Z",
+        "raw_sha256": "9a6d43ed15d780707b4e47694337cd7ef4e4c4f4deb9e0d52a562810f9666601",
+        "raw_byte_length": 392,
+        "capture_evidence_receipt_id": "receipt-faaa6b9d06ef40cab06172f4afe66d65"
+      },
+      "exclusion": {
+        "exclusion_id": "target-exclusion-b22cafc48d9c798fed83386b429003a6",
+        "reason": "unmodeled_standalone_last_trade_price",
+        "receipt_id": "receipt-3177742d95e1202b8d4f895d3c8bcbdc"
+      },
+      "lifecycle": {
+        "latest_poll_ordinal": 71,
+        "latest_retrieved_at": "2026-08-20T07:09:30.140882Z",
+        "finality": "proposed",
+        "cutoff_observed": false,
+        "latest_poll_is_post_deadline": true
+      }
+    },
+    {
+      "target_id": "target-bc7cfcb5e997055458333288d47f2de3",
+      "selection_rank": 2,
+      "market_id": "3381709",
+      "proposition": "Will St. Louis City SC win on 2026-08-19?",
+      "end_boundary": "2026-08-20T00:00:00Z",
+      "condition_id": "0xe4a3e1b8204c9717293b166f8f7650098cb56c54e49b444abe1aa2475b4db228",
+      "yes_token_id": "91442290272929884750853568581562852924265817517952195442575500847131574780710",
+      "no_token_id": "5268664261111745468839382484103076004095557729277327783430242335926792136314",
+      "capture": {
+        "source_frame_count": 96,
+        "stored_event_count": 97,
+        "accepted_dispatch_count": 180,
+        "duplicate_delivery_count": 0,
+        "rejected_observation_count": 3,
+        "unknown_event_type_count": 3
+      },
+      "first_qualifying_rejection": {
+        "evidence_id": "capture-rejection-afc90e71cb97c53489d06f6f004de919",
+        "rejection_id": "rejection-beceda06336455741026ae833d54ecb8",
+        "ingest_sequence": 23,
+        "received_time": "2026-08-19T22:24:48.145796Z",
+        "raw_sha256": "70877c8d3b91c31cc9ed310888c7e84e06bedec19ae1c31e1ef1c5ce7751794f",
+        "raw_byte_length": 385,
+        "capture_evidence_receipt_id": "receipt-bf3a130d4c2f4508fa2e48ee2acf1b62"
+      },
+      "exclusion": {
+        "exclusion_id": "target-exclusion-eb2a0306d6e3d67f10357a38b7ed5cba",
+        "reason": "unmodeled_standalone_last_trade_price",
+        "receipt_id": "receipt-6cff5de8aa4f09b8a054f285e85c2bbe"
+      },
+      "lifecycle": {
+        "latest_poll_ordinal": 71,
+        "latest_retrieved_at": "2026-08-20T07:09:31.026529Z",
+        "finality": "proposed",
+        "cutoff_observed": false,
+        "latest_poll_is_post_deadline": true
+      }
+    }
+  ],
+  "post_capture_modeling": {
+    "revision": "9904b54",
+    "schema_version": "last_trade_price.v1",
+    "role": "auxiliary_evidence",
+    "changes_order_book_state_hash": false,
+    "retroactively_reinterprets_frozen_capture": false
+  },
+  "proof_boundary": {
+    "decision": "ADR-0016",
+    "materializer_revision": "742c111b33d58a0153b98f7488c82dbcba4464f3",
+    "capture_evidence_schema": "capture_rejection_evidence.v1",
+    "exclusion_schema": "prospective_target_exclusion.v2",
+    "aggregate_schema": "prospective_experiment_bundle.v2",
+    "operational_hardening_decision": "ADR-0017",
+    "historical_protocol_schema": "prospective_experiment_protocol.v1",
+    "future_protocol_schema": "prospective_experiment_protocol.v2"
+  },
+  "aggregate": {
+    "materialized_at": "2026-08-20T07:10:19.038673Z",
+    "evidence_digest": "48f535a8b355e41cb879c1af46adef3e1798d402d31ac3d79a7216ba4e1cea03",
+    "receipt_id": "receipt-c16170a6ddb5591b1565af412c92fab1",
+    "artifact_sha256": "8c24e919d586bc81b523bddb129378bf23f79f6c478ae10be330a789bb6e1034",
+    "selected_target_count": 2,
+    "resolved_target_count": 0,
+    "excluded_target_count": 2,
+    "contribution_count": 0,
+    "observation_complete": true,
+    "observation_complete_meaning": "closed_selected_target_accounting_not_lifecycle_continuity",
+    "measurement_layer_verdict": "M4_BLOCKED",
+    "calibration_verdict": "CALIBRATION_NOT_EVALUABLE",
+    "uncertainty_status": "not_estimated",
+    "uncertainty_reason": "protocol_scientific_sufficiency_not_met"
+  },
+  "published_claim_artifact": {
+    "index_path": "experiments/m4-pilot-20260819/proof/claim-index-v1.json",
+    "bundle_path": "experiments/m4-pilot-20260819/proof/claim-bundle-v2.json",
+    "bundle_byte_length": 17036,
+    "bundle_sha256": "8c24e919d586bc81b523bddb129378bf23f79f6c478ae10be330a789bb6e1034",
+    "bundle_evidence_digest": "48f535a8b355e41cb879c1af46adef3e1798d402d31ac3d79a7216ba4e1cea03",
+    "receipt_id": "receipt-c16170a6ddb5591b1565af412c92fab1"
+  },
+  "lifecycle_completion": {
+    "basis": "legacy_spec_deadline_elapsed_with_incomplete_poll_continuity",
+    "deadline": "2026-08-20T06:00:00Z",
+    "deadline_is_protocol_evidence_bound": false,
+    "experiment_closed_by_frozen_deadline": true,
+    "target_accounting_complete": true,
+    "lifecycle_record_complete": false,
+    "continuity_rule": "no absent complete polling window; gaps over twice the declared cadence are incomplete",
+    "cutoff_observed_count": 0,
+    "last_in_window_poll_ordinal": 70,
+    "last_in_window_targets": [
+      {
+        "market_id": "3381603",
+        "retrieved_at": "2026-08-20T05:35:26.798122Z",
+        "finality": "proposed"
+      },
+      {
+        "market_id": "3381709",
+        "retrieved_at": "2026-08-20T05:35:27.287856Z",
+        "finality": "proposed"
+      }
+    ],
+    "post_deadline_monitor_deviation": {
+      "poll_ordinal": 71,
+      "cause": "The host clock jumped from approximately 05:37Z to 07:09Z while the monitor was waiting; its deadline check ran after one extra poll.",
+      "treatment": "The append-only poll is retained, reported, and inadmissible as cutoff evidence. It changed no exclusion, contribution, or verdict."
+    }
+  },
+  "interpretation": {
+    "scientific_result": "completed_negative_measurement_experiment",
+    "lifecycle_record_complete": false,
+    "later_finality_can_change_exclusions_or_verdicts": false,
+    "argos_probability_claim": false,
+    "calibration_claim": false,
+    "m5_authorized": false,
+    "required_follow_up": "A separately authorized, newly frozen protocol and fresh captures using the modeled standalone last-trade schema."
+  }
+}
