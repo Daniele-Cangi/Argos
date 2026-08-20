@@ -1,0 +1,81 @@
+{
+  "protocol": {
+    "experiment_id": "m4-prospective-20260820-v3",
+    "declared_at": "2026-08-20T14:25:00Z",
+    "target_population": "Public Gamma markets with standard Yes/No outcomes, active CLOB books, accepting orders, at least 5000 liquidity, both outcome prices in [0.05,0.95], and declared end time from 2026-08-20T16:30:00Z through 2026-08-20T20:00:00Z.",
+    "inclusion_rules": [
+      "Normalize without quarantine under gamma-market-normalizer/1.",
+      "Require active=true, closed=false, archived=false, enableOrderBook=true and acceptingOrders=true.",
+      "Require exactly ordered Yes/No outcomes with distinct token ids.",
+      "Require liquidity at least 5000 and both selection-time outcome prices from 0.05 through 0.95 inclusive.",
+      "Take at most one market per Gamma event identity.",
+      "Accept standalone last_trade_price only under the preregistered last_trade_price.v1 model as auxiliary trade evidence outside book-state digest semantics."
+    ],
+    "exclusion_rules": [
+      "Exclude any target lacking durable market, contract and target receipts before capture.",
+      "Exclude the affected target if standalone last_trade_price fails last_trade_price.v1 validation or any unmodeled source event occurs.",
+      "Exclude incomplete, capture-bound-violating or replay-integrity-failing evidence.",
+      "Exclude targets not proven final by the lifecycle deadline; do not replace them."
+    ],
+    "market_selection_mechanism": "Execute the frozen Gamma query once after protocol persistence; filter by the declared rules; sort by descending normalized liquidity then ascending numeric market id; scan in order taking the first market from each distinct Gamma event id until two targets are selected.",
+    "observation_window_start": "2026-08-20T15:00:00Z",
+    "observation_window_end": "2026-08-20T15:30:00Z",
+    "stopping_rule": "Capture each selected target separately for at most 120 seconds or 500 frames, whichever occurs first; then poll lifecycle every 300 seconds until both are final or 2026-08-21T06:00:00Z. No replacement after selection.",
+    "structural_minimum_independent_resolved_targets": 2,
+    "minimum_intended_resolved_target_count": 2,
+    "scientific_minimum_resolved_target_count": 30,
+    "minimum_target_count_rationale": "Two distinct source events are the smallest non-degenerate prospective validation of the hardened measurement path. Thirty resolved targets, at least two categories and at least five outcomes on each side remain separately required before calibration could be considered.",
+    "within_target_aggregation": "last_admissible_pre_cutoff_point_per_method",
+    "across_target_weighting": "equal_weight_per_independently_resolved_target",
+    "metrics": ["brier_score", "log_loss", "absolute_error"],
+    "calibration_bin_edges": ["0", "0.1", "0.2", "0.3", "0.4", "0.5", "0.6", "0.7", "0.8", "0.9", "1"],
+    "log_loss_epsilon": "0.000001",
+    "uncertainty_reporting": "No interval is estimated for this two-target structural validation. A future calibration protocol requires target-level resampling fixed before observation.",
+    "missingness_treatment": "Persist every selected target and exclusion reason; excluded or unresolved targets receive zero aggregate weight and remain in the intended-target denominator.",
+    "abstention_treatment": "Persist every baseline abstention; abstentions are not scored and do not receive a substituted price.",
+    "disputed_unresolved_treatment": "Do not score proposed, disputed or unknown finality; retain lifecycle polls and exclude at the deadline unless a first final observation was immutably recorded.",
+    "category_dispersion_requirement": "At least two categories for any future calibration claim.",
+    "outcome_dispersion_requirement": "At least five YES and five NO resolved outcomes for any future calibration claim.",
+    "minimum_category_count_for_calibration": 2,
+    "minimum_yes_outcomes_for_calibration": 5,
+    "minimum_no_outcomes_for_calibration": 5,
+    "protocol_sufficiency_rule": "This two-target experiment can validate the hardened M4 measurement layer only if both independently selected targets traverse protocol, contract, capture, replay, admissible cutoff, resolution and proof-bearing bundle construction without methodological exclusion. It cannot establish calibration, which additionally requires at least 30 independently resolved targets, the structured category/outcome minima, calibrated rather than raw baseline scores, and a separately frozen uncertainty method.",
+    "cutoff_basis": "first_observed_final_settlement",
+    "standalone_last_trade_policy": "exclude_target",
+    "target_replacement_policy": "No target replacement after the one-shot selection query; preserve every selected target as resolved or explicitly excluded.",
+    "code_revision": "$PROTOCOL_COMMIT",
+    "working_tree": "clean",
+    "config_fingerprint": "d0ee4294e61f2e69d7a843a71dcee9d46fc331125ffcb1b7abd3d5d307037be5"
+  },
+  "selection": {
+    "gamma_base_url": "https://gamma-api.polymarket.com",
+    "query": {
+      "limit": 100,
+      "closed": false,
+      "order": "liquidityNum",
+      "ascending": false,
+      "liquidity_num_min": 5000,
+      "end_date_min": "2026-08-20T16:30:00Z",
+      "end_date_max": "2026-08-20T20:00:00Z"
+    },
+    "minimum_liquidity": "5000",
+    "minimum_outcome_price": "0.05",
+    "maximum_outcome_price": "0.95",
+    "target_end_min": "2026-08-20T16:30:00Z",
+    "target_end_max": "2026-08-20T20:00:00Z",
+    "distinctness_key": "Gamma event id",
+    "sort": "liquidity descending, numeric market id ascending",
+    "take": 2
+  },
+  "capture": {
+    "separate_database_per_target": true,
+    "subscribe_both_tokens": true,
+    "max_seconds_per_target": 120,
+    "max_frames_per_target": 500,
+    "raw_archive": true,
+    "lifecycle_poll_interval_seconds": 300,
+    "lifecycle_deadline": "2026-08-21T06:00:00Z"
+  },
+  "predecessor_experiment_id": "m4-pilot-20260819-v2",
+  "new_evidence_rationale": "The predecessor remains an immutable negative result. This is a wholly new prospective experiment with a Protocol V2 freeze, new deterministic target selection, new capture databases and last_trade_price.v1 known before freeze. No predecessor target or capture evidence may be reused."
+}
