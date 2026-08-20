@@ -59,10 +59,13 @@ sections below without deleting their audit trail.
       The predeclared rule permanently excludes both: measurement is
       `M4_BLOCKED`, calibration is `CALIBRATION_NOT_EVALUABLE`, and there are
       zero contributions. This is a completed negative experiment, not a pass.
-- [ ] Complete lifecycle polling for the excluded V2 targets until first final
-      observations or the frozen `2026-08-20T06:00:00Z` deadline. This closes
-      the operational record but cannot change either target's exclusion or the
-      experiment verdict.
+- [x] Complete lifecycle polling for the excluded V2 targets. The frozen
+      `2026-08-20T06:00:00Z` deadline elapsed without a first-final cutoff; at
+      the last valid in-window poll (ordinal 70), both markets were still
+      `proposed`, so `observation_complete` is true with zero resolved targets.
+      A host-clock jump caused one append-only poll (ordinal 71) after the
+      deadline. It is preserved and reported but inadmissible as cutoff
+      evidence, and changed no exclusion, contribution or experiment verdict.
 - [ ] If the owner authorizes another M4 experiment, freeze a new protocol and
       collect fresh captures using the modeled standalone last-trade schema.
       Do not rescue, replace or reuse the V1/V2 targets or captured evidence.

@@ -31,9 +31,16 @@ resolved target bundles and zero contributions. Its independent verdicts are
 **`M4_BLOCKED`** and **`CALIBRATION_NOT_EVALUABLE`**. This is an informative
 negative prospective result: the protocol worked by refusing evidence its
 frozen code could not interpret. It is not an ARGOS probability result and does
-not establish calibration. Lifecycle polling continues until first final
-observations or the frozen `2026-08-20T06:00:00Z` deadline, but cannot change
-the exclusions or promote either verdict.
+not establish calibration. Lifecycle polling closed at the frozen
+`2026-08-20T06:00:00Z` deadline without a first-final cutoff. The last valid
+in-window poll was ordinal 70; both markets were still `proposed`.
+`observation_complete` is true because the protocol deadline elapsed, not
+because either target resolved.
+
+A host-clock jump while the monitor was waiting caused it to append poll 71 at
+approximately `07:09Z`, after the deadline. The append-only record is preserved
+and reported, but is inadmissible as cutoff evidence and changed no exclusion,
+contribution or verdict.
 
 Commit `9904b54` models the now-observed standalone event as auxiliary evidence
 for future captures without changing the order-book state hash. It does not

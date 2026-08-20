@@ -92,8 +92,13 @@ window:
 
 The proof-backed aggregate has two selected targets, two exclusions, zero
 contributions, measurement verdict `M4_BLOCKED` and calibration verdict
-`CALIBRATION_NOT_EVALUABLE`. Lifecycle observation may finish later, but cannot
-change the permanent exclusions or those verdicts.
+`CALIBRATION_NOT_EVALUABLE`. The lifecycle closed at its frozen
+`2026-08-20T06:00:00Z` deadline with both markets still `proposed` at the last
+valid in-window poll (ordinal 70), no observed cutoff and
+`observation_complete = true`. A host-clock jump caused one append-only poll
+(ordinal 71) after the deadline. The record is retained and disclosed, but it is
+inadmissible as cutoff evidence and changed no permanent exclusion,
+contribution or verdict.
 
 ## Consequences
 

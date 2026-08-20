@@ -1,7 +1,7 @@
 {
   "schema_version": "m4_prospective_pilot_committed_summary.v1",
   "experiment_id": "m4-pilot-20260819-v2",
-  "status_as_of": "2026-08-20T00:38:15.750489Z",
+  "status_as_of": "2026-08-20T07:10:19.038673Z",
   "starting_revision": "ae649009667c06c6fc15ee088d515d60146ba5ca",
   "v1_supersession": {
     "experiment_id": "m4-pilot-20260819-v1",
@@ -78,10 +78,11 @@
         "receipt_id": "receipt-3177742d95e1202b8d4f895d3c8bcbdc"
       },
       "lifecycle": {
-        "latest_poll_ordinal": 15,
-        "latest_retrieved_at": "2026-08-20T00:38:15.222487Z",
-        "finality": "unknown",
-        "cutoff_observed": false
+        "latest_poll_ordinal": 71,
+        "latest_retrieved_at": "2026-08-20T07:09:30.140882Z",
+        "finality": "proposed",
+        "cutoff_observed": false,
+        "latest_poll_is_post_deadline": true
       }
     },
     {
@@ -116,10 +117,11 @@
         "receipt_id": "receipt-6cff5de8aa4f09b8a054f285e85c2bbe"
       },
       "lifecycle": {
-        "latest_poll_ordinal": 15,
-        "latest_retrieved_at": "2026-08-20T00:38:15.750489Z",
-        "finality": "unknown",
-        "cutoff_observed": false
+        "latest_poll_ordinal": 71,
+        "latest_retrieved_at": "2026-08-20T07:09:31.026529Z",
+        "finality": "proposed",
+        "cutoff_observed": false,
+        "latest_poll_is_post_deadline": true
       }
     }
   ],
@@ -132,29 +134,52 @@
   },
   "proof_boundary": {
     "decision": "ADR-0016",
-    "materializer_revision": "b709bfe710d380c24d8562d7955fd89f05cf393b",
+    "materializer_revision": "742c111b33d58a0153b98f7488c82dbcba4464f3",
     "capture_evidence_schema": "capture_rejection_evidence.v1",
     "exclusion_schema": "prospective_target_exclusion.v2",
     "aggregate_schema": "prospective_experiment_bundle.v2"
   },
   "aggregate": {
-    "materialized_at": "2026-08-20T00:27:00.983559Z",
-    "evidence_digest": "5a3aeb14e391c24bdafc0b03140b8dc7b4d78f95eecc3b7543a3f0a34dd8041b",
-    "receipt_id": "receipt-035f7d62361ab2d50b924423dc78af6b",
-    "artifact_sha256": "3f8e48eab37d2352aa64616f4f8063585f619d87a32ee9f8b4870ccdf26718c9",
+    "materialized_at": "2026-08-20T07:10:19.038673Z",
+    "evidence_digest": "48f535a8b355e41cb879c1af46adef3e1798d402d31ac3d79a7216ba4e1cea03",
+    "receipt_id": "receipt-c16170a6ddb5591b1565af412c92fab1",
+    "artifact_sha256": "8c24e919d586bc81b523bddb129378bf23f79f6c478ae10be330a789bb6e1034",
     "selected_target_count": 2,
     "resolved_target_count": 0,
     "excluded_target_count": 2,
     "contribution_count": 0,
-    "observation_complete": false,
+    "observation_complete": true,
     "measurement_layer_verdict": "M4_BLOCKED",
     "calibration_verdict": "CALIBRATION_NOT_EVALUABLE",
     "uncertainty_status": "not_estimated",
     "uncertainty_reason": "protocol_scientific_sufficiency_not_met"
   },
+  "lifecycle_completion": {
+    "basis": "frozen_deadline_elapsed",
+    "deadline": "2026-08-20T06:00:00Z",
+    "cutoff_observed_count": 0,
+    "last_in_window_poll_ordinal": 70,
+    "last_in_window_targets": [
+      {
+        "market_id": "3381603",
+        "retrieved_at": "2026-08-20T05:35:26.798122Z",
+        "finality": "proposed"
+      },
+      {
+        "market_id": "3381709",
+        "retrieved_at": "2026-08-20T05:35:27.287856Z",
+        "finality": "proposed"
+      }
+    ],
+    "post_deadline_monitor_deviation": {
+      "poll_ordinal": 71,
+      "cause": "The host clock jumped from approximately 05:37Z to 07:09Z while the monitor was waiting; its deadline check ran after one extra poll.",
+      "treatment": "The append-only poll is retained, reported, and inadmissible as cutoff evidence. It changed no exclusion, contribution, or verdict."
+    }
+  },
   "interpretation": {
     "scientific_result": "completed_negative_measurement_experiment",
-    "lifecycle_record_complete": false,
+    "lifecycle_record_complete": true,
     "later_finality_can_change_exclusions_or_verdicts": false,
     "argos_probability_claim": false,
     "calibration_claim": false,

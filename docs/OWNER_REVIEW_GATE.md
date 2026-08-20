@@ -49,8 +49,13 @@ Both separately captured targets emitted a real standalone
 predeclared target-level exclusion and no-replacement rules, both targets are
 permanently excluded. The proof-backed V2 aggregate therefore reports zero
 contributions, `M4_BLOCKED` and `CALIBRATION_NOT_EVALUABLE`; later finality
-cannot promote those verdicts. Lifecycle polling remains active only to close
-the frozen operational record.
+cannot promote those verdicts. The frozen lifecycle deadline elapsed without
+any first-final cutoff. At the last valid in-window poll (ordinal 70), both
+markets remained `proposed`; `observation_complete` is true because the
+deadline closed the operational record. A host-clock jump caused the monitor to
+append poll 71 after the deadline. That deviation is preserved for audit but
+inadmissible as cutoff evidence, and affected no exclusion, contribution or
+verdict.
 
 ADR-0016 advances exclusions to an exact-raw, rejection-, manifest-, receipt-
 and target-bound claim. Standalone trade modeling added after capture is for a
