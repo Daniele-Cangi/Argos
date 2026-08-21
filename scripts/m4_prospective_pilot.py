@@ -57,6 +57,7 @@ from argos.evaluation.prospective_aggregation_v3 import (
 from argos.evaluation.prospective_terminal import (
     CaptureRunSummaryV1,
     LifecyclePollEvidenceV1,
+    ProspectiveExperimentBundleV4,
     ProspectiveTargetTerminalEvidenceV1,
     aggregate_prospective_terminal_experiment,
     build_capture_run_summary,
@@ -532,7 +533,10 @@ def materialize_exclusions(experiment_dir: Path) -> int:
 def materialize_terminal(experiment_dir: Path) -> int:
     """Publish the frozen V3 terminal claim without issuing a lifecycle request."""
 
-    materializer_revision = _clean_revision()
+    proof_dir = experiment_dir / "proof"
+    bundle_path = proof_dir / "claim-bundle-v4.json"
+    index_path = proof_dir / "claim-index-v1.json"
+    materializer_revision = _terminal_materializer_revision(bundle_path, index_path)
     state_path = experiment_dir / "state.json"
     state = _object(orjson.loads(state_path.read_bytes()), "experiment state")
     if state.get("result_v4") is not None:
@@ -546,6 +550,30 @@ def materialize_terminal(experiment_dir: Path) -> int:
     now = LiveClock().now()
     if now < protocol.lifecycle_deadline:
         raise ValueError("terminal evidence cannot close before the frozen deadline")
+
+    if bundle_path.exists() or index_path.exists():
+        if not bundle_path.is_file() or not index_path.is_file():
+            raise ValueError("terminal claim publication is incomplete")
+        existing_index = ProspectiveClaimArtifactIndexV1.from_record(
+            _object(orjson.loads(index_path.read_bytes()), "terminal claim index")
+        )
+        existing = verify_published_claim_artifact(existing_index, proof_dir)
+        if not isinstance(existing, ProspectiveExperimentBundleV4):
+            raise ValueError("published terminal claim is not an aggregate V4")
+        result = _terminal_result(
+            aggregate=existing,
+            aggregate_receipt=existing_index.aggregate_receipt,
+            bundle_path=bundle_path,
+            index_path=index_path,
+            materializer_revision=materializer_revision,
+            finalized_at=now,
+            materialization_mode="resumed_existing_verified_claim",
+        )
+        state["result_v4"] = result
+        _write_state(state_path, state)
+        _write_state(experiment_dir / "result-v4.json", result)
+        print(orjson.dumps(result, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS).decode())
+        return 0
 
     evidence_dir = experiment_dir / "evidence"
     source_dir = experiment_dir / "source"
@@ -662,8 +690,8 @@ def materialize_terminal(experiment_dir: Path) -> int:
         "terminal_report": aggregate.report.to_record(),
         "aggregate_receipt": aggregate_receipt.to_record(),
         "published_claim_artifact": {
-            "index_path": index_path.relative_to(Path.cwd()).as_posix(),
-            "bundle_path": bundle_path.relative_to(Path.cwd()).as_posix(),
+            "index_path": index_path.as_posix(),
+            "bundle_path": bundle_path.as_posix(),
             "bundle_schema_version": aggregate.schema_version,
             "bundle_evidence_digest": aggregate.evidence_digest,
             "bundle_artifact_sha256": aggregate_receipt.artifact_sha256,
@@ -676,6 +704,60 @@ def materialize_terminal(experiment_dir: Path) -> int:
     _write_state(experiment_dir / "result-v4.json", result)
     print(orjson.dumps(result, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS).decode())
     return 0
+
+
+def _terminal_result(
+    *,
+    aggregate: ProspectiveExperimentBundleV4,
+    aggregate_receipt: EvidencePersistenceReceiptV1,
+    bundle_path: Path,
+    index_path: Path,
+    materializer_revision: str,
+    finalized_at: datetime,
+    materialization_mode: str,
+) -> dict[str, Any]:
+    terminal_summaries: list[dict[str, Any]] = []
+    for terminal in aggregate.terminal_targets:
+        last = terminal.lifecycle_polls[-1].observation
+        terminal_summaries.append(
+            {
+                "target_id": terminal.target.target_id,
+                "market_id": terminal.target.market_id,
+                "lifecycle_observation_count": len(terminal.lifecycle_polls),
+                "last_lifecycle_ordinal": last.ordinal,
+                "last_observation_id": last.lifecycle_observation_id,
+                "last_retrieved_at": last.retrieved_at.isoformat(),
+                "last_observed_finality": last.finality.value,
+                "admissible_cutoff_count": terminal.admissible_cutoff_count,
+                "final_polling_gap_microseconds": terminal.final_polling_gap_microseconds,
+                "maximum_polling_gap_microseconds": terminal.maximum_polling_gap_microseconds,
+                "continuity_status": terminal.continuity_status.value,
+                "disposition": terminal.disposition.value,
+                "capture_summary": terminal.capture_summary.to_record(),
+            }
+        )
+    return {
+        "format": "m4_prospective_pilot_terminal_result.v4",
+        "experiment_id": aggregate.protocol.experiment_id,
+        "materialized_at": aggregate.report.created_at.isoformat(),
+        "closure_finalized_at": finalized_at.isoformat(),
+        "materializer_revision": materializer_revision,
+        "materialization_mode": materialization_mode,
+        "frozen_deadline": aggregate.protocol.lifecycle_deadline.isoformat(),
+        "poll_interval_seconds": aggregate.protocol.lifecycle_poll_interval_seconds,
+        "terminal_targets": terminal_summaries,
+        "terminal_report": aggregate.report.to_record(),
+        "aggregate_receipt": aggregate_receipt.to_record(),
+        "published_claim_artifact": {
+            "index_path": index_path.as_posix(),
+            "bundle_path": bundle_path.as_posix(),
+            "bundle_schema_version": aggregate.schema_version,
+            "bundle_evidence_digest": aggregate.evidence_digest,
+            "bundle_artifact_sha256": aggregate_receipt.artifact_sha256,
+            "bundle_byte_length": aggregate_receipt.artifact_byte_length,
+            "receipt_id": aggregate_receipt.receipt_id,
+        },
+    }
 
 
 def _terminal_lifecycle_polls(
@@ -1150,6 +1232,31 @@ def _public_get(url: str, params: dict[str, Any]) -> tuple[bytes, str, datetime]
                 raise ValueError("public source response exceeded 32 MiB")
             chunks.append(chunk)
         return b"".join(chunks), str(response.request.url), datetime.now(UTC)
+
+
+def _terminal_materializer_revision(bundle_path: Path, index_path: Path) -> str:
+    root = Path.cwd().resolve()
+    allowed_untracked: set[str] = set()
+    for path in (bundle_path, index_path):
+        if path.exists():
+            relative = path.resolve().relative_to(root).as_posix()
+            allowed_untracked.add(f"?? {relative}")
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    observed = {line for line in status.splitlines() if line}
+    unexpected = observed - allowed_untracked
+    if unexpected:
+        raise ValueError(
+            "terminal evidence requires a clean tree except its verified claim files: "
+            + ", ".join(sorted(unexpected))
+        )
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
 
 
 def _clean_revision() -> str:
