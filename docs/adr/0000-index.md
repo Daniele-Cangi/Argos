@@ -19,5 +19,6 @@
 | 0015 | Prospective measurement validation is not calibration | Accepted |
 | 0016 | Prospective exclusions require exact capture proof | Accepted |
 | 0017 | Prospective operations and published claims are evidence-bound | Accepted |
+| 0018 | Terminal evidence separates accounting, continuity and admissibility | Accepted |
 
 Create new ADRs by copying the structure used below. Never rewrite an accepted ADR to hide a changed decision; supersede it.

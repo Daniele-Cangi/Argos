@@ -405,6 +405,33 @@ historical records:
   Verification rejects traversal/symlinks, hashes exact bytes, parses the
   versioned bundle and rechecks receipt and semantic identity.
 
+ADR-0018 adds a proof-bearing terminal boundary for a different negative
+failure mode: clean frozen captures whose selected targets have no observed
+admissible cutoff by the lifecycle deadline.
+
+- `CaptureRunSummaryV1` binds each completed capture manifest, ledger hash and
+  byte length, delivery/rejection digests, frame/accepted counts, schema counts
+  and zero rejection/decode/unknown counts.
+- `LifecyclePollEvidenceV1` binds each `LifecycleObservationV1` to its
+  persistence receipt and exact UTF-8 source payload, rechecking payload hash,
+  length, source endpoint and interpreted finality.
+- `ProspectiveTargetTerminalEvidenceV1` binds the protocol identity/receipt,
+  selected target/receipt, capture summary and ordered poll chain. It derives
+  the last observed finality, final/maximum cadence gaps and continuity, fixes
+  admissible cutoff count to zero, and structurally forbids replacement,
+  rescue or a claim of observation through an unobserved tail.
+- `ProspectiveTerminalReportV1` reports target accounting, lifecycle
+  continuity and resolution admissibility as independent typed claims.
+- `ProspectiveExperimentBundleV4` receipt-binds every terminal target,
+  revalidates it against protocol V2, derives the report and hashes the complete
+  portable claim.
+
+A terminal V4 bundle proves that no admissible cutoff was observed in its
+persisted chain. It does not prove that the external market did not settle
+during an unobserved interval. `ProspectiveClaimArtifactIndexV1` supports V4
+without changing its existing schema meaning.
+
+
 Experiment deadline closure, selected-target accounting and lifecycle polling
 continuity are distinct result fields. Aggregate `observation_complete` must
 not be read as proof that every cadence interval was observed.

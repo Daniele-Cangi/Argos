@@ -76,6 +76,17 @@ sections below without deleting their audit trail.
       in `ProspectiveExperimentBundleV3`; and publish the immutable historical
       V2 aggregate plus receipt index under
       `experiments/m4-pilot-20260819/proof/`.
+- [x] Run and close the fresh V3 experiment without reusing V1/V2 targets.
+      Both frozen captures completed cleanly with the standalone last-trade
+      schema already modeled. Each target has 98 contiguous persisted
+      lifecycle observations and zero observed admissible cutoffs. Host
+      suspension left an approximately 3h37 unobserved tail before the
+      `2026-08-21T06:00:00Z` deadline, so target accounting is complete while
+      lifecycle continuity is incomplete. Publish the receipt-bound terminal
+      chain as `ProspectiveExperimentBundleV4`, verify its exact committed
+      bytes through `ProspectiveClaimArtifactIndexV1`, and retain
+      `M4_BLOCKED` / `CALIBRATION_NOT_EVALUABLE`. Do not infer settlement
+      state during the unobserved tail (ADR-0018).
 - [ ] If the owner authorizes another M4 experiment, freeze a new protocol and
       collect fresh targets and captures using the modeled standalone
       last-trade schema and the merged V2 operational protocol boundary.

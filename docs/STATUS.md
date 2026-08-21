@@ -1,6 +1,64 @@
 # ARGOS status
 
-Last updated: 2026-08-20
+Last updated: 2026-08-21
+
+## 2026-08-21 V3 terminal experiment result
+
+The newly frozen experiment `m4-prospective-20260820-v3` is terminal. It
+selected two fresh targets under protocol V2 after standalone
+`last_trade_price.v1` was already modeled. Both capture runs completed on the
+frozen clean revision `61035f82` without rejection, decode failure or unknown
+event: market `3395619` recorded 127 frames / 254 accepted observations and
+market `3608324` recorded 37 frames / 74 accepted observations.
+
+The lifecycle record contains 98 contiguous receipt-bound observations for
+each selected target. The last observed facts are:
+
+- target `target-e88d10151e18c5ce7d3223fd9135d7ce`, market `3395619`:
+  ordinal 98, observation `lifecycle-ee338f77205a57b44f44290d071b9350`,
+  retrieved `2026-08-21T02:23:08.236683Z`, finality `proposed`;
+- target `target-ed66f40e3bf2271ea7f7cc4b4c3a5ff0`, market `3608324`:
+  ordinal 98, observation `lifecycle-7e001106e8d5adde5a67159045b7d0bd`,
+  retrieved `2026-08-21T02:23:09.877160Z`, finality `proposed`.
+
+No persisted lifecycle observation is after the frozen
+`2026-08-21T06:00:00Z` deadline and neither target has an observed admissible
+cutoff. Host suspension left final unobserved tails of 13,011.763317 and
+13,010.122840 seconds. Those gaps exceed the frozen 300-second cadence
+allowance, so the record does not establish what either market's state was
+during the tail. In particular, it does not establish that either market
+remained proposed until the deadline and it does not establish that real-world
+settlement did or did not occur then.
+
+ADR-0018 records the version-forward terminal boundary. Each
+`LifecyclePollEvidenceV1` binds one lifecycle observation, its persistence
+receipt and exact raw source bytes. `ProspectiveTargetTerminalEvidenceV1`
+binds that ordered chain to the frozen protocol/receipt, selected target/receipt
+and clean capture summary, then recomputes the final and maximum cadence gaps.
+`ProspectiveExperimentBundleV4` derives three independent claims:
+
+- `TARGET_ACCOUNTING_COMPLETE`;
+- `LIFECYCLE_CONTINUITY_INCOMPLETE`; and
+- `NO_ADMISSIBLE_CUTOFF_OBSERVED`.
+
+The resulting verdicts are **`M4_BLOCKED`** and
+**`CALIBRATION_NOT_EVALUABLE`**. This does not show that capture,
+normalization or replay failed. It shows that the frozen experiment did not
+obtain the required 2/2 admissible final-settlement observations, so it cannot
+validate M4 end to end.
+
+A clean checkout can verify the committed portable claim at
+`experiments/m4-prospective-20260820-v3/proof/`. The V4 bundle is 1,230,831
+bytes, has evidence digest
+`42443a664441b3fa77c10a920eaec587a4d50d13dd9573e5eceb755d8d13c92a`
+and exact SHA-256
+`400f7b9619643900e41a0c38db6f62a13aba6112cef247209ab343268538c86d`.
+The index carries persistence receipt
+`receipt-133d1991aa74189f1af068d40d236d17`. Gate A remains blocked and
+M5+, RESON, LLM forecasting, UI, wallets, authentication and execution remain
+unauthorized.
+
+
 
 ## 2026-08-20 prospective pilot result
 
