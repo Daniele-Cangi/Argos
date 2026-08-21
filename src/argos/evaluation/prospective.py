@@ -97,6 +97,7 @@ class EvidenceArtifactKind(StrEnum):
     LIFECYCLE_OBSERVATION = "lifecycle_observation"
     RESOLUTION_CUTOFF = "resolution_cutoff"
     CAPTURE_REJECTION = "capture_rejection_evidence"
+    TARGET_TERMINAL = "target_terminal_evidence"
     TARGET_EXCLUSION = "target_exclusion"
     EXPERIMENT_AGGREGATE = "experiment_aggregate"
 
