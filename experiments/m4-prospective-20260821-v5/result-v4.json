@@ -1,0 +1,203 @@
+{
+  "aggregate_receipt": {
+    "artifact_byte_length": 1646125,
+    "artifact_id": "011bf70649863eaf38dcf40a674337523722b369a9b7f3bd6264f5c5cde966d3",
+    "artifact_kind": "experiment_aggregate",
+    "artifact_schema_version": "prospective_experiment_bundle.v4",
+    "artifact_sha256": "aa1d6af8c547f8d7d707893f683dd06206f8d915beca40938c9386f33dda6df3",
+    "experiment_id": "m4-prospective-20260821-v5",
+    "persisted_at": "2026-08-22T09:35:43.390491Z",
+    "receipt_id": "receipt-3e5e17c847867047b3a5360b101ca9a0",
+    "schema_version": "evidence_persistence_receipt.v1",
+    "storage_backend": "content_addressed_raw_archive.v1",
+    "storage_identity": "argos_evidence/aa1d6af8c547f8d7d707893f683dd06206f8d915beca40938c9386f33dda6df3.raw.json"
+  },
+  "experiment_id": "m4-prospective-20260821-v5",
+  "format": "m4_prospective_pilot_terminal_result.v4",
+  "frozen_deadline": "2026-08-22T08:00:00+00:00",
+  "materialized_at": "2026-08-22T09:35:43.390491+00:00",
+  "materializer_revision": "090681ef97455f1269c6e02e2420b6c8df4dc344",
+  "poll_interval_seconds": 300,
+  "published_claim_artifact": {
+    "bundle_artifact_sha256": "aa1d6af8c547f8d7d707893f683dd06206f8d915beca40938c9386f33dda6df3",
+    "bundle_byte_length": 1646125,
+    "bundle_evidence_digest": "011bf70649863eaf38dcf40a674337523722b369a9b7f3bd6264f5c5cde966d3",
+    "bundle_path": "experiments/m4-prospective-20260821-v5/proof/claim-bundle-v4.json",
+    "bundle_schema_version": "prospective_experiment_bundle.v4",
+    "index_path": "experiments/m4-prospective-20260821-v5/proof/claim-index-v1.json",
+    "receipt_id": "receipt-3e5e17c847867047b3a5360b101ca9a0"
+  },
+  "terminal_report": {
+    "admissible_cutoff_count": 0,
+    "calibration_verdict": "CALIBRATION_NOT_EVALUABLE",
+    "created_at": "2026-08-22T09:35:43.390491Z",
+    "experiment_closed_by_frozen_deadline": true,
+    "experiment_id": "m4-prospective-20260821-v5",
+    "lifecycle_continuity_status": "LIFECYCLE_CONTINUITY_COMPLETE",
+    "limitations": [
+      "Terminality is limited to persisted observations; no source state is inferred for any unobserved interval.",
+      "No admissible cutoff was observed, so no resolution, score, or calibration claim is made.",
+      "Closed selected-target accounting and lifecycle continuity are reported as independent claims."
+    ],
+    "measurement_layer_verdict": "M4_BLOCKED",
+    "resolution_admissibility_status": "NO_ADMISSIBLE_CUTOFF_OBSERVED",
+    "schema_version": "prospective_terminal_report.v1",
+    "selected_target_count": 2,
+    "target_accounting_status": "TARGET_ACCOUNTING_COMPLETE",
+    "terminal_target_count": 2
+  },
+  "terminal_targets": [
+    {
+      "admissible_cutoff_count": 0,
+      "capture_summary": {
+        "accepted_count": 530,
+        "capture_summary_id": "capture-summary-583ac4b30d7b20960901f2b77a89ff07",
+        "completion_status": "completed",
+        "decode_failure_count": 0,
+        "delivery_collection_digest": "f030cc4aa0311372358cd6f0deb04725c739c146532387e1e8630badbe728822",
+        "duplicate_count": 0,
+        "ended_at": "2026-08-21T21:02:03.986944Z",
+        "experiment_id": "m4-prospective-20260821-v5",
+        "frame_count": 265,
+        "ledger_byte_length": 1306624,
+        "ledger_sha256": "2521bdaadfae7708d13e3a1280f7a03516b8d7c6ff70de4400d06f9249495cf4",
+        "manifest": {
+          "argos_version": "0.0.0",
+          "capture_run_id": "m4-prospective-20260821-v5-target-1",
+          "code_revision": "090681ef97455f1269c6e02e2420b6c8df4dc344",
+          "config_fingerprint": "d0ee4294e61f2e69d7a843a71dcee9d46fc331125ffcb1b7abd3d5d307037be5",
+          "created_at": "2026-08-21T21:02:03.994864Z",
+          "input_provenance": [],
+          "mode": "capture",
+          "run_id": "m4-prospective-20260821-v5-target-1",
+          "run_parameters": {
+            "max_frames": 500,
+            "max_seconds": 120.0,
+            "raw_archive": true,
+            "subscribed_token_ids": [
+              "101584321157680931571018744820527632549297496697786070803993521781872378721622",
+              "42497190323791997126401250671388961517064498382536509923072492467195345327520"
+            ]
+          },
+          "schema_version": "run_manifest.v5",
+          "schema_versions": [
+            "observation_envelope.v1",
+            "price_change.v1",
+            "rejected_observation.v1"
+          ],
+          "settings_snapshot": {
+            "clob_base_url": "https://clob.polymarket.com",
+            "clob_market_ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+            "data_base_url": "https://data-api.polymarket.com",
+            "data_dir": ".data",
+            "execution_enabled": false,
+            "gamma_base_url": "https://gamma-api.polymarket.com",
+            "http_max_attempts": 5,
+            "http_timeout_seconds": 10.0,
+            "log_level": "INFO",
+            "source_jitter_seed": 0
+          },
+          "working_tree": "clean"
+        },
+        "observation_schema_counts": {
+          "price_change.v1": 528,
+          "ws_book_snapshot.v1": 2
+        },
+        "rejected_count": 0,
+        "rejection_collection_digest": "1c530de3eac3c4684d9673d926adb9cc3738e9837b18b8a0175bc040e8317d16",
+        "rejection_reason_counts": {},
+        "schema_version": "capture_run_summary.v1",
+        "started_at": "2026-08-21T21:00:03.974539Z",
+        "target_id": "target-6e59126ab1cf6ccde344888dac58bdb5",
+        "unknown_event_count": 0
+      },
+      "continuity_status": "LIFECYCLE_CONTINUITY_COMPLETE",
+      "disposition": "TARGET_NOT_PROVEN_FINAL_BY_DEADLINE",
+      "final_polling_gap_microseconds": 57258220,
+      "last_lifecycle_ordinal": 129,
+      "last_observation_id": "lifecycle-c33240681c56859c6e4e0e77f30803a4",
+      "last_observed_finality": "proposed",
+      "last_retrieved_at": "2026-08-22T07:59:02.741780+00:00",
+      "lifecycle_observation_count": 129,
+      "market_id": "3422391",
+      "maximum_polling_gap_microseconds": 337195300,
+      "target_id": "target-6e59126ab1cf6ccde344888dac58bdb5"
+    },
+    {
+      "admissible_cutoff_count": 0,
+      "capture_summary": {
+        "accepted_count": 198,
+        "capture_summary_id": "capture-summary-9fb0f1e58df867f34dcd5a504bac924b",
+        "completion_status": "completed",
+        "decode_failure_count": 0,
+        "delivery_collection_digest": "94ea357fcc3390ef17e6529f5492c1d701f094f8efa11d2ba2f77c7185f24eb6",
+        "duplicate_count": 0,
+        "ended_at": "2026-08-21T21:04:07.017674Z",
+        "experiment_id": "m4-prospective-20260821-v5",
+        "frame_count": 99,
+        "ledger_byte_length": 520192,
+        "ledger_sha256": "67892bd127dfcccf370aeb314467e5bff4bfaec9cac7149dbe78d5f64ac18bd7",
+        "manifest": {
+          "argos_version": "0.0.0",
+          "capture_run_id": "m4-prospective-20260821-v5-target-2",
+          "code_revision": "090681ef97455f1269c6e02e2420b6c8df4dc344",
+          "config_fingerprint": "d0ee4294e61f2e69d7a843a71dcee9d46fc331125ffcb1b7abd3d5d307037be5",
+          "created_at": "2026-08-21T21:04:07.026260Z",
+          "input_provenance": [],
+          "mode": "capture",
+          "run_id": "m4-prospective-20260821-v5-target-2",
+          "run_parameters": {
+            "max_frames": 500,
+            "max_seconds": 120.0,
+            "raw_archive": true,
+            "subscribed_token_ids": [
+              "48049613566149225799288862249688011897708454522275126951970121486416095286003",
+              "71011144371554227216630026808165386151198774729362448533678977887442547504051"
+            ]
+          },
+          "schema_version": "run_manifest.v5",
+          "schema_versions": [
+            "observation_envelope.v1",
+            "price_change.v1",
+            "rejected_observation.v1"
+          ],
+          "settings_snapshot": {
+            "clob_base_url": "https://clob.polymarket.com",
+            "clob_market_ws_url": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+            "data_base_url": "https://data-api.polymarket.com",
+            "data_dir": ".data",
+            "execution_enabled": false,
+            "gamma_base_url": "https://gamma-api.polymarket.com",
+            "http_max_attempts": 5,
+            "http_timeout_seconds": 10.0,
+            "log_level": "INFO",
+            "source_jitter_seed": 0
+          },
+          "working_tree": "clean"
+        },
+        "observation_schema_counts": {
+          "price_change.v1": 196,
+          "ws_book_snapshot.v1": 2
+        },
+        "rejected_count": 0,
+        "rejection_collection_digest": "1c530de3eac3c4684d9673d926adb9cc3738e9837b18b8a0175bc040e8317d16",
+        "rejection_reason_counts": {},
+        "schema_version": "capture_run_summary.v1",
+        "started_at": "2026-08-21T21:02:07.011170Z",
+        "target_id": "target-d2624e2399efcb3eae3e5375dc1ad332",
+        "unknown_event_count": 0
+      },
+      "continuity_status": "LIFECYCLE_CONTINUITY_COMPLETE",
+      "disposition": "TARGET_NOT_PROVEN_FINAL_BY_DEADLINE",
+      "final_polling_gap_microseconds": 56732886,
+      "last_lifecycle_ordinal": 129,
+      "last_observation_id": "lifecycle-b49b55014bc39916e54fee98a108162a",
+      "last_observed_finality": "proposed",
+      "last_retrieved_at": "2026-08-22T07:59:03.267114+00:00",
+      "lifecycle_observation_count": 129,
+      "market_id": "3452516",
+      "maximum_polling_gap_microseconds": 338730545,
+      "target_id": "target-d2624e2399efcb3eae3e5375dc1ad332"
+    }
+  ]
+}
