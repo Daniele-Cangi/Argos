@@ -1,6 +1,54 @@
 # ARGOS status
 
-Last updated: 2026-08-21
+Last updated: 2026-08-22
+
+## 2026-08-22 V5 terminal experiment result
+
+The fresh experiment `m4-prospective-20260821-v5` is terminal at the frozen
+revision `090681ef97455f1269c6e02e2420b6c8df4dc344`. V4 was aborted before
+observation because its start boundary elapsed before the protocol was frozen;
+it produced no targets, captures, lifecycle evidence, cutoff or result, and
+none of its inputs were reused by V5.
+
+Both bounded V5 captures completed cleanly:
+
+- target `target-6e59126ab1cf6ccde344888dac58bdb5`, market `3422391`:
+  265 frames / 530 accepted observations;
+- target `target-d2624e2399efcb3eae3e5375dc1ad332`, market `3452516`:
+  99 frames / 198 accepted observations.
+
+Neither capture recorded a rejection, unknown event or decode failure. Each
+target has 129 contiguous, receipt-bound lifecycle observations. The final
+observations were:
+
+- `lifecycle-c33240681c56859c6e4e0e77f30803a4`, retrieved
+  `2026-08-22T07:59:02.741780Z`, finality `proposed`;
+- `lifecycle-b49b55014bc39916e54fee98a108162a`, retrieved
+  `2026-08-22T07:59:03.267114Z`, finality `proposed`.
+
+No admissible cutoff was observed at or before the frozen
+`2026-08-22T08:00:00Z` deadline. The final unobserved tails were
+57.258220 and 56.732886 seconds. The evidence establishes complete
+append-only lifecycle continuity under the frozen bounds, but makes no claim
+about either market after its last observed retrieval.
+
+The portable V4 bundle derives `TARGET_ACCOUNTING_COMPLETE`,
+`LIFECYCLE_CONTINUITY_COMPLETE` and `NO_ADMISSIBLE_CUTOFF_OBSERVED`.
+Its verdicts are therefore **`M4_BLOCKED`** and
+**`CALIBRATION_NOT_EVALUABLE`**: continuity is now proved, but the
+predeclared 2/2 admissible-cutoff requirement was not met.
+
+A clean checkout can verify the committed claim at
+`experiments/m4-prospective-20260821-v5/proof/`. The bundle is 1,646,125
+bytes, has evidence digest
+`011bf70649863eaf38dcf40a674337523722b369a9b7f3bd6264f5c5cde966d3`,
+exact SHA-256
+`aa1d6af8c547f8d7d707893f683dd06206f8d915beca40938c9386f33dda6df3`
+and persistence receipt `receipt-3e5e17c847867047b3a5360b101ca9a0`.
+
+Gate A remains blocked. The owner has authorized only the next fresh M4 V6
+preparation; M5+, RESON, LLM forecasting, UI, wallets, authentication and
+execution remain unauthorized.
 
 ## 2026-08-21 V3 terminal experiment result
 
@@ -203,14 +251,15 @@ target weighting, stopping and sufficiency rules must be predeclared.
 
 ## Current objective
 
-**None. Implementation stops here** — `docs/OWNER_REVIEW_GATE.md` is the gate
-after M4 and `CLAUDE.md` forbids continuing into M5 merely because M4 passes.
-`docs/HANDOFF_M4.md` is the owner package.
+**Prepare a fresh owner-authorized M4 V6 experiment only.** Freeze a new
+protocol, select fresh targets and use fresh captures. Do not rescue, replace
+or reuse predecessor targets or evidence. Capture and lifecycle monitoring may
+start only after the new protocol and its operational bounds have been frozen
+and verified.
 
-The one thing that would most change what this repository can claim is not code:
-a real sample. Ten to thirty liquid markets resolving within a week, captured
-continuously and then evaluated, would turn a working pipeline into a result. It
-needs no new code and is filed in `docs/BACKLOG.md` as the first M4 carry-over.
+Gate A remains blocked. Nothing in M5-M8 may start on the strength of the V5
+result; RESON, LLM forecasting, UI, wallets, authentication and execution
+remain out of scope.
 
 ## M4 — baseline probability and evaluation (2026-08-18)
 
