@@ -2,6 +2,30 @@
 
 Claude must stop implementation when this gate is reached.
 
+## Owner decision update — 2026-08-22
+
+**BLOCKED. The gate still has not passed.** V4 was aborted before observation
+because its start boundary elapsed before freeze; it contributed no targets,
+captures, lifecycle evidence or result, and none of its inputs were reused.
+
+The fresh V5 experiment completed both bounded captures without rejection,
+unknown event or decode failure. Both target chains contain 129 contiguous,
+receipt-bound lifecycle observations through approximately `07:59Z`, within
+60 seconds of the frozen `08:00Z` deadline. The last observed finality for
+both targets was `proposed`, and no admissible cutoff was observed.
+
+The committed terminal claim therefore reports
+`TARGET_ACCOUNTING_COMPLETE`, `LIFECYCLE_CONTINUITY_COMPLETE` and
+`NO_ADMISSIBLE_CUTOFF_OBSERVED`. Its mechanically derived verdicts remain
+`M4_BLOCKED` and `CALIBRATION_NOT_EVALUABLE`. This closes the V3 host-suspension
+continuity defect, but it does not satisfy the frozen 2/2 cutoff requirement.
+
+The exact portable claim and receipt index are committed under
+`experiments/m4-prospective-20260821-v5/proof/`. The owner authorizes only
+preparation of a fresh V6 M4 experiment with a new frozen protocol, fresh
+targets and fresh captures. No predecessor rescue, replacement or evidence
+reuse is permitted. M5-M8 remain unauthorized.
+
 ## Owner decision update — 2026-08-21
 
 **BLOCKED. The gate still has not passed.** The fresh V3 experiment is terminal

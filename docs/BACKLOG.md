@@ -87,11 +87,23 @@ sections below without deleting their audit trail.
       bytes through `ProspectiveClaimArtifactIndexV1`, and retain
       `M4_BLOCKED` / `CALIBRATION_NOT_EVALUABLE`. Do not infer settlement
       state during the unobserved tail (ADR-0018).
-- [ ] If the owner authorizes another M4 experiment, freeze a new protocol and
-      collect fresh targets and captures using the modeled standalone
-      last-trade schema and the merged V2 operational protocol boundary.
-      Do not rescue, replace or reuse the V1/V2 targets or captured evidence.
-      No M5, RESON, AI forecasting, UI, wallet, authentication or execution.
+- [x] Abort V4 before observation when its start boundary elapsed before
+      protocol freeze. Persist the abort record; create no targets, captures,
+      lifecycle evidence, cutoff or result, and reuse none of its inputs.
+- [x] Run and close the fresh V5 experiment. Both bounded captures completed
+      cleanly and each target has 129 contiguous, receipt-bound lifecycle
+      observations through approximately `07:59Z`. No admissible cutoff was
+      observed before the frozen `2026-08-22T08:00:00Z` deadline. Publish the
+      exact terminal V4 bundle and receipt index with
+      `TARGET_ACCOUNTING_COMPLETE`, `LIFECYCLE_CONTINUITY_COMPLETE`,
+      `NO_ADMISSIBLE_CUTOFF_OBSERVED`, `M4_BLOCKED` and
+      `CALIBRATION_NOT_EVALUABLE`.
+- [ ] Prepare the owner-authorized fresh M4 V6 experiment. Freeze a new
+      protocol and operational bounds before observation, then select fresh
+      targets and produce fresh captures. Do not rescue, replace or reuse any
+      V1-V5 target or evidence. Retain the 2/2 admissible-cutoff measurement
+      requirement. No M5, RESON, AI forecasting, UI, wallet, authentication
+      or execution.
 
 ## Must close before M3 — from the M3 readiness audit (2026-08-17)
 
