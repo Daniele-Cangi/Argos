@@ -17,6 +17,7 @@ from argos.evaluation.prospective import (
 )
 from argos.evaluation.prospective_aggregation_v2 import ProspectiveExperimentBundleV2
 from argos.evaluation.prospective_aggregation_v3 import ProspectiveExperimentBundleV3
+from argos.evaluation.prospective_terminal import ProspectiveExperimentBundleV4
 
 __all__ = ["ProspectiveClaimArtifactIndexV1", "verify_published_claim_artifact"]
 
@@ -84,7 +85,7 @@ class ProspectiveClaimArtifactIndexV1(VersionedModel):
 def verify_published_claim_artifact(
     index: ProspectiveClaimArtifactIndexV1,
     directory: Path,
-) -> ProspectiveExperimentBundleV2 | ProspectiveExperimentBundleV3:
+) -> ProspectiveExperimentBundleV2 | ProspectiveExperimentBundleV3 | ProspectiveExperimentBundleV4:
     """Read, hash, parse and semantically validate a published aggregate."""
 
     root = directory.resolve()
@@ -104,11 +105,15 @@ def verify_published_claim_artifact(
         raise ValueError("published claim artifact is not a JSON object")
     schema_version = payload.get("schema_version")
     if schema_version == ProspectiveExperimentBundleV2.schema_version:
-        bundle: ProspectiveExperimentBundleV2 | ProspectiveExperimentBundleV3 = (
-            ProspectiveExperimentBundleV2.from_record(payload)
-        )
+        bundle: (
+            ProspectiveExperimentBundleV2
+            | ProspectiveExperimentBundleV3
+            | ProspectiveExperimentBundleV4
+        ) = ProspectiveExperimentBundleV2.from_record(payload)
     elif schema_version == ProspectiveExperimentBundleV3.schema_version:
         bundle = ProspectiveExperimentBundleV3.from_record(payload)
+    elif schema_version == ProspectiveExperimentBundleV4.schema_version:
+        bundle = ProspectiveExperimentBundleV4.from_record(payload)
     else:
         raise ValueError("published claim artifact uses an unsupported bundle schema")
     if (

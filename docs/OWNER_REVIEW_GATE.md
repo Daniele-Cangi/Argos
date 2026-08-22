@@ -2,6 +2,31 @@
 
 Claude must stop implementation when this gate is reached.
 
+## Owner decision update — 2026-08-21
+
+**BLOCKED. The gate still has not passed.** The fresh V3 experiment is terminal
+and ADR-0018 supersedes any running/polling description for it. Both
+preregistered targets are accounted for and both capture paths completed
+without rejection, decode failure or unknown event. Each target has 98
+contiguous, receipt-bound lifecycle observations, but the last observed status
+was only `proposed` near `02:23Z`. No admissible final-settlement cutoff was
+observed before the frozen `06:00Z` deadline.
+
+Host suspension left an approximately 3h37 unobserved tail. No post-deadline
+poll exists, but absence of such a poll cannot establish the markets' state
+during that tail. The terminal claim therefore reports
+`TARGET_ACCOUNTING_COMPLETE`, `LIFECYCLE_CONTINUITY_INCOMPLETE` and
+`NO_ADMISSIBLE_CUTOFF_OBSERVED` separately. Its mechanically derived
+verdicts are `M4_BLOCKED` and `CALIBRATION_NOT_EVALUABLE`.
+
+The exact portable V4 claim and receipt index are committed under
+`experiments/m4-prospective-20260820-v3/proof/`; repository tests parse and
+semantically validate the real bytes and reject both one-byte mutation and
+globally re-digested false terminal claims. Gate A still lacks the frozen 2/2
+admissible cutoff evidence required for an end-to-end M4 measurement-layer
+decision. M5-M8 remain unauthorized.
+
+
 ## Owner decision — 2026-08-19
 
 **BLOCKED. The gate has not passed.** The independent review in

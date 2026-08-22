@@ -133,6 +133,22 @@ frozen capture revision understood. Such a change requires a new predeclared
 protocol and fresh captures; old exclusions, stopping rules and target choices
 remain immutable evidence.
 
+A lifecycle deadline closes the opportunity to collect admissible cutoff
+evidence; it does not fill an unobserved polling interval. Terminal reporting
+must keep three claims separate: whether every preregistered target is
+accounted for, whether the persisted lifecycle chain satisfies frozen cadence,
+and how many admissible cutoffs were actually observed. A final polling gap
+above the cadence allowance makes continuity incomplete even when target
+accounting is complete.
+
+For a target with no observed admissible cutoff, the terminal proof must bind
+the exact ordered lifecycle observations, their receipts and raw source bytes
+to the frozen protocol/receipt, selected target/receipt and clean capture
+summary. It must record the last *observed* finality and explicitly refuse any
+claim that the same state persisted through an unobserved tail. No settlement
+state, cutoff, score or calibration result may be reconstructed from silence.
+
+
 Later selective-prediction metrics:
 
 - risk–coverage curve;

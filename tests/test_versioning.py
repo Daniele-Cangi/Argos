@@ -123,6 +123,11 @@ def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
         if model.__module__.startswith("argos.")
     }
     assert shipped == {
+        "capture_run_summary.v1": "CaptureRunSummaryV1",
+        "lifecycle_poll_evidence.v1": "LifecyclePollEvidenceV1",
+        "prospective_experiment_bundle.v4": "ProspectiveExperimentBundleV4",
+        "prospective_target_terminal_evidence.v1": "ProspectiveTargetTerminalEvidenceV1",
+        "prospective_terminal_report.v1": "ProspectiveTerminalReportV1",
         "capture_rejection_evidence.v1": "CaptureRejectionEvidenceV1",
         "prospective_claim_artifact_index.v1": "ProspectiveClaimArtifactIndexV1",
         "compiled_market_contract.v1": "CompiledMarketContractV1",

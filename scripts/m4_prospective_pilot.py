@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import subprocess
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -25,6 +26,10 @@ from argos.domain.market import MarketDefinitionV1
 from argos.domain.provenance import SourceProvenanceV1, sha256_hex
 from argos.errors import RejectionReason
 from argos.evaluation.bundle import record_sha256
+from argos.evaluation.claim_artifact import (
+    ProspectiveClaimArtifactIndexV1,
+    verify_published_claim_artifact,
+)
 from argos.evaluation.prospective import (
     CutoffBasis,
     EvidenceArtifactKind,
@@ -48,6 +53,16 @@ from argos.evaluation.prospective_aggregation_v2 import (
 )
 from argos.evaluation.prospective_aggregation_v3 import (
     aggregate_prospective_experiment_v3,
+)
+from argos.evaluation.prospective_terminal import (
+    CaptureRunSummaryV1,
+    LifecyclePollEvidenceV1,
+    ProspectiveExperimentBundleV4,
+    ProspectiveTargetTerminalEvidenceV1,
+    aggregate_prospective_terminal_experiment,
+    build_capture_run_summary,
+    build_lifecycle_poll_evidence,
+    build_target_terminal_evidence,
 )
 from argos.ingestion.gamma_markets import normalize_markets
 from argos.resolution import (
@@ -76,11 +91,15 @@ def main() -> int:
     poll.add_argument("--experiment-dir", type=Path, required=True)
     materialize = subparsers.add_parser("materialize-exclusions")
     materialize.add_argument("--experiment-dir", type=Path, required=True)
+    terminal = subparsers.add_parser("materialize-terminal")
+    terminal.add_argument("--experiment-dir", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "freeze":
         return freeze_experiment(args.spec, args.experiment_dir)
     if args.command == "poll":
         return poll_experiment(args.experiment_dir)
+    if args.command == "materialize-terminal":
+        return materialize_terminal(args.experiment_dir)
     return materialize_exclusions(args.experiment_dir)
 
 
@@ -511,6 +530,396 @@ def materialize_exclusions(experiment_dir: Path) -> int:
     return 0
 
 
+def materialize_terminal(experiment_dir: Path) -> int:
+    """Publish the frozen V3 terminal claim without issuing a lifecycle request."""
+
+    proof_dir = experiment_dir / "proof"
+    bundle_path = proof_dir / "claim-bundle-v4.json"
+    index_path = proof_dir / "claim-index-v1.json"
+    materializer_revision = _terminal_materializer_revision(bundle_path, index_path)
+    state_path = experiment_dir / "state.json"
+    state = _object(orjson.loads(state_path.read_bytes()), "experiment state")
+    if state.get("result_v4") is not None:
+        raise ValueError("terminal evidence has already been materialized")
+
+    protocol_raw = _object(state.get("protocol"), "protocol record")
+    protocol = ProspectiveExperimentProtocolV2.from_record(protocol_raw)
+    protocol_receipt = EvidencePersistenceReceiptV1.from_record(
+        _object(state.get("protocol_receipt"), "protocol receipt")
+    )
+    now = LiveClock().now()
+    if now < protocol.lifecycle_deadline:
+        raise ValueError("terminal evidence cannot close before the frozen deadline")
+
+    if bundle_path.exists() or index_path.exists():
+        if not bundle_path.is_file() or not index_path.is_file():
+            raise ValueError("terminal claim publication is incomplete")
+        existing_index = ProspectiveClaimArtifactIndexV1.from_record(
+            _object(orjson.loads(index_path.read_bytes()), "terminal claim index")
+        )
+        existing = verify_published_claim_artifact(existing_index, proof_dir)
+        if not isinstance(existing, ProspectiveExperimentBundleV4):
+            raise ValueError("published terminal claim is not an aggregate V4")
+        result = _terminal_result(
+            aggregate=existing,
+            aggregate_receipt=existing_index.aggregate_receipt,
+            bundle_path=bundle_path,
+            index_path=index_path,
+            materializer_revision=materializer_revision,
+            finalized_at=now,
+            materialization_mode="resumed_existing_verified_claim",
+        )
+        state["result_v4"] = result
+        _write_state(state_path, state)
+        _write_state(experiment_dir / "result-v4.json", result)
+        print(orjson.dumps(result, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS).decode())
+        return 0
+
+    evidence_dir = experiment_dir / "evidence"
+    source_dir = experiment_dir / "source"
+    terminal_targets: list[ProspectiveTargetTerminalEvidenceV1] = []
+    terminal_receipts: list[EvidencePersistenceReceiptV1] = []
+    terminal_summaries: list[dict[str, Any]] = []
+
+    for target_state_raw in _list(state.get("targets"), "targets"):
+        target_state = _object(target_state_raw, "target state")
+        if target_state.get("cutoff") is not None:
+            raise ValueError("terminal target unexpectedly carries cutoff evidence")
+        target = ProspectiveTargetV1.from_record(
+            _object(target_state.get("target"), "target record")
+        )
+        target_receipt = EvidencePersistenceReceiptV1.from_record(
+            _object(target_state.get("target_receipt"), "target receipt")
+        )
+        lifecycle_polls = _terminal_lifecycle_polls(
+            target_state=target_state,
+            source_dir=source_dir,
+        )
+        capture_summary = _terminal_capture_summary(
+            experiment_dir=experiment_dir,
+            protocol=protocol,
+            target=target,
+        )
+        terminal = build_target_terminal_evidence(
+            protocol=protocol,
+            protocol_receipt=protocol_receipt,
+            target=target,
+            target_receipt=target_receipt,
+            capture_summary=capture_summary,
+            lifecycle_polls=lifecycle_polls,
+            closed_at=now,
+        )
+        receipt = persist_evidence_record(
+            evidence_dir,
+            record=terminal,
+            experiment_id=protocol.experiment_id,
+            artifact_kind=EvidenceArtifactKind.TARGET_TERMINAL,
+            artifact_id=terminal.terminal_evidence_id,
+            persisted_at=now,
+        )
+        terminal_targets.append(terminal)
+        terminal_receipts.append(receipt)
+        last = terminal.lifecycle_polls[-1].observation
+        terminal_summaries.append(
+            {
+                "target_id": target.target_id,
+                "market_id": target.market_id,
+                "lifecycle_observation_count": len(terminal.lifecycle_polls),
+                "last_lifecycle_ordinal": last.ordinal,
+                "last_observation_id": last.lifecycle_observation_id,
+                "last_retrieved_at": last.retrieved_at.isoformat(),
+                "last_observed_finality": last.finality.value,
+                "admissible_cutoff_count": terminal.admissible_cutoff_count,
+                "final_polling_gap_microseconds": (terminal.final_polling_gap_microseconds),
+                "maximum_polling_gap_microseconds": (terminal.maximum_polling_gap_microseconds),
+                "continuity_status": terminal.continuity_status.value,
+                "disposition": terminal.disposition.value,
+                "capture_summary": capture_summary.to_record(),
+            }
+        )
+
+    aggregate = aggregate_prospective_terminal_experiment(
+        protocol=protocol,
+        protocol_receipt=protocol_receipt,
+        terminal_targets=terminal_targets,
+        terminal_target_receipts=terminal_receipts,
+        created_at=now,
+    )
+    aggregate_receipt = persist_evidence_record(
+        evidence_dir,
+        record=aggregate,
+        experiment_id=protocol.experiment_id,
+        artifact_kind=EvidenceArtifactKind.EXPERIMENT_AGGREGATE,
+        artifact_id=aggregate.evidence_digest,
+        persisted_at=now,
+    )
+    aggregate_raw = orjson.dumps(aggregate.to_record(), option=orjson.OPT_SORT_KEYS)
+    if (
+        sha256_hex(aggregate_raw) != aggregate_receipt.artifact_sha256
+        or len(aggregate_raw) != aggregate_receipt.artifact_byte_length
+    ):
+        raise ValueError("terminal aggregate bytes disagree with their persistence receipt")
+
+    proof_dir = experiment_dir / "proof"
+    bundle_path = proof_dir / "claim-bundle-v4.json"
+    index_path = proof_dir / "claim-index-v1.json"
+    _write_exact_claim_bytes(bundle_path, aggregate_raw)
+    index = ProspectiveClaimArtifactIndexV1(
+        experiment_id=protocol.experiment_id,
+        bundle_relative_path=bundle_path.name,
+        bundle_schema_version=aggregate.schema_version,
+        bundle_evidence_digest=aggregate.evidence_digest,
+        bundle_artifact_sha256=aggregate_receipt.artifact_sha256,
+        bundle_byte_length=aggregate_receipt.artifact_byte_length,
+        aggregate_receipt=aggregate_receipt,
+        published_from_storage_identity=aggregate_receipt.storage_identity,
+    )
+    _write_state(index_path, index.to_record())
+    verified = verify_published_claim_artifact(index, proof_dir)
+    if verified != aggregate:
+        raise ValueError("published terminal claim did not round-trip exactly")
+
+    result = {
+        "format": "m4_prospective_pilot_terminal_result.v4",
+        "experiment_id": protocol.experiment_id,
+        "materialized_at": now.isoformat(),
+        "materializer_revision": materializer_revision,
+        "frozen_deadline": protocol.lifecycle_deadline.isoformat(),
+        "poll_interval_seconds": protocol.lifecycle_poll_interval_seconds,
+        "terminal_targets": terminal_summaries,
+        "terminal_report": aggregate.report.to_record(),
+        "aggregate_receipt": aggregate_receipt.to_record(),
+        "published_claim_artifact": {
+            "index_path": index_path.as_posix(),
+            "bundle_path": bundle_path.as_posix(),
+            "bundle_schema_version": aggregate.schema_version,
+            "bundle_evidence_digest": aggregate.evidence_digest,
+            "bundle_artifact_sha256": aggregate_receipt.artifact_sha256,
+            "bundle_byte_length": aggregate_receipt.artifact_byte_length,
+            "receipt_id": aggregate_receipt.receipt_id,
+        },
+    }
+    state["result_v4"] = result
+    _write_state(state_path, state)
+    _write_state(experiment_dir / "result-v4.json", result)
+    print(orjson.dumps(result, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS).decode())
+    return 0
+
+
+def _terminal_result(
+    *,
+    aggregate: ProspectiveExperimentBundleV4,
+    aggregate_receipt: EvidencePersistenceReceiptV1,
+    bundle_path: Path,
+    index_path: Path,
+    materializer_revision: str,
+    finalized_at: datetime,
+    materialization_mode: str,
+) -> dict[str, Any]:
+    terminal_summaries: list[dict[str, Any]] = []
+    for terminal in aggregate.terminal_targets:
+        last = terminal.lifecycle_polls[-1].observation
+        terminal_summaries.append(
+            {
+                "target_id": terminal.target.target_id,
+                "market_id": terminal.target.market_id,
+                "lifecycle_observation_count": len(terminal.lifecycle_polls),
+                "last_lifecycle_ordinal": last.ordinal,
+                "last_observation_id": last.lifecycle_observation_id,
+                "last_retrieved_at": last.retrieved_at.isoformat(),
+                "last_observed_finality": last.finality.value,
+                "admissible_cutoff_count": terminal.admissible_cutoff_count,
+                "final_polling_gap_microseconds": terminal.final_polling_gap_microseconds,
+                "maximum_polling_gap_microseconds": terminal.maximum_polling_gap_microseconds,
+                "continuity_status": terminal.continuity_status.value,
+                "disposition": terminal.disposition.value,
+                "capture_summary": terminal.capture_summary.to_record(),
+            }
+        )
+    return {
+        "format": "m4_prospective_pilot_terminal_result.v4",
+        "experiment_id": aggregate.protocol.experiment_id,
+        "materialized_at": aggregate.report.created_at.isoformat(),
+        "closure_finalized_at": finalized_at.isoformat(),
+        "materializer_revision": materializer_revision,
+        "materialization_mode": materialization_mode,
+        "frozen_deadline": aggregate.protocol.lifecycle_deadline.isoformat(),
+        "poll_interval_seconds": aggregate.protocol.lifecycle_poll_interval_seconds,
+        "terminal_targets": terminal_summaries,
+        "terminal_report": aggregate.report.to_record(),
+        "aggregate_receipt": aggregate_receipt.to_record(),
+        "published_claim_artifact": {
+            "index_path": index_path.as_posix(),
+            "bundle_path": bundle_path.as_posix(),
+            "bundle_schema_version": aggregate.schema_version,
+            "bundle_evidence_digest": aggregate.evidence_digest,
+            "bundle_artifact_sha256": aggregate_receipt.artifact_sha256,
+            "bundle_byte_length": aggregate_receipt.artifact_byte_length,
+            "receipt_id": aggregate_receipt.receipt_id,
+        },
+    }
+
+
+def _terminal_lifecycle_polls(
+    *,
+    target_state: dict[str, Any],
+    source_dir: Path,
+) -> tuple[LifecyclePollEvidenceV1, ...]:
+    polls: list[LifecyclePollEvidenceV1] = []
+    for lifecycle_raw in _list(target_state.get("lifecycle"), "lifecycle"):
+        lifecycle = _object(lifecycle_raw, "lifecycle entry")
+        observation = LifecycleObservationV1.from_record(
+            _object(lifecycle.get("observation"), "lifecycle observation")
+        )
+        receipt = EvidencePersistenceReceiptV1.from_record(
+            _object(lifecycle.get("receipt"), "lifecycle receipt")
+        )
+        raw, provenance = read_raw_payload(source_dir, observation.raw_payload_sha256)
+        # Identical Gamma bytes share one content-addressed sidecar, whose
+        # retrieved_at belongs to the first archive write rather than every
+        # later lifecycle observation that references those same bytes.
+        if (
+            not provenance.matches(raw)
+            or provenance.source != observation.source
+            or provenance.endpoint != observation.endpoint
+            or archive_relative_location(provenance) != observation.raw_payload_location
+        ):
+            raise ValueError("lifecycle raw archive disagrees with its observation")
+        polls.append(
+            build_lifecycle_poll_evidence(
+                observation=observation,
+                receipt=receipt,
+                raw_payload=raw,
+            )
+        )
+    return tuple(polls)
+
+
+def _terminal_capture_summary(
+    *,
+    experiment_dir: Path,
+    protocol: ProspectiveExperimentProtocolV2,
+    target: ProspectiveTargetV1,
+) -> CaptureRunSummaryV1:
+    capture_dir = experiment_dir / "capture" / f"target-{target.selection_rank}"
+    capture_run_id = f"{protocol.experiment_id}-target-{target.selection_rank}"
+    manifest = RunManifest.from_record(
+        _object(
+            orjson.loads((capture_dir / f"{capture_run_id}.manifest.json").read_bytes()),
+            "capture manifest",
+        )
+    )
+    ledger_path = capture_dir / "events.sqlite3"
+    ledger_raw = ledger_path.read_bytes()
+    store = open_sqlite_event_store(ledger_path)
+    try:
+        run = store.get_capture_run(capture_run_id)
+        if (
+            run is None
+            or run.ended_at is None
+            or run.completion_status is not CompletionStatus.COMPLETED
+        ):
+            raise ValueError("target capture is not durably completed")
+        counts = store.counts_for_capture_run(capture_run_id)
+        deliveries = tuple(store.iter_deliveries(capture_run_id))
+        rejections = tuple(store.iter_rejections(capture_run_id))
+        schema_counts: Counter[str] = Counter()
+        delivery_material: list[dict[str, Any]] = []
+        frame_hashes: set[str] = set()
+        for delivery in deliveries:
+            observation = store.get_observation(delivery.observation_id)
+            if observation is None:
+                raise ValueError("capture delivery names a missing observation")
+            schema_counts[observation.payload_schema_version] += 1
+            frame_hashes.add(delivery.source_frame_sha256)
+            delivery_material.append(
+                {
+                    "capture_run_id": delivery.capture_run_id,
+                    "ingest_sequence": delivery.ingest_sequence,
+                    "observation_id": delivery.observation_id,
+                    "observation_record_sha256": record_sha256(observation.to_record()),
+                    "payload_schema_version": observation.payload_schema_version,
+                    "received_time": delivery.received_time.isoformat(),
+                    "disposition": delivery.disposition.value,
+                    "source_frame_sha256": delivery.source_frame_sha256,
+                    "source_frame_offset": delivery.source_frame_offset,
+                }
+            )
+        reason_counts: Counter[str] = Counter()
+        rejection_material: list[dict[str, Any]] = []
+        for rejection_record in rejections:
+            rejection = rejection_record.rejection
+            reason_counts[rejection.reason.value] += 1
+            frame_hashes.add(rejection.raw_payload_sha256)
+            rejection_material.append(
+                {
+                    "capture_run_id": rejection_record.capture_run_id,
+                    "ingest_sequence": rejection_record.ingest_sequence,
+                    "duplicate_of_observation_id": (rejection_record.duplicate_of_observation_id),
+                    "rejection_id": rejection.rejection_id,
+                    "rejection_record_sha256": record_sha256(rejection.to_record()),
+                    "reason": rejection.reason.value,
+                    "raw_payload_sha256": rejection.raw_payload_sha256,
+                }
+            )
+    finally:
+        store.close()
+    if ledger_path.read_bytes() != ledger_raw:
+        raise ValueError("read-only terminal audit changed the frozen capture ledger")
+
+    decode_reasons = {
+        RejectionReason.MALFORMED_PAYLOAD.value,
+        RejectionReason.SCHEMA_VERSION_MISMATCH.value,
+        RejectionReason.INVALID_TIMESTAMP.value,
+    }
+    return build_capture_run_summary(
+        experiment_id=protocol.experiment_id,
+        target_id=target.target_id,
+        manifest=manifest,
+        started_at=run.started_at,
+        ended_at=run.ended_at,
+        completion_status=run.completion_status,
+        frame_count=len(frame_hashes),
+        accepted_count=counts.accepted,
+        duplicate_count=counts.duplicate,
+        rejected_count=counts.rejected,
+        decode_failure_count=sum(reason_counts[reason] for reason in decode_reasons),
+        unknown_event_count=reason_counts[RejectionReason.UNKNOWN_EVENT_TYPE.value],
+        observation_schema_counts=dict(schema_counts),
+        rejection_reason_counts=dict(reason_counts),
+        ledger_sha256=sha256_hex(ledger_raw),
+        ledger_byte_length=len(ledger_raw),
+        delivery_collection_digest=record_sha256(
+            {
+                "version": "capture_delivery_collection.v1",
+                "records": delivery_material,
+            }
+        ),
+        rejection_collection_digest=record_sha256(
+            {
+                "version": "capture_rejection_collection.v1",
+                "records": rejection_material,
+            }
+        ),
+    )
+
+
+def _write_exact_claim_bytes(path: Path, raw: bytes) -> None:
+    if path.exists():
+        if path.read_bytes() != raw:
+            raise ValueError("refusing to overwrite different published claim bytes")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    with temporary.open("xb") as stream:
+        stream.write(raw)
+        stream.flush()
+        import os
+
+        os.fsync(stream.fileno())
+    temporary.replace(path)
+
+
 def _eligible_markets(
     markets: tuple[MarketDefinitionV1, ...],
     raw_by_id: dict[str, dict[str, Any]],
@@ -823,6 +1232,31 @@ def _public_get(url: str, params: dict[str, Any]) -> tuple[bytes, str, datetime]
                 raise ValueError("public source response exceeded 32 MiB")
             chunks.append(chunk)
         return b"".join(chunks), str(response.request.url), datetime.now(UTC)
+
+
+def _terminal_materializer_revision(bundle_path: Path, index_path: Path) -> str:
+    root = Path.cwd().resolve()
+    allowed_untracked: set[str] = set()
+    for path in (bundle_path, index_path):
+        if path.exists():
+            relative = path.resolve().relative_to(root).as_posix()
+            allowed_untracked.add(f"?? {relative}")
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    observed = {line for line in status.splitlines() if line}
+    unexpected = observed - allowed_untracked
+    if unexpected:
+        raise ValueError(
+            "terminal evidence requires a clean tree except its verified claim files: "
+            + ", ".join(sorted(unexpected))
+        )
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
 
 
 def _clean_revision() -> str:

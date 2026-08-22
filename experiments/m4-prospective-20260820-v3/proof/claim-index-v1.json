@@ -1,0 +1,23 @@
+{
+  "aggregate_receipt": {
+    "artifact_byte_length": 1230831,
+    "artifact_id": "42443a664441b3fa77c10a920eaec587a4d50d13dd9573e5eceb755d8d13c92a",
+    "artifact_kind": "experiment_aggregate",
+    "artifact_schema_version": "prospective_experiment_bundle.v4",
+    "artifact_sha256": "400f7b9619643900e41a0c38db6f62a13aba6112cef247209ab343268538c86d",
+    "experiment_id": "m4-prospective-20260820-v3",
+    "persisted_at": "2026-08-21T14:53:49.231586Z",
+    "receipt_id": "receipt-133d1991aa74189f1af068d40d236d17",
+    "schema_version": "evidence_persistence_receipt.v1",
+    "storage_backend": "content_addressed_raw_archive.v1",
+    "storage_identity": "argos_evidence/400f7b9619643900e41a0c38db6f62a13aba6112cef247209ab343268538c86d.raw.json"
+  },
+  "bundle_artifact_sha256": "400f7b9619643900e41a0c38db6f62a13aba6112cef247209ab343268538c86d",
+  "bundle_byte_length": 1230831,
+  "bundle_evidence_digest": "42443a664441b3fa77c10a920eaec587a4d50d13dd9573e5eceb755d8d13c92a",
+  "bundle_relative_path": "claim-bundle-v4.json",
+  "bundle_schema_version": "prospective_experiment_bundle.v4",
+  "experiment_id": "m4-prospective-20260820-v3",
+  "published_from_storage_identity": "argos_evidence/400f7b9619643900e41a0c38db6f62a13aba6112cef247209ab343268538c86d.raw.json",
+  "schema_version": "prospective_claim_artifact_index.v1"
+}
