@@ -98,12 +98,24 @@ sections below without deleting their audit trail.
       `TARGET_ACCOUNTING_COMPLETE`, `LIFECYCLE_CONTINUITY_COMPLETE`,
       `NO_ADMISSIBLE_CUTOFF_OBSERVED`, `M4_BLOCKED` and
       `CALIBRATION_NOT_EVALUABLE`.
-- [ ] Prepare the owner-authorized fresh M4 V6 experiment. Freeze a new
-      protocol and operational bounds before observation, then select fresh
-      targets and produce fresh captures. Do not rescue, replace or reuse any
-      V1-V5 target or evidence. Retain the 2/2 admissible-cutoff measurement
-      requirement. No M5, RESON, AI forecasting, UI, wallet, authentication
-      or execution.
+- [ ] Close the owner-authorized M4 V6 experiment after its frozen
+      `2026-08-24T22:00:00Z` deadline. Its fresh protocol and two captures are
+      valid, and each target has 34 contiguous receipt-bound lifecycle
+      observations through approximately `00:56Z`. A DNS lookup failure then
+      terminated the monitor and left a cadence-breaking unobserved tail; do
+      not restart, rescue or infer settlement from silence. Materialize the
+      terminal V4 bundle after the deadline with lifecycle continuity
+      incomplete and no observed admissible cutoff.
+- [x] Harden future prospective public reads without rewriting V6 evidence:
+      use three total attempts with deterministic 1 s / 2 s backoff for
+      transport failures and transient HTTP statuses, mint no evidence for a
+      failed attempt, and keep persistent outages visible. Deterministic tests
+      reproduce a one-shot DNS failure, retry exhaustion, transient 503 and
+      non-retryable 404.
+- [ ] Prepare V7 only from a revision containing the bounded-retry correction,
+      with a newly frozen protocol, fresh targets and fresh captures. Retain
+      the 2/2 admissible-cutoff measurement requirement. No M5, RESON, AI
+      forecasting, UI, wallet, authentication or execution.
 
 ## Must close before M3 — from the M3 readiness audit (2026-08-17)
 

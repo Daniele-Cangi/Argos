@@ -141,6 +141,14 @@ and how many admissible cutoffs were actually observed. A final polling gap
 above the cadence allowance makes continuity incomplete even when target
 accounting is complete.
 
+The prospective pilot's public lifecycle read retries only transient transport
+failures and HTTP 408, 425, 429, 500, 502, 503 and 504 responses. The budget is
+three total attempts with deterministic 1 s and 2 s backoff, so one DNS miss
+does not terminate a monitor while a persistent outage still fails visibly.
+Failed attempts mint no lifecycle observation, source sidecar, receipt or
+cutoff; only the successful response receives a retrieval timestamp. The
+bounded retry budget does not relax the frozen cadence or deadline.
+
 For a target with no observed admissible cutoff, the terminal proof must bind
 the exact ordered lifecycle observations, their receipts and raw source bytes
 to the frozen protocol/receipt, selected target/receipt and clean capture
