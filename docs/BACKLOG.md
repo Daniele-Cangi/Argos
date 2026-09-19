@@ -2,6 +2,25 @@
 
 Work top to bottom unless a milestone dependency requires reordering.
 
+## ADR-0019 resilient validation campaign
+
+- [ ] Define a versioned technical-scenario result and aggregate that preserve
+      `PASSED`, `FAILED`, `INCOMPLETE` and `NOT_RUN` independently.
+- [ ] Replace the external one-off monitor with a repository-tracked resumable
+      monitor that enforces exclusive poll ownership and validates its last
+      durable checkpoint before continuing.
+- [ ] Add deterministic network, process, storage and terminal-state fault
+      adapters; unit tests must not depend on real outages or settlement.
+- [ ] Execute the bounded T1-T8 matrix in
+      `docs/research/m4-resilient-validation-plan.md` before freezing another
+      live predictive campaign.
+- [ ] Add an append-only late-resolution record that can score a previously
+      frozen forecast without reconstructing a historical first-observed
+      cutoff.
+- [ ] Build the next asynchronous cohort with at least 10-20 intended targets;
+      retain ADR-0014's 30-resolved-target and dispersion requirements for any
+      calibration claim.
+
 ## Owner priority — M4 reopened 2026-08-19
 
 This section supersedes the historical “M4 — closed” and “Carried from M4”

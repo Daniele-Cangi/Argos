@@ -20,5 +20,6 @@
 | 0016 | Prospective exclusions require exact capture proof | Accepted |
 | 0017 | Prospective operations and published claims are evidence-bound | Accepted |
 | 0018 | Terminal evidence separates accounting, continuity and admissibility | Accepted |
+| 0019 | Decouple bounded technical qualification from asynchronous resolution | Accepted |
 
 Create new ADRs by copying the structure used below. Never rewrite an accepted ADR to hide a changed decision; supersede it.
