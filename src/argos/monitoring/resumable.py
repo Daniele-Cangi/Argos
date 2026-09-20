@@ -11,9 +11,10 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from importlib import import_module
 from pathlib import Path
 from types import TracebackType
-from typing import BinaryIO, ClassVar, Self
+from typing import BinaryIO, ClassVar, Protocol, Self, cast
 
 import orjson
 from pydantic import Field, field_validator, model_validator
@@ -22,10 +23,38 @@ from argos.clock import ensure_utc
 from argos.domain.provenance import SHA256_LENGTH
 from argos.domain.versioning import VersionedModel
 
-if os.name == "nt":
-    import msvcrt
-else:  # pragma: no cover - exercised by the Ubuntu CI job
-    import fcntl
+
+class _WindowsLockModule(Protocol):
+    LK_NBLCK: int
+    LK_UNLCK: int
+
+    def locking(self, fd: int, mode: int, nbytes: int) -> None: ...
+
+
+class _PosixLockModule(Protocol):
+    LOCK_EX: int
+    LOCK_NB: int
+    LOCK_UN: int
+
+    def flock(self, fd: int, operation: int) -> None: ...
+
+
+def _lock_nonblocking(handle: BinaryIO) -> None:
+    if os.name == "nt":
+        windows_lock = cast(_WindowsLockModule, import_module("msvcrt"))
+        windows_lock.locking(handle.fileno(), windows_lock.LK_NBLCK, 1)
+    else:  # pragma: no cover - exercised by the Ubuntu CI job
+        posix_lock = cast(_PosixLockModule, import_module("fcntl"))
+        posix_lock.flock(handle.fileno(), posix_lock.LOCK_EX | posix_lock.LOCK_NB)
+
+
+def _unlock(handle: BinaryIO) -> None:
+    if os.name == "nt":
+        windows_lock = cast(_WindowsLockModule, import_module("msvcrt"))
+        windows_lock.locking(handle.fileno(), windows_lock.LK_UNLCK, 1)
+    else:  # pragma: no cover - exercised by the Ubuntu CI job
+        posix_lock = cast(_PosixLockModule, import_module("fcntl"))
+        posix_lock.flock(handle.fileno(), posix_lock.LOCK_UN)
 
 
 class MonitorGapV1(VersionedModel):
@@ -173,11 +202,7 @@ class ExclusiveFileLease:
             handle.flush()
         handle.seek(0)
         try:
-            if os.name == "nt":
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-            else:  # pragma: no cover - exercised by the Ubuntu CI job
-                operation = fcntl.LOCK_EX | fcntl.LOCK_NB  # type: ignore[attr-defined]
-                fcntl.flock(handle.fileno(), operation)  # type: ignore[attr-defined]
+            _lock_nonblocking(handle)
         except OSError as error:
             handle.close()
             raise RuntimeError("monitor already has an exclusive owner") from error
@@ -195,11 +220,7 @@ class ExclusiveFileLease:
         if handle is None:
             return
         handle.seek(0)
-        if os.name == "nt":
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-        else:  # pragma: no cover - exercised by the Ubuntu CI job
-            operation = fcntl.LOCK_UN  # type: ignore[attr-defined]
-            fcntl.flock(handle.fileno(), operation)  # type: ignore[attr-defined]
+        _unlock(handle)
         handle.close()
         self._handle = None
 
