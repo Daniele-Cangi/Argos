@@ -1,6 +1,28 @@
 # ARGOS status
 
-Last updated: 2026-08-22
+Last updated: 2026-09-20
+
+## 2026-09-20 V8 result and methodology correction
+
+Experiment `m4-prospective-20260917-v8` completed two clean bounded captures
+and retained 554 contiguous, receipt-bound lifecycle observations per target.
+Both targets transitioned from `unknown` to `proposed`; neither produced an
+observed admissible final-settlement cutoff. The external monitor failed at
+`2026-09-19T21:00:23Z`, after last successful observations near `20:55Z` and
+before the frozen `22:00Z` deadline. The resulting tail is unobserved and V8
+cannot claim lifecycle continuity through the deadline or an M4 pass.
+
+ADR-0019 records the owner-approved correction: bounded technical
+qualification is now separated from asynchronous outcome resolution. Future
+technical work uses independently reported 10-minute through 6-hour scenarios,
+including deterministic network, process, storage and terminal-state failures.
+Resolution targets remain pending until admissible finality arrives; they do
+not erase valid capture evidence merely because settlement is slow.
+
+This decision does not reinterpret V8 and does not lower calibration
+requirements. M4 remains blocked while the versioned scenario-result boundary
+and resumable exclusive monitor are implemented and tested. No new live
+experiment is authorized by the documentation change alone.
 
 ## 2026-08-22 V5 terminal experiment result
 

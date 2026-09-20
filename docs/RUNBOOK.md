@@ -41,6 +41,22 @@ uv run pytest -q
 
 Run the full gate before closing a milestone. Unit tests never touch the network.
 
+## M4 resilient validation campaigns
+
+ADR-0019 replaces multi-day all-or-nothing technical qualification with a
+bounded scenario matrix. The authoritative plan is
+`docs/research/m4-resilient-validation-plan.md`.
+
+Do not treat elapsed runtime as evidence by itself. Each scenario must name the
+property it tests, its maximum duration, exact inputs or injected fault and its
+own pass/fail evidence. Technical passage does not imply predictive accuracy or
+calibration. Resolution polling belongs to a separate resumable cohort and an
+unresolved target remains pending rather than becoming a fabricated negative.
+
+The repository does not yet contain the ADR-0019 scenario-result schema or
+resumable monitor. Until both exist and their adversarial tests pass, do not
+start a new live campaign under the new methodology.
+
 ## Governance checks
 
 ```bash

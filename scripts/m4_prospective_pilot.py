@@ -10,7 +10,9 @@ from __future__ import annotations
 import argparse
 import itertools
 import subprocess
+import time
 from collections import Counter
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -78,6 +80,9 @@ from argos.store import (
 from argos.store.raw_archive import archive_relative_location, write_raw_payload
 
 MAX_RESPONSE_BYTES = 32 * 1024 * 1024
+PUBLIC_GET_MAX_ATTEMPTS = 3
+PUBLIC_GET_RETRY_BACKOFF_SECONDS = (1.0, 2.0)
+PUBLIC_GET_RETRYABLE_STATUS_CODES = frozenset({408, 425, 429, 500, 502, 503, 504})
 USER_AGENT = "argos-research (public read-only prospective pilot)"
 
 
@@ -1214,24 +1219,47 @@ def _lifecycle_record_complete(
     return True
 
 
-def _public_get(url: str, params: dict[str, Any]) -> tuple[bytes, str, datetime]:
-    with (
-        httpx.Client(
-            timeout=20,
-            follow_redirects=False,
-            headers={"accept": "application/json", "user-agent": USER_AGENT},
-        ) as client,
-        client.stream("GET", url, params=params) as response,
-    ):
-        response.raise_for_status()
-        chunks: list[bytes] = []
-        length = 0
-        for chunk in response.iter_bytes():
-            length += len(chunk)
-            if length > MAX_RESPONSE_BYTES:
-                raise ValueError("public source response exceeded 32 MiB")
-            chunks.append(chunk)
-        return b"".join(chunks), str(response.request.url), datetime.now(UTC)
+def _public_get(
+    url: str,
+    params: dict[str, Any],
+    *,
+    transport: httpx.BaseTransport | None = None,
+    sleep: Callable[[float], None] | None = None,
+) -> tuple[bytes, str, datetime]:
+    """Read one bounded public payload, retrying only transient source failures."""
+
+    sleeper = time.sleep if sleep is None else sleep
+    for attempt in range(PUBLIC_GET_MAX_ATTEMPTS):
+        try:
+            with (
+                httpx.Client(
+                    timeout=20,
+                    follow_redirects=False,
+                    headers={"accept": "application/json", "user-agent": USER_AGENT},
+                    transport=transport,
+                ) as client,
+                client.stream("GET", url, params=params) as response,
+            ):
+                response.raise_for_status()
+                chunks: list[bytes] = []
+                length = 0
+                for chunk in response.iter_bytes():
+                    length += len(chunk)
+                    if length > MAX_RESPONSE_BYTES:
+                        raise ValueError("public source response exceeded 32 MiB")
+                    chunks.append(chunk)
+                return b"".join(chunks), str(response.request.url), datetime.now(UTC)
+        except httpx.HTTPStatusError as error:
+            if (
+                error.response.status_code not in PUBLIC_GET_RETRYABLE_STATUS_CODES
+                or attempt == PUBLIC_GET_MAX_ATTEMPTS - 1
+            ):
+                raise
+        except httpx.TransportError:
+            if attempt == PUBLIC_GET_MAX_ATTEMPTS - 1:
+                raise
+        sleeper(PUBLIC_GET_RETRY_BACKOFF_SECONDS[attempt])
+    raise AssertionError("bounded public GET retry loop exhausted without returning or raising")
 
 
 def _terminal_materializer_revision(bundle_path: Path, index_path: Path) -> str:

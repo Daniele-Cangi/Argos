@@ -6,6 +6,7 @@ from datetime import timedelta
 from pathlib import Path
 from runpy import run_path
 
+import httpx
 import pytest
 from test_prospective_bundle import _observation, _valid_result
 
@@ -15,6 +16,7 @@ from argos.resolution import ResolutionStatus
 _PILOT = run_path(str(Path(__file__).resolve().parents[1] / "scripts" / "m4_prospective_pilot.py"))
 _cutoff = _PILOT["_cutoff"]
 _lifecycle_record_complete = _PILOT["_lifecycle_record_complete"]
+_public_get = _PILOT["_public_get"]
 _validate_capture_configuration = _PILOT["_validate_capture_configuration"]
 
 
@@ -97,3 +99,92 @@ async def test_protocol_v2_rejects_every_incoherent_operational_bound(tmp_path) 
             ProspectiveExperimentProtocolV2.model_validate(
                 {**protocol.model_dump(mode="python"), **updates}
             )
+
+
+def test_public_get_retries_one_transient_dns_failure() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ConnectError("temporary DNS failure", request=request)
+        return httpx.Response(200, content=b'{"active":true}', request=request)
+
+    waits: list[float] = []
+    raw, endpoint, retrieved_at = _public_get(
+        "https://gamma-api.polymarket.com/markets/1",
+        {},
+        transport=httpx.MockTransport(handler),
+        sleep=waits.append,
+    )
+
+    assert attempts == 2
+    assert waits == [1.0]
+    assert raw == b'{"active":true}'
+    assert endpoint == "https://gamma-api.polymarket.com/markets/1"
+    assert retrieved_at.tzinfo is not None
+
+
+def test_public_get_exhausts_a_bounded_transport_retry_budget() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        raise httpx.ConnectError("persistent DNS failure", request=request)
+
+    waits: list[float] = []
+    with pytest.raises(httpx.ConnectError, match="persistent DNS failure"):
+        _public_get(
+            "https://gamma-api.polymarket.com/markets/1",
+            {},
+            transport=httpx.MockTransport(handler),
+            sleep=waits.append,
+        )
+
+    assert attempts == 3
+    assert waits == [1.0, 2.0]
+
+
+def test_public_get_retries_a_transient_http_status() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        status = 503 if attempts == 1 else 200
+        return httpx.Response(status, content=b"{}", request=request)
+
+    waits: list[float] = []
+    raw, _, _ = _public_get(
+        "https://gamma-api.polymarket.com/markets/1",
+        {},
+        transport=httpx.MockTransport(handler),
+        sleep=waits.append,
+    )
+
+    assert attempts == 2
+    assert waits == [1.0]
+    assert raw == b"{}"
+
+
+def test_public_get_does_not_retry_a_nontransient_http_failure() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(404, content=b"not found", request=request)
+
+    waits: list[float] = []
+    with pytest.raises(httpx.HTTPStatusError):
+        _public_get(
+            "https://gamma-api.polymarket.com/markets/missing",
+            {},
+            transport=httpx.MockTransport(handler),
+            sleep=waits.append,
+        )
+
+    assert attempts == 1
+    assert waits == []
