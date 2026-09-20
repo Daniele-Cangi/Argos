@@ -22,8 +22,10 @@ not erase valid capture evidence merely because settlement is slow.
 This decision does not reinterpret V8 and does not lower calibration
 requirements. The versioned T1--T8 scenario boundary and resumable exclusive
 monitor are now implemented with adversarial tests. M4 remains blocked while
-deterministic fault adapters and the bounded technical matrix are executed. No
-new live predictive experiment is authorized by these implementation steps alone.
+the bounded technical matrix is executed. Deterministic T4--T7 fault adapters
+now prove exact activation, explicit gaps and same-ordinal resume without real
+outages or settlement. No new live predictive experiment is authorized by
+these implementation steps alone.
 
 The repository-verifiable terminal claim is published at
 `experiments/m4-prospective-20260917-v8/proof/`. Its V4 bundle is 7,782,610

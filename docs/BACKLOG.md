@@ -9,7 +9,7 @@ Work top to bottom unless a milestone dependency requires reordering.
 - [x] Replace the external one-off monitor with a repository-tracked resumable
       monitor that enforces exclusive poll ownership and validates its last
       durable checkpoint before continuing.
-- [ ] Add deterministic network, process, storage and terminal-state fault
+- [x] Add deterministic network, process, storage and terminal-state fault
       adapters; unit tests must not depend on real outages or settlement.
 - [ ] Execute the bounded T1-T8 matrix in
       `docs/research/m4-resilient-validation-plan.md` before freezing another
