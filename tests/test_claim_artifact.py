@@ -70,6 +70,7 @@ def test_v8_terminal_claim_is_complete_and_verifiable() -> None:
     assert bundle.report.lifecycle_continuity_status.value == "LIFECYCLE_CONTINUITY_INCOMPLETE"
     assert bundle.report.resolution_admissibility_status.value == "NO_ADMISSIBLE_CUTOFF_OBSERVED"
     assert bundle.report.measurement_layer_verdict.value == "M4_BLOCKED"
+    assert bundle.report.calibration_verdict.value == "CALIBRATION_NOT_EVALUABLE"
     assert tuple(len(target.lifecycle_polls) for target in bundle.terminal_targets) == (
         554,
         554,
