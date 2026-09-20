@@ -181,3 +181,11 @@ def test_existing_partial_checkpoint_blocks_overwrite(tmp_path: Path) -> None:
     partial.write_bytes(b"corrupt interrupted write")
     with pytest.raises(FileExistsError):
         monitor.save(_checkpoint())
+
+
+def test_corrupt_checkpoint_json_has_a_boundary_error(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "checkpoint.json"
+    checkpoint_path.write_bytes(b"{not-json")
+    monitor = ResumableMonitor(checkpoint_path, tmp_path / "monitor.lock")
+    with pytest.raises(ValueError, match="checkpoint is not valid JSON"):
+        monitor.load()
