@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,8 +31,12 @@ def _identity(path: Path, root: Path) -> str:
     return f"sha256:{_sha256(path)}:{path.resolve().relative_to(root.resolve()).as_posix()}"
 
 
-def _run_json(command: list[str], *, cwd: Path) -> dict[str, Any]:
-    completed = subprocess.run(command, cwd=cwd, check=True, capture_output=True, text=True)
+def _run_json(
+    command: list[str], *, cwd: Path, allowed_exit_codes: frozenset[int] = frozenset({0})
+) -> dict[str, Any]:
+    completed = subprocess.run(command, cwd=cwd, check=False, capture_output=True, text=True)
+    if completed.returncode not in allowed_exit_codes:
+        completed.check_returncode()
     value = orjson.loads(completed.stdout)
     if not isinstance(value, dict):
         raise ValueError(f"command did not emit a JSON object: {command!r}")
@@ -44,10 +49,21 @@ def _write_json(path: Path, record: dict[str, Any]) -> None:
     with temporary.open("wb") as stream:
         stream.write(orjson.dumps(record, option=orjson.OPT_INDENT_2 | orjson.OPT_SORT_KEYS))
         stream.flush()
-        import os
-
         os.fsync(stream.fileno())
     temporary.replace(path)
+    _fsync_directory(path.parent)
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Make the atomic rename durable where Python exposes directory handles."""
+
+    if os.name == "nt":
+        return
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _clean_revision(root: Path) -> str:
@@ -97,7 +113,10 @@ def run_t1(args: argparse.Namespace) -> int:
             "--json",
         )
     )
-    capture = _run_json(capture_command, cwd=root)
+    # Exit 130 is the command's documented, fully reported operator-interrupt
+    # outcome. Preserve its JSON and let the deterministic assessor record a
+    # FAILED T1 instead of turning it into an unreported runner exception.
+    capture = _run_json(capture_command, cwd=root, allowed_exit_codes=frozenset({0, 130}))
     capture_report_path = output / "capture-report.json"
     _write_json(capture_report_path, capture)
 
