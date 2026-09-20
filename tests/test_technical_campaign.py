@@ -169,3 +169,105 @@ def test_foreign_campaign_result_is_rejected() -> None:
     results[0] = results[0].model_copy(update={"campaign_id": "other"})
     with pytest.raises(ValidationError, match="different campaign"):
         _campaign(results=tuple(results))
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        ({"artifact_identities": ("",)}, "artifact identities must not be blank"),
+        ({"artifact_identities": ("same", "same")}, "artifact identities must be unique"),
+        ({"observed_outcome": " "}, "result text must not be blank"),
+        ({"limitations": ("",)}, "limitations must not be blank"),
+        ({"follow_up_action": " "}, "follow-up action must not be blank"),
+        ({"reason": "unexpected"}, "PASSED cannot carry a failure reason"),
+        ({"started_at": None}, "requires start and checkpoint"),
+        ({"last_checkpoint_at": NOW - timedelta(seconds=1)}, "cannot precede scenario start"),
+        ({"ended_at": NOW - timedelta(seconds=1)}, "end cannot precede"),
+        ({"ended_at": None}, "terminal scenario result requires"),
+    ],
+)
+def test_result_rejects_internally_contradictory_values(
+    updates: dict[str, object], message: str
+) -> None:
+    valid = _result(TechnicalScenario.FUNCTIONAL).model_dump()
+    valid.update(updates)
+    with pytest.raises(ValidationError, match=message):
+        TechnicalScenarioResultV1.model_validate(valid)
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        ({"observed_frame_count": 1}, "NOT_RUN cannot carry execution evidence"),
+        ({"reason": None}, "NOT_RUN requires a reason"),
+        ({"follow_up_action": None}, "NOT_RUN requires a follow-up action"),
+    ],
+)
+def test_not_run_requires_an_honest_empty_execution(
+    updates: dict[str, object], message: str
+) -> None:
+    valid = _result(TechnicalScenario.ENDURANCE, TechnicalScenarioStatus.NOT_RUN).model_dump()
+    valid.update(updates)
+    with pytest.raises(ValidationError, match=message):
+        TechnicalScenarioResultV1.model_validate(valid)
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        ({"reason": None}, "require a reason"),
+        ({"follow_up_action": None}, "require a follow-up action"),
+    ],
+)
+def test_failed_result_requires_reason_and_follow_up(
+    updates: dict[str, object], message: str
+) -> None:
+    valid = _result(
+        TechnicalScenario.NETWORK_INTERRUPTION, TechnicalScenarioStatus.FAILED
+    ).model_dump()
+    valid.update(updates)
+    with pytest.raises(ValidationError, match=message):
+        TechnicalScenarioResultV1.model_validate(valid)
+
+
+def test_scenario_spec_rejects_blank_fault_description() -> None:
+    with pytest.raises(ValidationError, match="scenario text must not be blank"):
+        TechnicalScenarioSpecV1(
+            scenario=TechnicalScenario.NETWORK_INTERRUPTION,
+            maximum_duration_seconds=60,
+            maximum_frame_count=10,
+            expected_outcome="explicit gap",
+            fault_injection=" ",
+        )
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        ({"code_revision": "z" * 40}, "must be hexadecimal"),
+        ({"input_identities": ()}, "requires nonblank input identities"),
+        ({"input_identities": ("same", "same")}, "input identities must be unique"),
+    ],
+)
+def test_campaign_rejects_unverifiable_identities(updates: dict[str, object], message: str) -> None:
+    with pytest.raises(ValidationError, match=message):
+        _campaign(**updates)
+
+
+def test_duplicate_specification_is_rejected_explicitly() -> None:
+    specifications = tuple(_spec(item) for item in TechnicalScenario)
+    with pytest.raises(ValidationError, match="duplicate scenario specifications"):
+        _campaign(specifications=(*specifications, specifications[0]))
+
+
+def test_a_nonpassing_complete_campaign_is_not_qualified() -> None:
+    results = tuple(
+        _result(
+            item,
+            TechnicalScenarioStatus.INCOMPLETE
+            if item is TechnicalScenario.ENDURANCE
+            else TechnicalScenarioStatus.PASSED,
+        )
+        for item in TechnicalScenario
+    )
+    assert not _campaign(results=results).technically_qualified
