@@ -20,9 +20,10 @@ Resolution targets remain pending until admissible finality arrives; they do
 not erase valid capture evidence merely because settlement is slow.
 
 This decision does not reinterpret V8 and does not lower calibration
-requirements. M4 remains blocked while the versioned scenario-result boundary
-and resumable exclusive monitor are implemented and tested. No new live
-experiment is authorized by the documentation change alone.
+requirements. The versioned T1--T8 scenario boundary and resumable exclusive
+monitor are now implemented with adversarial tests. M4 remains blocked while
+deterministic fault adapters and the bounded technical matrix are executed. No
+new live predictive experiment is authorized by these implementation steps alone.
 
 The repository-verifiable terminal claim is published at
 `experiments/m4-prospective-20260917-v8/proof/`. Its V4 bundle is 7,782,610
