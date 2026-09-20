@@ -324,6 +324,7 @@ def run_t2(args: argparse.Namespace) -> int:
             artifact_bytes=_artifact_bytes(output),
         )
     )
+    capture_ended_at = datetime.now(UTC)
     if return_code not in (0, 130):
         raise subprocess.CalledProcessError(return_code, process.args)
     capture = orjson.loads(stdout_path.read_bytes())
@@ -361,7 +362,6 @@ def run_t2(args: argparse.Namespace) -> int:
             "samples": [item.to_record() for item in samples],
         },
     )
-    ended_at = datetime.now(UTC)
     artifact_paths = (
         config_path,
         db_path,
@@ -375,12 +375,16 @@ def run_t2(args: argparse.Namespace) -> int:
         campaign_id=args.campaign_id,
         capture_run_id=run_id,
         started_at=started_at,
-        ended_at=ended_at,
+        ended_at=capture_ended_at,
         capture_completed=(
             capture_run is not None and capture_run.completion_status is CompletionStatus.COMPLETED
         ),
         capture_interrupted=bool(capture.get("interrupted")),
         frames_consumed=int(loop.get("frames_consumed", 0)),
+        events_seen=int(loop.get("events_seen", 0)),
+        decode_failures=int(loop.get("decode_failures", 0)),
+        not_applicable=int(loop.get("not_applicable", 0)),
+        unknown_event_type=int(loop.get("unknown_event_type", 0)),
         loop_counts=(
             int(loop.get("accepted", 0)),
             int(loop.get("duplicate", 0)),

@@ -104,9 +104,13 @@ def test_run_t2_materializes_evidence_from_a_controlled_capture(
                         "manifest_path": str(manifest),
                         "loop_health": {
                             "frames_consumed": 1,
+                            "events_seen": 1,
+                            "decode_failures": 0,
                             "accepted": 2,
                             "duplicate": 0,
                             "rejected": 0,
+                            "not_applicable": 0,
+                            "unknown_event_type": 0,
                         },
                         "store_counts": {"accepted": 2, "duplicate": 0, "rejected": 0},
                     }

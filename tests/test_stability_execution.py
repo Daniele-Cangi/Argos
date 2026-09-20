@@ -35,6 +35,10 @@ def _evidence(**overrides: object) -> StabilityScenarioEvidenceV1:
         "capture_completed": True,
         "capture_interrupted": False,
         "frames_consumed": 4,
+        "events_seen": 4,
+        "decode_failures": 0,
+        "not_applicable": 0,
+        "unknown_event_type": 0,
         "loop_counts": (8, 0, 0),
         "store_counts": (8, 0, 0),
         "raw_payload_count": 4,
@@ -82,6 +86,8 @@ def test_t2_passes_with_complete_accounting_cadence_and_bounded_resources() -> N
             "storage",
         ),
         ({"sampling_errors": ("AccessDenied: pid=1",)}, "sampling reported errors"),
+        ({"decode_failures": 1}, "decode failures"),
+        ({"unknown_event_type": 1}, "unknown event types"),
     ],
 )
 def test_t2_preserves_each_failed_invariant(overrides: dict[str, object], reason: str) -> None:

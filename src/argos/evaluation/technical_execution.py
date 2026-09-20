@@ -189,6 +189,10 @@ class StabilityScenarioEvidenceV1(VersionedModel):
     capture_completed: bool
     capture_interrupted: bool
     frames_consumed: int = Field(ge=0)
+    events_seen: int = Field(ge=0)
+    decode_failures: int = Field(ge=0)
+    not_applicable: int = Field(ge=0)
+    unknown_event_type: int = Field(ge=0)
     loop_counts: tuple[int, int, int]
     store_counts: tuple[int, int, int]
     raw_payload_count: int = Field(ge=0)
@@ -267,6 +271,10 @@ def assess_stability_scenario(evidence: StabilityScenarioEvidenceV1) -> Technica
         reasons.append("capture consumed no frames")
     if evidence.loop_counts[2] or evidence.store_counts[2]:
         reasons.append("capture contains rejected observations")
+    if evidence.decode_failures:
+        reasons.append("capture contains decode failures")
+    if evidence.unknown_event_type:
+        reasons.append("capture contains unknown event types")
     if evidence.loop_counts != evidence.store_counts:
         reasons.append("capture loop and durable store counts disagree")
     if evidence.raw_payload_count == 0:
