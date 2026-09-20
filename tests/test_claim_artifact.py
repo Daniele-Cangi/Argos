@@ -17,6 +17,12 @@ from argos.evaluation.claim_artifact import (
 from argos.evaluation.prospective import EvidencePersistenceReceiptV1
 
 PROOF_DIR = Path(__file__).resolve().parents[1] / "experiments" / "m4-pilot-20260819" / "proof"
+V8_PROOF_DIR = (
+    Path(__file__).resolve().parents[1]
+    / "experiments"
+    / "m4-prospective-20260917-v8"
+    / "proof"
+)
 
 
 def _index(directory: Path = PROOF_DIR) -> ProspectiveClaimArtifactIndexV1:
@@ -53,6 +59,27 @@ def test_published_claim_artifact_is_complete_and_verifiable() -> None:
         "48f535a8b355e41cb879c1af46adef3e1798d402d31ac3d79a7216ba4e1cea03"
     )
     assert len(bundle.target_exclusions) == 2
+
+
+def test_v8_terminal_claim_is_complete_and_verifiable() -> None:
+    index = _index(V8_PROOF_DIR)
+    bundle = verify_published_claim_artifact(index, V8_PROOF_DIR)
+
+    assert bundle.protocol.experiment_id == "m4-prospective-20260917-v8"
+    assert bundle.evidence_digest == (
+        "3a705b4a14735962b5d1035ad64d3aeaf8d9ac6a1583c179adb27b2fa8df2624"
+    )
+    assert bundle.report.target_accounting_status.value == "TARGET_ACCOUNTING_COMPLETE"
+    assert bundle.report.lifecycle_continuity_status.value == "LIFECYCLE_CONTINUITY_INCOMPLETE"
+    assert (
+        bundle.report.resolution_admissibility_status.value
+        == "NO_ADMISSIBLE_CUTOFF_OBSERVED"
+    )
+    assert bundle.report.measurement_layer_verdict.value == "M4_BLOCKED"
+    assert tuple(len(target.lifecycle_polls) for target in bundle.terminal_targets) == (
+        554,
+        554,
+    )
 
 
 def test_one_changed_artifact_byte_is_rejected(tmp_path: Path) -> None:
