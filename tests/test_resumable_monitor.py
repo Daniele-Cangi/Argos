@@ -201,6 +201,9 @@ def test_corrupt_checkpoint_json_has_a_boundary_error(tmp_path: Path) -> None:
 
 def test_kernel_releases_lease_after_real_process_termination(tmp_path: Path) -> None:
     lock_path = tmp_path / "monitor.lock"
+    checkpoint_path = tmp_path / "checkpoint.json"
+    monitor = ResumableMonitor(checkpoint_path, lock_path)
+    monitor.save(_checkpoint())
     context = multiprocessing.get_context("spawn")
     ready = context.Event()
     process = context.Process(target=_hold_exclusive_lease, args=(str(lock_path), ready))
@@ -213,3 +216,9 @@ def test_kernel_releases_lease_after_real_process_termination(tmp_path: Path) ->
     process.close()
     with ExclusiveFileLease(lock_path):
         pass
+    resumed = monitor.run_once(
+        poll=_commit,
+        failure_time=lambda: NOW,
+    )
+    assert resumed.next_ordinal == 1
+    assert resumed.last_receipt_id == "receipt-0"
