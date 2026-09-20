@@ -70,8 +70,15 @@ def test_positive_integer_argument_rejects_zero() -> None:
         module._positive_int("0")
 
 
-def test_run_t2_materializes_pass_evidence_from_a_controlled_capture(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("return_code", "interrupted", "expected_status"), [(0, False, "PASSED"), (130, True, "FAILED")]
+)
+def test_run_t2_materializes_evidence_from_a_controlled_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    return_code: int,
+    interrupted: bool,
+    expected_status: str,
 ) -> None:
     module = _load_script()
     output = tmp_path / "t2"
@@ -93,7 +100,7 @@ def test_run_t2_materializes_pass_evidence_from_a_controlled_capture(
                 module.orjson.dumps(
                     {
                         "capture_run_id": "campaign-t2",
-                        "interrupted": False,
+                        "interrupted": interrupted,
                         "manifest_path": str(manifest),
                         "loop_health": {
                             "frames_consumed": 1,
@@ -109,7 +116,7 @@ def test_run_t2_materializes_pass_evidence_from_a_controlled_capture(
 
         def wait(self, timeout):
             del timeout
-            return 0
+            return return_code
 
     class FakeStore:
         def get_capture_run(self, run_id):
@@ -121,7 +128,8 @@ def test_run_t2_materializes_pass_evidence_from_a_controlled_capture(
 
     monkeypatch.setattr(module, "_clean_revision", lambda root: "a" * 40)
     monkeypatch.setattr(module.subprocess, "Popen", FakeProcess)
-    monkeypatch.setattr(module, "_tree_resident_bytes", lambda pid: 123)
+    monkeypatch.setattr(module, "_tree_resident_bytes", lambda pid, tracked: 123)
+    monkeypatch.setattr(module, "_resident_bytes", lambda processes: 0)
     monkeypatch.setattr(module, "open_sqlite_event_store", lambda path: FakeStore())
     args = Namespace(
         repository=tmp_path,
@@ -135,9 +143,9 @@ def test_run_t2_materializes_pass_evidence_from_a_controlled_capture(
         max_rss_bytes=536_870_912,
         max_artifact_bytes=2_147_483_648,
     )
-    assert module.run_t2(args) == 0
+    assert module.run_t2(args) == (0 if expected_status == "PASSED" else 1)
     result = module.orjson.loads((output / "t2-result.json").read_bytes())
     evidence = module.orjson.loads((output / "t2-evidence.json").read_bytes())
-    assert result["status"] == "PASSED"
+    assert result["status"] == expected_status
     assert len(evidence["samples"]) == 2
     assert evidence["raw_payload_count"] == 1

@@ -105,9 +105,7 @@ def _capture_command(args: argparse.Namespace, run_id: str, db_path: Path) -> li
     return command
 
 
-def _tree_resident_bytes(pid: int) -> int:
-    process = psutil.Process(pid)
-    processes = [process, *process.children(recursive=True)]
+def _resident_bytes(processes: tuple[psutil.Process, ...]) -> int:
     total = 0
     for member in processes:
         try:
@@ -115,6 +113,14 @@ def _tree_resident_bytes(pid: int) -> int:
         except psutil.NoSuchProcess:
             continue
     return total
+
+
+def _tree_resident_bytes(pid: int, tracked: dict[int, psutil.Process]) -> int:
+    process = psutil.Process(pid)
+    processes = [process, *process.children(recursive=True)]
+    for member in processes:
+        tracked[member.pid] = member
+    return _resident_bytes(tuple(processes))
 
 
 def _artifact_bytes(directory: Path) -> int:
@@ -278,6 +284,7 @@ def run_t2(args: argparse.Namespace) -> int:
     stderr_path = output / "capture.stderr.log"
     samples: list[StabilityResourceSampleV1] = []
     sampling_errors: list[str] = []
+    tracked_processes: dict[int, psutil.Process] = {}
     with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
         process = subprocess.Popen(
             _capture_command(args, run_id, db_path), cwd=root, stdout=stdout, stderr=stderr
@@ -285,7 +292,7 @@ def run_t2(args: argparse.Namespace) -> int:
         while True:
             observed_at = datetime.now(UTC)
             try:
-                resident = _tree_resident_bytes(process.pid)
+                resident = _tree_resident_bytes(process.pid, tracked_processes)
             except psutil.NoSuchProcess:
                 resident = 0
             except psutil.AccessDenied as error:
@@ -304,11 +311,16 @@ def run_t2(args: argparse.Namespace) -> int:
                 break
             except subprocess.TimeoutExpired:
                 continue
+    try:
+        final_resident = _resident_bytes(tuple(tracked_processes.values()))
+    except psutil.AccessDenied as error:
+        final_resident = 0
+        sampling_errors.append(f"AccessDenied: {error}")
     samples.append(
         StabilityResourceSampleV1(
             ordinal=len(samples),
             observed_at=datetime.now(UTC),
-            resident_memory_bytes=0,
+            resident_memory_bytes=final_resident,
             artifact_bytes=_artifact_bytes(output),
         )
     )
