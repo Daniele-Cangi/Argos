@@ -17,6 +17,7 @@ from argos.domain.versioning import VersionedModel
 from argos.evaluation.technical_campaign import TechnicalScenario
 
 __all__ = [
+    "TERMINAL_STATE_MATRIX_V1",
     "DeterministicFaultAdapter",
     "DeterministicFaultScheduleV1",
     "InjectedNetworkLoss",
@@ -57,6 +58,15 @@ class TechnicalTerminalState(StrEnum):
     DISPUTED = "DISPUTED"
     FINAL = "FINAL"
     ADMINISTRATIVE_CLOSE = "ADMINISTRATIVE_CLOSE"
+
+
+TERMINAL_STATE_MATRIX_V1 = (
+    TechnicalTerminalState.UNKNOWN,
+    TechnicalTerminalState.PROPOSED,
+    TechnicalTerminalState.DISPUTED,
+    TechnicalTerminalState.FINAL,
+    TechnicalTerminalState.ADMINISTRATIVE_CLOSE,
+)
 
 
 class DeterministicFaultScheduleV1(VersionedModel):
@@ -101,7 +111,9 @@ class DeterministicFaultScheduleV1(VersionedModel):
         if self.scenario is TechnicalScenario.TERMINAL_SIMULATION:
             if self.activation_attempts:
                 raise ValueError("terminal-state schedule cannot carry fault attempts")
-            expected = tuple(TechnicalTerminalState)
+            # Frozen explicitly: adding a future enum member must not invalidate
+            # already-persisted v1 schedules.
+            expected = TERMINAL_STATE_MATRIX_V1
             if self.terminal_states != expected:
                 raise ValueError("terminal-state schedule must cover the complete state matrix")
             return self

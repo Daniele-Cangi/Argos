@@ -1,6 +1,7 @@
 """Crash-safe supervision primitives for bounded technical campaigns."""
 
 from argos.monitoring.faults import (
+    TERMINAL_STATE_MATRIX_V1,
     DeterministicFaultAdapter,
     DeterministicFaultScheduleV1,
     InjectedNetworkLoss,
@@ -20,6 +21,7 @@ from argos.monitoring.resumable import (
 )
 
 __all__ = [
+    "TERMINAL_STATE_MATRIX_V1",
     "DeterministicFaultAdapter",
     "DeterministicFaultScheduleV1",
     "ExclusiveFileLease",

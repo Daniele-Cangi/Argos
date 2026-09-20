@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from argos.evaluation.technical_campaign import TechnicalScenario
 from argos.monitoring.faults import (
+    TERMINAL_STATE_MATRIX_V1,
     DeterministicFaultAdapter,
     DeterministicFaultScheduleV1,
     InjectedNetworkLoss,
@@ -38,7 +39,7 @@ def _terminal_schedule() -> DeterministicFaultScheduleV1:
     return DeterministicFaultScheduleV1(
         schedule_id="schedule-terminal-matrix-v1",
         scenario=TechnicalScenario.TERMINAL_SIMULATION,
-        terminal_states=tuple(TechnicalTerminalState),
+        terminal_states=TERMINAL_STATE_MATRIX_V1,
     )
 
 
@@ -113,7 +114,7 @@ def test_terminal_schedule_must_cover_exact_complete_matrix() -> None:
             schedule_id="mixed",
             scenario=TechnicalScenario.TERMINAL_SIMULATION,
             activation_attempts=(0,),
-            terminal_states=tuple(TechnicalTerminalState),
+            terminal_states=TERMINAL_STATE_MATRIX_V1,
         )
 
 
@@ -134,8 +135,8 @@ def test_adapter_types_cannot_be_mixed() -> None:
 
 def test_terminal_fixture_yields_every_state_once_in_frozen_order() -> None:
     adapter = TerminalStateFixtureAdapter(_terminal_schedule())
-    observed = tuple(adapter.read_next() for _ in TechnicalTerminalState)
-    assert observed == tuple(TechnicalTerminalState)
+    observed = tuple(adapter.read_next() for _ in TERMINAL_STATE_MATRIX_V1)
+    assert observed == TERMINAL_STATE_MATRIX_V1
     with pytest.raises(StopIteration, match="exhausted"):
         adapter.read_next()
 
