@@ -121,7 +121,10 @@ from argos.evaluation.technical_campaign import (
 )
 from argos.evaluation.technical_execution import (
     FunctionalScenarioEvidenceV1,
+    StabilityResourceSampleV1,
+    StabilityScenarioEvidenceV1,
     assess_functional_scenario,
+    assess_stability_scenario,
 )
 
 __all__ = [
@@ -179,6 +182,8 @@ __all__ = [
     "ProspectiveTerminalReportV1",
     "ResolutionAdmissibilityStatus",
     "ResolutionCutoffEvidenceV1",
+    "StabilityResourceSampleV1",
+    "StabilityScenarioEvidenceV1",
     "StandaloneLastTradePolicy",
     "TargetAccountingStatus",
     "TargetTerminalDisposition",
@@ -193,6 +198,7 @@ __all__ = [
     "aggregate_prospective_experiment_v3",
     "aggregate_prospective_terminal_experiment",
     "assess_functional_scenario",
+    "assess_stability_scenario",
     "brier_score",
     "build_capture_rejection_evidence",
     "build_capture_run_summary",

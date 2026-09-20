@@ -34,6 +34,13 @@ scenario result. The executor does not waive failures: empty captures, any
 rejection, count disagreement, missing raw evidence, database mutation or
 replay digest disagreement each produce an explicit failed T1 result.
 
+The T2 operator path now freezes a two-hour bound, one-minute sampling,
+two-minute maximum sampling gap, 512 MiB process-tree RSS and 2 GiB artifact
+limit. It records a versioned resource timeline and cannot pass with missing
+samples, incomplete capture accounting, rejects, missing raw evidence or a
+resource-limit breach. Implementation alone is not a T2 result; the bounded
+run remains to be executed after CI and merge.
+
 The repository-verifiable terminal claim is published at
 `experiments/m4-prospective-20260917-v8/proof/`. Its V4 bundle is 7,782,610
 bytes, has evidence digest
