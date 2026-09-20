@@ -11,6 +11,10 @@ Work top to bottom unless a milestone dependency requires reordering.
       durable checkpoint before continuing.
 - [x] Add deterministic network, process, storage and terminal-state fault
       adapters; unit tests must not depend on real outages or settlement.
+- [x] Add a repository-tracked T1 executor that runs the shipped capture and
+      replay commands, content-addresses its artifacts, and derives the result
+      from durable counts, raw evidence, database immutability and two replay
+      digests.
 - [ ] Execute the bounded T1-T8 matrix in
       `docs/research/m4-resilient-validation-plan.md` before freezing another
       live predictive campaign.
