@@ -57,6 +57,19 @@ def _unlock(handle: BinaryIO) -> None:
         posix_lock.flock(handle.fileno(), posix_lock.LOCK_UN)
 
 
+def _sync_directory(path: Path) -> None:
+    """Make a completed rename durable on filesystems that support directory fsync."""
+
+    if os.name == "nt":
+        return
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 class MonitorGapV1(VersionedModel):
     """An interval during which the owner could not persist a successful poll."""
 
@@ -237,7 +250,10 @@ class ResumableMonitor:
         self._lock_path = lock_path
 
     def load(self) -> ResumableMonitorCheckpointV1:
-        raw = orjson.loads(self._checkpoint_path.read_bytes())
+        try:
+            raw = orjson.loads(self._checkpoint_path.read_bytes())
+        except orjson.JSONDecodeError as error:
+            raise ValueError("monitor checkpoint is not valid JSON") from error
         if not isinstance(raw, dict):
             raise ValueError("monitor checkpoint is not a JSON object")
         return ResumableMonitorCheckpointV1.from_record(raw)
@@ -251,6 +267,7 @@ class ResumableMonitor:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, self._checkpoint_path)
+        _sync_directory(self._checkpoint_path.parent)
 
     def run_once(
         self,
