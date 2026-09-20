@@ -135,15 +135,12 @@ class DeterministicFaultAdapter:
         if schedule.scenario not in self._errors:
             raise ValueError("fault adapter requires a T4, T5, or T6 schedule")
         self._schedule = schedule
-        self._next_attempt = 0
 
-    @property
-    def next_attempt(self) -> int:
-        return self._next_attempt
+    def invoke(self, attempt: int, operation: Callable[[], ResultT]) -> ResultT:
+        """Apply the frozen schedule to an explicit, externally owned cursor."""
 
-    def invoke(self, operation: Callable[[], ResultT]) -> ResultT:
-        attempt = self._next_attempt
-        self._next_attempt += 1
+        if attempt < 0:
+            raise ValueError("fault attempt must be nonnegative")
         error = self._errors[self._schedule.scenario]
         if attempt in self._schedule.activation_attempts:
             raise error(attempt)

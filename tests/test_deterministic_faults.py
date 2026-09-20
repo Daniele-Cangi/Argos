@@ -58,23 +58,29 @@ def test_fault_occurs_at_exact_attempt_without_calling_operation(
     adapter = DeterministicFaultAdapter(_fault_schedule(scenario))
     calls: list[int] = []
 
-    assert adapter.invoke(lambda: calls.append(0) or "first") == "first"
+    assert adapter.invoke(0, lambda: calls.append(0) or "first") == "first"
     with pytest.raises(error, match="attempt 1"):
-        adapter.invoke(lambda: calls.append(1) or "fabricated")
-    assert adapter.invoke(lambda: calls.append(2) or "third") == "third"
+        adapter.invoke(1, lambda: calls.append(1) or "fabricated")
+    assert adapter.invoke(2, lambda: calls.append(2) or "third") == "third"
     assert calls == [0, 2]
-    assert adapter.next_attempt == 3
 
 
-def test_two_adapters_do_not_share_attempt_state() -> None:
+def test_reconstructed_adapter_uses_the_same_external_attempt() -> None:
     schedule = _fault_schedule(TechnicalScenario.NETWORK_INTERRUPTION, (0,))
     first = DeterministicFaultAdapter(schedule)
     second = DeterministicFaultAdapter(schedule)
     with pytest.raises(InjectedNetworkLoss):
-        first.invoke(lambda: None)
+        first.invoke(0, lambda: None)
     with pytest.raises(InjectedNetworkLoss):
-        second.invoke(lambda: None)
-    assert first.next_attempt == second.next_attempt == 1
+        second.invoke(0, lambda: None)
+    assert first.invoke(1, lambda: "resumed") == "resumed"
+    assert second.invoke(1, lambda: "resumed") == "resumed"
+
+
+def test_negative_external_attempt_is_rejected() -> None:
+    adapter = DeterministicFaultAdapter(_fault_schedule(TechnicalScenario.NETWORK_INTERRUPTION))
+    with pytest.raises(ValueError, match="must be nonnegative"):
+        adapter.invoke(-1, lambda: None)
 
 
 @pytest.mark.parametrize(
@@ -180,16 +186,18 @@ def test_monitor_records_gap_then_resumes_same_ordinal_after_fault(
     )
     adapter = DeterministicFaultAdapter(_fault_schedule(scenario, (0,)))
     failure_times = iter((NOW, NOW + timedelta(seconds=1)))
+    fault_attempts = iter((0, 1))
 
     def poll(checkpoint: ResumableMonitorCheckpointV1) -> PollCommit:
         return adapter.invoke(
+            next(fault_attempts),
             lambda: PollCommit(
                 ordinal=checkpoint.next_ordinal,
                 receipt_id="receipt-0",
                 record_sha256="b" * 64,
                 persisted_at=NOW + timedelta(seconds=2),
                 previous_receipt_id=checkpoint.last_receipt_id,
-            )
+            ),
         )
 
     with pytest.raises(error):
@@ -223,9 +231,10 @@ def test_storage_refusal_at_checkpoint_boundary_preserves_durable_head(
     adapter = DeterministicFaultAdapter(
         _fault_schedule(TechnicalScenario.STORAGE_INTERRUPTION, (0,))
     )
+    fault_attempts = iter((0,))
 
     def refusing_writer(path: Path, raw: bytes) -> None:
-        adapter.invoke(lambda: write_atomic_checkpoint(path, raw))
+        adapter.invoke(next(fault_attempts), lambda: write_atomic_checkpoint(path, raw))
 
     refusing_monitor = ResumableMonitor(
         checkpoint_path,
