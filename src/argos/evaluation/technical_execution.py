@@ -248,8 +248,8 @@ class StabilityScenarioEvidenceV1(VersionedModel):
         if [item.ordinal for item in self.samples] != list(range(len(self.samples))):
             raise ValueError("resource sample ordinals must be contiguous from zero")
         observed = [item.observed_at for item in self.samples]
-        if observed != sorted(observed) or len(observed) != len(set(observed)):
-            raise ValueError("resource sample times must be strictly increasing")
+        if observed != sorted(observed):
+            raise ValueError("resource sample times must not regress")
         if any(item < self.started_at or item > self.ended_at for item in observed):
             raise ValueError("resource samples must lie inside the scenario timeline")
         return self

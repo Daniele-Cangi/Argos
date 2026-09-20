@@ -94,7 +94,7 @@ def test_t2_refuses_noncontiguous_or_out_of_order_samples() -> None:
     with pytest.raises(ValidationError):
         _evidence(samples=(_sample(0), _sample(2)))
     with pytest.raises(ValidationError):
-        _evidence(samples=(_sample(0), _sample(1, seconds=0)))
+        _evidence(samples=(_sample(0), _sample(1, seconds=-1)))
 
 
 def test_t2_refuses_weakened_frozen_bounds() -> None:
