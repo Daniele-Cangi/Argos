@@ -27,6 +27,13 @@ now prove exact activation, explicit gaps and same-ordinal resume without real
 outages or settlement. No new live predictive experiment is authorized by
 these implementation steps alone.
 
+The T1 operator path is also repository-tracked. It invokes the shipped
+bounded capture and read-only replay commands, indexes raw payloads, hashes the
+SQLite database before and after two replays, and emits a versioned functional
+scenario result. The executor does not waive failures: empty captures, any
+rejection, count disagreement, missing raw evidence, database mutation or
+replay digest disagreement each produce an explicit failed T1 result.
+
 The repository-verifiable terminal claim is published at
 `experiments/m4-prospective-20260917-v8/proof/`. Its V4 bundle is 7,782,610
 bytes, has evidence digest

@@ -119,6 +119,10 @@ from argos.evaluation.technical_campaign import (
     TechnicalScenarioSpecV1,
     TechnicalScenarioStatus,
 )
+from argos.evaluation.technical_execution import (
+    FunctionalScenarioEvidenceV1,
+    assess_functional_scenario,
+)
 
 __all__ = [
     "DEFAULT_BIN_COUNT",
@@ -151,6 +155,7 @@ __all__ = [
     "EvidencePersistenceReceiptV1",
     "ForecastEvaluationV1",
     "ForecastEvaluationV2",
+    "FunctionalScenarioEvidenceV1",
     "HeadlineStatus",
     "LifecycleContinuityStatus",
     "LifecycleObservationV1",
@@ -187,6 +192,7 @@ __all__ = [
     "aggregate_prospective_experiment_v2",
     "aggregate_prospective_experiment_v3",
     "aggregate_prospective_terminal_experiment",
+    "assess_functional_scenario",
     "brier_score",
     "build_capture_rejection_evidence",
     "build_capture_run_summary",
