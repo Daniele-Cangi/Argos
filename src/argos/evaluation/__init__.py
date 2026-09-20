@@ -112,6 +112,13 @@ from argos.evaluation.scoring import (
     log_loss,
     score_forecast,
 )
+from argos.evaluation.technical_campaign import (
+    TechnicalCampaignV1,
+    TechnicalScenario,
+    TechnicalScenarioResultV1,
+    TechnicalScenarioSpecV1,
+    TechnicalScenarioStatus,
+)
 
 __all__ = [
     "DEFAULT_BIN_COUNT",
@@ -170,6 +177,11 @@ __all__ = [
     "StandaloneLastTradePolicy",
     "TargetAccountingStatus",
     "TargetTerminalDisposition",
+    "TechnicalCampaignV1",
+    "TechnicalScenario",
+    "TechnicalScenarioResultV1",
+    "TechnicalScenarioSpecV1",
+    "TechnicalScenarioStatus",
     "WithinTargetAggregation",
     "aggregate_prospective_experiment",
     "aggregate_prospective_experiment_v2",

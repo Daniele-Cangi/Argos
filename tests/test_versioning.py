@@ -172,6 +172,9 @@ def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
         "resolution_cutoff_evidence.v1": "ResolutionCutoffEvidenceV1",
         "run_manifest.v5": "RunManifest",
         "source_provenance.v1": "SourceProvenanceV1",
+        "technical_campaign.v1": "TechnicalCampaignV1",
+        "technical_scenario_result.v1": "TechnicalScenarioResultV1",
+        "technical_scenario_spec.v1": "TechnicalScenarioSpecV1",
         "ws_book_snapshot.v1": "WsBookSnapshotV1",
     }
 
