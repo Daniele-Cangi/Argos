@@ -15,6 +15,8 @@ Work top to bottom unless a milestone dependency requires reordering.
       replay commands, content-addresses its artifacts, and derives the result
       from durable counts, raw evidence, database immutability and two replay
       digests.
+- [x] Add a repository-tracked T2 stability executor with process-tree memory,
+      artifact growth and cadence samples under frozen resource bounds.
 - [ ] Execute the bounded T1-T8 matrix in
       `docs/research/m4-resilient-validation-plan.md` before freezing another
       live predictive campaign.

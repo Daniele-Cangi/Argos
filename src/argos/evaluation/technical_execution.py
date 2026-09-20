@@ -21,7 +21,13 @@ from argos.evaluation.technical_campaign import (
     TechnicalScenarioStatus,
 )
 
-__all__ = ["FunctionalScenarioEvidenceV1", "assess_functional_scenario"]
+__all__ = [
+    "FunctionalScenarioEvidenceV1",
+    "StabilityResourceSampleV1",
+    "StabilityScenarioEvidenceV1",
+    "assess_functional_scenario",
+    "assess_stability_scenario",
+]
 
 
 class FunctionalScenarioEvidenceV1(VersionedModel):
@@ -146,5 +152,145 @@ def assess_functional_scenario(evidence: FunctionalScenarioEvidenceV1) -> Techni
             "inspect the named artifacts and correct the failed invariant before rerunning T1"
             if reasons
             else None
+        ),
+    )
+
+
+class StabilityResourceSampleV1(VersionedModel):
+    """One ordered process-tree and artifact-size observation."""
+
+    schema_version: ClassVar[str] = "stability_resource_sample.v1"
+
+    ordinal: int = Field(ge=0)
+    observed_at: datetime
+    resident_memory_bytes: int = Field(ge=0)
+    artifact_bytes: int = Field(ge=0)
+
+    @field_validator("observed_at")
+    @classmethod
+    def _utc_time(cls, value: datetime) -> datetime:
+        return ensure_utc(value)
+
+
+class StabilityScenarioEvidenceV1(VersionedModel):
+    """Recorded T2 resource envelope and capture accounting."""
+
+    schema_version: ClassVar[str] = "stability_scenario_evidence.v1"
+
+    campaign_id: str = Field(min_length=1)
+    capture_run_id: str = Field(min_length=1)
+    started_at: datetime
+    ended_at: datetime
+    capture_completed: bool
+    capture_interrupted: bool
+    frames_consumed: int = Field(ge=0)
+    loop_counts: tuple[int, int, int]
+    store_counts: tuple[int, int, int]
+    raw_payload_count: int = Field(ge=0)
+    expected_sample_interval_seconds: int = Field(gt=0)
+    maximum_sample_gap_seconds: int = Field(gt=0)
+    maximum_resident_memory_bytes: int = Field(gt=0)
+    maximum_artifact_bytes: int = Field(gt=0)
+    samples: tuple[StabilityResourceSampleV1, ...]
+    artifact_identities: tuple[str, ...]
+
+    @field_validator("started_at", "ended_at")
+    @classmethod
+    def _utc_times(cls, value: datetime) -> datetime:
+        return ensure_utc(value)
+
+    @field_validator("loop_counts", "store_counts")
+    @classmethod
+    def _counts(cls, value: tuple[int, int, int]) -> tuple[int, int, int]:
+        if any(item < 0 for item in value):
+            raise ValueError("capture counts must not be negative")
+        return value
+
+    @field_validator("artifact_identities")
+    @classmethod
+    def _artifact_identities(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if not value or any(not item.strip() for item in value):
+            raise ValueError("T2 evidence requires nonblank artifact identities")
+        if len(value) != len(set(value)):
+            raise ValueError("artifact identities must be unique")
+        return value
+
+    @model_validator(mode="after")
+    def _ordered_timeline(self) -> StabilityScenarioEvidenceV1:
+        if self.ended_at < self.started_at:
+            raise ValueError("T2 end cannot precede its start")
+        if [item.ordinal for item in self.samples] != list(range(len(self.samples))):
+            raise ValueError("resource sample ordinals must be contiguous from zero")
+        observed = [item.observed_at for item in self.samples]
+        if observed != sorted(observed) or len(observed) != len(set(observed)):
+            raise ValueError("resource sample times must be strictly increasing")
+        if any(item < self.started_at or item > self.ended_at for item in observed):
+            raise ValueError("resource samples must lie inside the scenario timeline")
+        return self
+
+
+def assess_stability_scenario(evidence: StabilityScenarioEvidenceV1) -> TechnicalScenarioResultV1:
+    """Apply the frozen T2 accounting, cadence and resource bounds."""
+
+    reasons: list[str] = []
+    if not evidence.capture_completed:
+        reasons.append("capture run is not completed")
+    if evidence.capture_interrupted:
+        reasons.append("capture reports operator interruption")
+    if evidence.frames_consumed == 0:
+        reasons.append("capture consumed no frames")
+    if evidence.loop_counts[2] or evidence.store_counts[2]:
+        reasons.append("capture contains rejected observations")
+    if evidence.loop_counts != evidence.store_counts:
+        reasons.append("capture loop and durable store counts disagree")
+    if evidence.raw_payload_count == 0:
+        reasons.append("raw archive is empty")
+    if len(evidence.samples) < 2:
+        reasons.append("fewer than two resource samples were recorded")
+    gaps = (
+        [
+            (evidence.samples[0].observed_at - evidence.started_at).total_seconds(),
+            (evidence.ended_at - evidence.samples[-1].observed_at).total_seconds(),
+        ]
+        if evidence.samples
+        else []
+    )
+    gaps.extend(
+        [
+            (current.observed_at - previous.observed_at).total_seconds()
+            for previous, current in zip(evidence.samples, evidence.samples[1:], strict=False)
+        ]
+    )
+    if gaps and max(gaps) > evidence.maximum_sample_gap_seconds:
+        reasons.append("resource sampling cadence exceeded its declared maximum gap")
+    if any(
+        item.resident_memory_bytes > evidence.maximum_resident_memory_bytes
+        for item in evidence.samples
+    ):
+        reasons.append("resident memory exceeded its declared bound")
+    if any(item.artifact_bytes > evidence.maximum_artifact_bytes for item in evidence.samples):
+        reasons.append("artifact storage exceeded its declared bound")
+
+    status = TechnicalScenarioStatus.FAILED if reasons else TechnicalScenarioStatus.PASSED
+    return TechnicalScenarioResultV1(
+        campaign_id=evidence.campaign_id,
+        scenario=TechnicalScenario.STABILITY,
+        status=status,
+        started_at=evidence.started_at,
+        last_checkpoint_at=evidence.samples[-1].observed_at
+        if evidence.samples
+        else evidence.started_at,
+        ended_at=evidence.ended_at,
+        observed_frame_count=evidence.frames_consumed,
+        artifact_identities=evidence.artifact_identities,
+        observed_outcome=(
+            "bounded capture completed with complete accounting, sampled cadence and resource "
+            "usage inside the frozen memory and storage limits"
+            if not reasons
+            else None
+        ),
+        reason="; ".join(reasons) if reasons else None,
+        follow_up_action=(
+            "inspect the capture and resource samples before rerunning T2" if reasons else None
         ),
     )

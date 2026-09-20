@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import subprocess
 from pathlib import Path
@@ -50,3 +51,19 @@ def test_atomic_json_write_syncs_the_containing_directory(
     module._write_json(destination, {"value": 1})
     assert destination.read_text(encoding="utf-8") == '{\n  "value": 1\n}'
     assert synced == [tmp_path]
+
+
+def test_artifact_size_accounts_for_nested_files(tmp_path: Path) -> None:
+    module = _load_script()
+    (tmp_path / "one.bin").write_bytes(b"123")
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "two.bin").write_bytes(b"4567")
+    assert module._artifact_bytes(tmp_path) == 7
+
+
+def test_positive_integer_argument_rejects_zero() -> None:
+    module = _load_script()
+    assert module._positive_int("12") == 12
+    with pytest.raises(argparse.ArgumentTypeError, match="positive"):
+        module._positive_int("0")
