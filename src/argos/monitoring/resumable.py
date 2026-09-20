@@ -121,6 +121,8 @@ class ResumableMonitorCheckpointV1(VersionedModel):
             raise ValueError("nonempty checkpoint requires a complete receipt-chain head")
         if self.last_success_at is not None and self.updated_at < self.last_success_at:
             raise ValueError("checkpoint update cannot precede its last success")
+        if any(self.updated_at < gap.ended_at for gap in self.gaps):
+            raise ValueError("checkpoint update cannot precede a recorded gap")
         if any(gap.attempted_ordinal > self.next_ordinal for gap in self.gaps):
             raise ValueError("gap cannot refer to a future ordinal")
         return self
@@ -153,8 +155,8 @@ def checkpoint_after_poll(
     digest = commit.record_sha256.lower()
     if len(digest) != SHA256_LENGTH or not all(c in "0123456789abcdef" for c in digest):
         raise ValueError("poll commit record digest must be sha256 hexadecimal")
-    if checkpoint.last_success_at is not None and persisted_at < checkpoint.last_success_at:
-        raise ValueError("poll commit time regresses")
+    if persisted_at < checkpoint.updated_at:
+        raise ValueError("poll commit time regresses behind the checkpoint")
     return checkpoint.model_copy(
         update={
             "next_ordinal": checkpoint.next_ordinal + 1,
@@ -181,6 +183,8 @@ def checkpoint_after_failure(
         ended_at=ended_at,
         reason=reason,
     )
+    if gap.started_at < checkpoint.updated_at:
+        raise ValueError("failure gap regresses behind the checkpoint")
     return checkpoint.model_copy(
         update={"updated_at": gap.ended_at, "gaps": (*checkpoint.gaps, gap)}
     )

@@ -75,6 +75,17 @@ def test_checkpoint_refuses_a_broken_receipt_predecessor() -> None:
         )
 
 
+def test_poll_cannot_regress_behind_a_failure_checkpoint() -> None:
+    checkpoint = checkpoint_after_failure(
+        _checkpoint(),
+        started_at=NOW,
+        ended_at=NOW + timedelta(minutes=2),
+        reason="TimeoutError: injected",
+    )
+    with pytest.raises(ValueError, match="regresses behind the checkpoint"):
+        checkpoint_after_poll(checkpoint, _commit(checkpoint))
+
+
 def test_failure_is_explicit_and_does_not_consume_an_ordinal() -> None:
     checkpoint = _checkpoint()
     failed = checkpoint_after_failure(
@@ -85,6 +96,34 @@ def test_failure_is_explicit_and_does_not_consume_an_ordinal() -> None:
     )
     assert failed.next_ordinal == 0
     assert failed.gaps[0].attempted_ordinal == 0
+
+
+def test_failure_gap_cannot_regress_behind_checkpoint() -> None:
+    checkpoint = checkpoint_after_poll(_checkpoint(), _commit(_checkpoint()))
+    with pytest.raises(ValueError, match="failure gap regresses"):
+        checkpoint_after_failure(
+            checkpoint,
+            started_at=NOW,
+            ended_at=NOW + timedelta(seconds=30),
+            reason="injected",
+        )
+
+
+def test_checkpoint_record_cannot_hide_a_future_gap() -> None:
+    gap = checkpoint_after_failure(
+        _checkpoint(),
+        started_at=NOW,
+        ended_at=NOW + timedelta(seconds=5),
+        reason="injected",
+    ).gaps[0]
+    with pytest.raises(ValidationError, match="cannot precede a recorded gap"):
+        ResumableMonitorCheckpointV1(
+            campaign_id="campaign-v1",
+            configuration_sha256="a" * 64,
+            next_ordinal=0,
+            updated_at=NOW,
+            gaps=(gap,),
+        )
 
 
 def test_corrupt_partial_chain_head_is_rejected() -> None:

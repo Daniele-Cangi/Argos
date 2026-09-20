@@ -146,6 +146,8 @@ class TechnicalScenarioResultV1(VersionedModel):
                 raise ValueError("PASSED requires artifacts and an observed outcome")
             if self.reason is not None:
                 raise ValueError("PASSED cannot carry a failure reason")
+            if self.follow_up_action is not None:
+                raise ValueError("PASSED cannot carry a follow-up action")
         elif self.reason is None:
             raise ValueError("FAILED and INCOMPLETE require a reason")
         elif self.follow_up_action is None:

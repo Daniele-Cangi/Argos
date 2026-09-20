@@ -180,6 +180,7 @@ def test_foreign_campaign_result_is_rejected() -> None:
         ({"limitations": ("",)}, "limitations must not be blank"),
         ({"follow_up_action": " "}, "follow-up action must not be blank"),
         ({"reason": "unexpected"}, "PASSED cannot carry a failure reason"),
+        ({"follow_up_action": "do more"}, "PASSED cannot carry a follow-up action"),
         ({"started_at": None}, "requires start and checkpoint"),
         ({"last_checkpoint_at": NOW - timedelta(seconds=1)}, "cannot precede scenario start"),
         ({"ended_at": NOW - timedelta(seconds=1)}, "end cannot precede"),
