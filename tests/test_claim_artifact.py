@@ -18,10 +18,7 @@ from argos.evaluation.prospective import EvidencePersistenceReceiptV1
 
 PROOF_DIR = Path(__file__).resolve().parents[1] / "experiments" / "m4-pilot-20260819" / "proof"
 V8_PROOF_DIR = (
-    Path(__file__).resolve().parents[1]
-    / "experiments"
-    / "m4-prospective-20260917-v8"
-    / "proof"
+    Path(__file__).resolve().parents[1] / "experiments" / "m4-prospective-20260917-v8" / "proof"
 )
 
 
@@ -71,10 +68,7 @@ def test_v8_terminal_claim_is_complete_and_verifiable() -> None:
     )
     assert bundle.report.target_accounting_status.value == "TARGET_ACCOUNTING_COMPLETE"
     assert bundle.report.lifecycle_continuity_status.value == "LIFECYCLE_CONTINUITY_INCOMPLETE"
-    assert (
-        bundle.report.resolution_admissibility_status.value
-        == "NO_ADMISSIBLE_CUTOFF_OBSERVED"
-    )
+    assert bundle.report.resolution_admissibility_status.value == "NO_ADMISSIBLE_CUTOFF_OBSERVED"
     assert bundle.report.measurement_layer_verdict.value == "M4_BLOCKED"
     assert tuple(len(target.lifecycle_polls) for target in bundle.terminal_targets) == (
         554,
