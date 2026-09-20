@@ -131,10 +131,17 @@ sections below without deleting their audit trail.
       failed attempt, and keep persistent outages visible. Deterministic tests
       reproduce a one-shot DNS failure, retry exhaustion, transient 503 and
       non-retryable 404.
-- [ ] Prepare V7 only from a revision containing the bounded-retry correction,
-      with a newly frozen protocol, fresh targets and fresh captures. Retain
-      the 2/2 admissible-cutoff measurement requirement. No M5, RESON, AI
-      forecasting, UI, wallet, authentication or execution.
+- [x] Abort V7 at the owner's request before its observation window. It has no
+      captures or lifecycle observations and supplies no evidence to V8.
+- [x] Run and close the fresh V8 experiment without reusing predecessor
+      evidence. Both captures completed cleanly and each target retained 554
+      contiguous, receipt-bound lifecycle observations. The monitor failed
+      after the last polls near `20:55Z`, leaving an approximately 64-minute
+      unobserved tail before the frozen deadline. Publish the exact terminal
+      V4 bundle and receipt index with `TARGET_ACCOUNTING_COMPLETE`,
+      `LIFECYCLE_CONTINUITY_INCOMPLETE`, `NO_ADMISSIBLE_CUTOFF_OBSERVED`,
+      `M4_BLOCKED` and `CALIBRATION_NOT_EVALUABLE`; do not reinterpret V8 under
+      ADR-0019.
 
 ## Must close before M3 — from the M3 readiness audit (2026-08-17)
 

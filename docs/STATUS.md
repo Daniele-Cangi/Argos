@@ -24,6 +24,18 @@ requirements. M4 remains blocked while the versioned scenario-result boundary
 and resumable exclusive monitor are implemented and tested. No new live
 experiment is authorized by the documentation change alone.
 
+The repository-verifiable terminal claim is published at
+`experiments/m4-prospective-20260917-v8/proof/`. Its V4 bundle is 7,782,610
+bytes, has evidence digest
+`3a705b4a14735962b5d1035ad64d3aeaf8d9ac6a1583c179adb27b2fa8df2624`
+and exact SHA-256
+`58ef9cf1926880970ad3fb8324494aa7fd2758079971ec9f66eddef04191fefb`.
+The index carries persistence receipt
+`receipt-21166c4f9ca2ef6d6c762e5da7ee8e05`. Independent verification derives
+`TARGET_ACCOUNTING_COMPLETE`, `LIFECYCLE_CONTINUITY_INCOMPLETE`,
+`NO_ADMISSIBLE_CUTOFF_OBSERVED`, `M4_BLOCKED` and
+`CALIBRATION_NOT_EVALUABLE` from the committed bytes.
+
 ## 2026-08-22 V5 terminal experiment result
 
 The fresh experiment `m4-prospective-20260821-v5` is terminal at the frozen
