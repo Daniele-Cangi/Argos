@@ -4,9 +4,9 @@ Work top to bottom unless a milestone dependency requires reordering.
 
 ## ADR-0019 resilient validation campaign
 
-- [ ] Define a versioned technical-scenario result and aggregate that preserve
+- [x] Define a versioned technical-scenario result and aggregate that preserve
       `PASSED`, `FAILED`, `INCOMPLETE` and `NOT_RUN` independently.
-- [ ] Replace the external one-off monitor with a repository-tracked resumable
+- [x] Replace the external one-off monitor with a repository-tracked resumable
       monitor that enforces exclusive poll ownership and validates its last
       durable checkpoint before continuing.
 - [ ] Add deterministic network, process, storage and terminal-state fault

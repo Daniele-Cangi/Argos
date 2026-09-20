@@ -112,6 +112,7 @@ def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
         "argos.config",
         "argos.domain",
         "argos.evaluation",
+        "argos.monitoring",
         "argos.replay",
         "argos.resolution",
     ):
@@ -149,6 +150,7 @@ def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
         "market_baseline_forecast.v2": "MarketBaselineForecastV2",
         "market_audit.v1": "MarketAuditV1",
         "market_definition.v1": "MarketDefinitionV1",
+        "monitor_gap.v1": "MonitorGapV1",
         "last_trade_price.v1": "LastTradePriceV1",
         "lifecycle_observation.v1": "LifecycleObservationV1",
         "market_quote.v1": "MarketQuoteV1",
@@ -170,6 +172,7 @@ def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
         "replay_manifest.v1": "ReplayManifestV1",
         "resolution.v1": "ResolutionV1",
         "resolution_cutoff_evidence.v1": "ResolutionCutoffEvidenceV1",
+        "resumable_monitor_checkpoint.v1": "ResumableMonitorCheckpointV1",
         "run_manifest.v5": "RunManifest",
         "source_provenance.v1": "SourceProvenanceV1",
         "technical_campaign.v1": "TechnicalCampaignV1",
