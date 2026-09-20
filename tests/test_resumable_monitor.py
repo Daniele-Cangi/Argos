@@ -1,3 +1,4 @@
+import multiprocessing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -14,6 +15,13 @@ from argos.monitoring.resumable import (
 )
 
 NOW = datetime(2026, 9, 20, 12, tzinfo=UTC)
+
+
+def _hold_exclusive_lease(lock_path: str, ready: object) -> None:
+    with ExclusiveFileLease(Path(lock_path)):
+        ready.set()  # type: ignore[attr-defined]
+        while True:
+            ready.wait()  # type: ignore[attr-defined]
 
 
 def _checkpoint() -> ResumableMonitorCheckpointV1:
@@ -189,3 +197,28 @@ def test_corrupt_checkpoint_json_has_a_boundary_error(tmp_path: Path) -> None:
     monitor = ResumableMonitor(checkpoint_path, tmp_path / "monitor.lock")
     with pytest.raises(ValueError, match="checkpoint is not valid JSON"):
         monitor.load()
+
+
+def test_kernel_releases_lease_after_real_process_termination(tmp_path: Path) -> None:
+    lock_path = tmp_path / "monitor.lock"
+    checkpoint_path = tmp_path / "checkpoint.json"
+    monitor = ResumableMonitor(checkpoint_path, lock_path)
+    monitor.save(_checkpoint())
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    process = context.Process(target=_hold_exclusive_lease, args=(str(lock_path), ready))
+    process.start()
+    assert ready.wait(timeout=10)
+    process.terminate()
+    process.join(timeout=10)
+    assert not process.is_alive()
+    assert process.exitcode != 0
+    process.close()
+    with ExclusiveFileLease(lock_path):
+        pass
+    resumed = monitor.run_once(
+        poll=_commit,
+        failure_time=lambda: NOW,
+    )
+    assert resumed.next_ordinal == 1
+    assert resumed.last_receipt_id == "receipt-0"

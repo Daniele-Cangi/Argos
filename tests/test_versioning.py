@@ -132,6 +132,7 @@ def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
         "capture_rejection_evidence.v1": "CaptureRejectionEvidenceV1",
         "prospective_claim_artifact_index.v1": "ProspectiveClaimArtifactIndexV1",
         "compiled_market_contract.v1": "CompiledMarketContractV1",
+        "deterministic_fault_schedule.v1": "DeterministicFaultScheduleV1",
         "evaluation_decision.v1": "EvaluationDecisionV1",
         "evaluation_exclusion.v1": "EvaluationExclusionV1",
         "evaluation_policy.v1": "EvaluationPolicyV1",
