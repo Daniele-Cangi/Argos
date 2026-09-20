@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -189,3 +191,29 @@ def test_corrupt_checkpoint_json_has_a_boundary_error(tmp_path: Path) -> None:
     monitor = ResumableMonitor(checkpoint_path, tmp_path / "monitor.lock")
     with pytest.raises(ValueError, match="checkpoint is not valid JSON"):
         monitor.load()
+
+
+def test_kernel_releases_lease_after_real_process_termination(tmp_path: Path) -> None:
+    lock_path = tmp_path / "monitor.lock"
+    child_code = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from argos.monitoring.resumable import ExclusiveFileLease\n"
+        "with ExclusiveFileLease(Path(sys.argv[1])):\n"
+        " print('locked', flush=True)\n"
+        " sys.stdin.read()\n"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", child_code, str(lock_path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert process.stdout is not None
+    assert process.stdout.readline().strip() == "locked"
+    process.kill()
+    process.wait(timeout=10)
+    assert process.returncode != 0
+    with ExclusiveFileLease(lock_path):
+        pass

@@ -18,6 +18,7 @@ from argos.monitoring.resumable import (
     ResumableMonitorCheckpointV1,
     checkpoint_after_failure,
     checkpoint_after_poll,
+    write_atomic_checkpoint,
 )
 
 __all__ = [
@@ -36,4 +37,5 @@ __all__ = [
     "TerminalStateFixtureAdapter",
     "checkpoint_after_failure",
     "checkpoint_after_poll",
+    "write_atomic_checkpoint",
 ]

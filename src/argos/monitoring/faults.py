@@ -45,6 +45,8 @@ class InjectedNetworkLoss(InjectedFault):
 
 
 class InjectedProcessTermination(InjectedFault):
+    """Cooperative unit fixture; T5 crash proof must kill a real subprocess."""
+
     scenario = TechnicalScenario.PROCESS_INTERRUPTION
 
 

@@ -70,6 +70,19 @@ def _sync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def write_atomic_checkpoint(path: Path, raw: bytes) -> None:
+    """Persist checkpoint bytes without exposing a partially replaced head."""
+
+    temporary = path.with_suffix(path.suffix + ".partial")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with temporary.open("xb") as handle:
+        handle.write(raw)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+    _sync_directory(path.parent)
+
+
 class MonitorGapV1(VersionedModel):
     """An interval during which the owner could not persist a successful poll."""
 
@@ -242,12 +255,23 @@ class ExclusiveFileLease:
         self._handle = None
 
 
+class CheckpointWriter(Protocol):
+    def __call__(self, path: Path, raw: bytes) -> None: ...
+
+
 class ResumableMonitor:
     """Filesystem adapter that commits one poll or one explicit failure gap."""
 
-    def __init__(self, checkpoint_path: Path, lock_path: Path) -> None:
+    def __init__(
+        self,
+        checkpoint_path: Path,
+        lock_path: Path,
+        *,
+        checkpoint_writer: CheckpointWriter = write_atomic_checkpoint,
+    ) -> None:
         self._checkpoint_path = checkpoint_path
         self._lock_path = lock_path
+        self._checkpoint_writer = checkpoint_writer
 
     def load(self) -> ResumableMonitorCheckpointV1:
         try:
@@ -260,14 +284,7 @@ class ResumableMonitor:
 
     def save(self, checkpoint: ResumableMonitorCheckpointV1) -> None:
         raw = orjson.dumps(checkpoint.to_record(), option=orjson.OPT_SORT_KEYS)
-        temporary = self._checkpoint_path.with_suffix(self._checkpoint_path.suffix + ".partial")
-        self._checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-        with temporary.open("xb") as handle:
-            handle.write(raw)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, self._checkpoint_path)
-        _sync_directory(self._checkpoint_path.parent)
+        self._checkpoint_writer(self._checkpoint_path, raw)
 
     def run_once(
         self,

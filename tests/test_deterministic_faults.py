@@ -19,6 +19,7 @@ from argos.monitoring.resumable import (
     PollCommit,
     ResumableMonitor,
     ResumableMonitorCheckpointV1,
+    write_atomic_checkpoint,
 )
 
 NOW = datetime(2026, 9, 20, 12, tzinfo=UTC)
@@ -205,3 +206,49 @@ def test_monitor_records_gap_then_resumes_same_ordinal_after_fault(
     assert resumed.next_ordinal == 1
     assert resumed.last_receipt_id == "receipt-0"
     assert len(resumed.gaps) == 1
+
+
+def test_storage_refusal_at_checkpoint_boundary_preserves_durable_head(
+    tmp_path: Path,
+) -> None:
+    checkpoint_path = tmp_path / "checkpoint.json"
+    lock_path = tmp_path / "monitor.lock"
+    initial = ResumableMonitorCheckpointV1(
+        campaign_id="storage-campaign-v1",
+        configuration_sha256="a" * 64,
+        next_ordinal=0,
+        updated_at=NOW,
+    )
+    ResumableMonitor(checkpoint_path, lock_path).save(initial)
+    adapter = DeterministicFaultAdapter(
+        _fault_schedule(TechnicalScenario.STORAGE_INTERRUPTION, (0,))
+    )
+
+    def refusing_writer(path: Path, raw: bytes) -> None:
+        adapter.invoke(lambda: write_atomic_checkpoint(path, raw))
+
+    refusing_monitor = ResumableMonitor(
+        checkpoint_path,
+        lock_path,
+        checkpoint_writer=refusing_writer,
+    )
+
+    def poll(checkpoint: ResumableMonitorCheckpointV1) -> PollCommit:
+        return PollCommit(
+            ordinal=checkpoint.next_ordinal,
+            receipt_id="receipt-0",
+            record_sha256="b" * 64,
+            persisted_at=NOW + timedelta(seconds=1),
+            previous_receipt_id=checkpoint.last_receipt_id,
+        )
+
+    with pytest.raises(InjectedStorageRefusal):
+        refusing_monitor.run_once(poll=poll, failure_time=lambda: NOW)
+    assert ResumableMonitor(checkpoint_path, lock_path).load() == initial
+    assert not checkpoint_path.with_suffix(".json.partial").exists()
+
+    resumed = ResumableMonitor(checkpoint_path, lock_path).run_once(
+        poll=poll,
+        failure_time=lambda: NOW,
+    )
+    assert resumed.next_ordinal == 1
