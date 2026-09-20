@@ -29,6 +29,11 @@ __all__ = [
     "assess_stability_scenario",
 ]
 
+T2_EXPECTED_SAMPLE_INTERVAL_SECONDS = 60
+T2_MAXIMUM_SAMPLE_GAP_SECONDS = 120
+T2_MAXIMUM_RESIDENT_MEMORY_BYTES = 536_870_912
+T2_MAXIMUM_ARTIFACT_BYTES = 2_147_483_648
+
 
 class FunctionalScenarioEvidenceV1(VersionedModel):
     """Recorded facts needed to decide T1 without reopening its artifacts."""
@@ -191,6 +196,7 @@ class StabilityScenarioEvidenceV1(VersionedModel):
     maximum_sample_gap_seconds: int = Field(gt=0)
     maximum_resident_memory_bytes: int = Field(gt=0)
     maximum_artifact_bytes: int = Field(gt=0)
+    sampling_errors: tuple[str, ...] = ()
     samples: tuple[StabilityResourceSampleV1, ...]
     artifact_identities: tuple[str, ...]
 
@@ -215,8 +221,28 @@ class StabilityScenarioEvidenceV1(VersionedModel):
             raise ValueError("artifact identities must be unique")
         return value
 
+    @field_validator("sampling_errors")
+    @classmethod
+    def _sampling_errors(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not item.strip() for item in value):
+            raise ValueError("sampling errors must not be blank")
+        return value
+
     @model_validator(mode="after")
     def _ordered_timeline(self) -> StabilityScenarioEvidenceV1:
+        frozen = (
+            self.expected_sample_interval_seconds,
+            self.maximum_sample_gap_seconds,
+            self.maximum_resident_memory_bytes,
+            self.maximum_artifact_bytes,
+        )
+        if frozen != (
+            T2_EXPECTED_SAMPLE_INTERVAL_SECONDS,
+            T2_MAXIMUM_SAMPLE_GAP_SECONDS,
+            T2_MAXIMUM_RESIDENT_MEMORY_BYTES,
+            T2_MAXIMUM_ARTIFACT_BYTES,
+        ):
+            raise ValueError("T2 cadence and resource bounds must match the frozen protocol")
         if self.ended_at < self.started_at:
             raise ValueError("T2 end cannot precede its start")
         if [item.ordinal for item in self.samples] != list(range(len(self.samples))):
@@ -247,6 +273,8 @@ def assess_stability_scenario(evidence: StabilityScenarioEvidenceV1) -> Technica
         reasons.append("raw archive is empty")
     if len(evidence.samples) < 2:
         reasons.append("fewer than two resource samples were recorded")
+    if evidence.sampling_errors:
+        reasons.append("resource sampling reported errors: " + "; ".join(evidence.sampling_errors))
     gaps = (
         [
             (evidence.samples[0].observed_at - evidence.started_at).total_seconds(),

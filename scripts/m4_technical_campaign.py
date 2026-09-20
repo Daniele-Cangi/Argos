@@ -14,6 +14,10 @@ import orjson
 import psutil
 
 from argos.evaluation.technical_execution import (
+    T2_EXPECTED_SAMPLE_INTERVAL_SECONDS,
+    T2_MAXIMUM_ARTIFACT_BYTES,
+    T2_MAXIMUM_RESIDENT_MEMORY_BYTES,
+    T2_MAXIMUM_SAMPLE_GAP_SECONDS,
     FunctionalScenarioEvidenceV1,
     StabilityResourceSampleV1,
     StabilityScenarioEvidenceV1,
@@ -108,7 +112,7 @@ def _tree_resident_bytes(pid: int) -> int:
     for member in processes:
         try:
             total += member.memory_info().rss
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except psutil.NoSuchProcess:
             continue
     return total
 
@@ -273,6 +277,7 @@ def run_t2(args: argparse.Namespace) -> int:
     stdout_path = output / "capture.stdout.json"
     stderr_path = output / "capture.stderr.log"
     samples: list[StabilityResourceSampleV1] = []
+    sampling_errors: list[str] = []
     with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
         process = subprocess.Popen(
             _capture_command(args, run_id, db_path), cwd=root, stdout=stdout, stderr=stderr
@@ -283,6 +288,9 @@ def run_t2(args: argparse.Namespace) -> int:
                 resident = _tree_resident_bytes(process.pid)
             except psutil.NoSuchProcess:
                 resident = 0
+            except psutil.AccessDenied as error:
+                resident = 0
+                sampling_errors.append(f"AccessDenied: {error}")
             samples.append(
                 StabilityResourceSampleV1(
                     ordinal=len(samples),
@@ -376,6 +384,7 @@ def run_t2(args: argparse.Namespace) -> int:
         maximum_sample_gap_seconds=args.max_sample_gap,
         maximum_resident_memory_bytes=args.max_rss_bytes,
         maximum_artifact_bytes=args.max_artifact_bytes,
+        sampling_errors=tuple(sampling_errors),
         samples=tuple(samples),
         artifact_identities=tuple(_identity(path, output) for path in artifact_paths),
     )
@@ -402,13 +411,15 @@ def main() -> int:
     t2.add_argument("--token-id", action="append", required=True)
     t2.add_argument("--output", required=True)
     t2.add_argument("--repository", default=".")
-    t2.add_argument("--max-seconds", type=_positive_int, default=7_200)
-    t2.add_argument("--max-frames", type=_positive_int, default=100_000)
-    t2.add_argument("--sample-interval", type=_positive_int, default=60)
-    t2.add_argument("--max-sample-gap", type=_positive_int, default=120)
-    t2.add_argument("--max-rss-bytes", type=_positive_int, default=536_870_912)
-    t2.add_argument("--max-artifact-bytes", type=_positive_int, default=2_147_483_648)
-    t2.set_defaults(handler=run_t2)
+    t2.set_defaults(
+        handler=run_t2,
+        max_seconds=7_200,
+        max_frames=100_000,
+        sample_interval=T2_EXPECTED_SAMPLE_INTERVAL_SECONDS,
+        max_sample_gap=T2_MAXIMUM_SAMPLE_GAP_SECONDS,
+        max_rss_bytes=T2_MAXIMUM_RESIDENT_MEMORY_BYTES,
+        max_artifact_bytes=T2_MAXIMUM_ARTIFACT_BYTES,
+    )
     args = parser.parse_args()
     if len(args.token_id) != 2 or len(set(args.token_id)) != 2:
         parser.error(f"{args.command} requires exactly two distinct --token-id values")

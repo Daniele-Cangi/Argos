@@ -5,6 +5,10 @@ from pydantic import ValidationError
 
 from argos.evaluation.technical_campaign import TechnicalScenarioStatus
 from argos.evaluation.technical_execution import (
+    T2_EXPECTED_SAMPLE_INTERVAL_SECONDS,
+    T2_MAXIMUM_ARTIFACT_BYTES,
+    T2_MAXIMUM_RESIDENT_MEMORY_BYTES,
+    T2_MAXIMUM_SAMPLE_GAP_SECONDS,
     StabilityResourceSampleV1,
     StabilityScenarioEvidenceV1,
     assess_stability_scenario,
@@ -34,10 +38,10 @@ def _evidence(**overrides: object) -> StabilityScenarioEvidenceV1:
         "loop_counts": (8, 0, 0),
         "store_counts": (8, 0, 0),
         "raw_payload_count": 4,
-        "expected_sample_interval_seconds": 60,
-        "maximum_sample_gap_seconds": 120,
-        "maximum_resident_memory_bytes": 1_000,
-        "maximum_artifact_bytes": 2_000,
+        "expected_sample_interval_seconds": T2_EXPECTED_SAMPLE_INTERVAL_SECONDS,
+        "maximum_sample_gap_seconds": T2_MAXIMUM_SAMPLE_GAP_SECONDS,
+        "maximum_resident_memory_bytes": T2_MAXIMUM_RESIDENT_MEMORY_BYTES,
+        "maximum_artifact_bytes": T2_MAXIMUM_ARTIFACT_BYTES,
         "samples": (_sample(0), _sample(1), _sample(2)),
         "artifact_identities": ("sha256:abc:resource-samples.json",),
     }
@@ -69,8 +73,15 @@ def test_t2_passes_with_complete_accounting_cadence_and_bounded_resources() -> N
             },
             "cadence",
         ),
-        ({"samples": (_sample(0), _sample(1, rss=1_001))}, "memory"),
-        ({"samples": (_sample(0), _sample(1, disk=2_001))}, "storage"),
+        (
+            {"samples": (_sample(0), _sample(1, rss=T2_MAXIMUM_RESIDENT_MEMORY_BYTES + 1))},
+            "memory",
+        ),
+        (
+            {"samples": (_sample(0), _sample(1, disk=T2_MAXIMUM_ARTIFACT_BYTES + 1))},
+            "storage",
+        ),
+        ({"sampling_errors": ("AccessDenied: pid=1",)}, "sampling reported errors"),
     ],
 )
 def test_t2_preserves_each_failed_invariant(overrides: dict[str, object], reason: str) -> None:
@@ -84,3 +95,10 @@ def test_t2_refuses_noncontiguous_or_out_of_order_samples() -> None:
         _evidence(samples=(_sample(0), _sample(2)))
     with pytest.raises(ValidationError):
         _evidence(samples=(_sample(0), _sample(1, seconds=0)))
+
+
+def test_t2_refuses_weakened_frozen_bounds() -> None:
+    with pytest.raises(ValidationError, match="frozen protocol"):
+        _evidence(maximum_sample_gap_seconds=600)
+    with pytest.raises(ValidationError, match="frozen protocol"):
+        _evidence(maximum_resident_memory_bytes=T2_MAXIMUM_RESIDENT_MEMORY_BYTES * 2)
