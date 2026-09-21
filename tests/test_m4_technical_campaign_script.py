@@ -160,13 +160,15 @@ def test_run_t3_materializes_and_reloads_a_terminal_checkpoint(
 ) -> None:
     module = _load_script()
     output = tmp_path / "t3"
+    capture_commands: list[list[str]] = []
 
     class FakeProcess:
         pid = 42
         args = ("fake-capture",)
 
         def __init__(self, command, *, cwd, stdout, stderr):
-            del command, cwd, stderr
+            capture_commands.append(command)
+            del cwd, stderr
             (output / "events.sqlite3").write_bytes(b"sqlite-evidence")
             manifest = output / "campaign-t3.manifest.json"
             manifest.write_bytes(b"{}")
@@ -216,6 +218,7 @@ def test_run_t3_materializes_and_reloads_a_terminal_checkpoint(
         campaign_id="campaign",
         token_id=["1", "2"],
         max_seconds=module.T3_MAXIMUM_DURATION_SECONDS,
+        capture_seconds=module.T3_CAPTURE_DURATION_SECONDS,
         max_frames=module.T3_MAXIMUM_FRAME_COUNT,
         checkpoint_interval=module.T3_EXPECTED_CHECKPOINT_INTERVAL_SECONDS,
         max_checkpoint_gap=module.T3_MAXIMUM_CHECKPOINT_GAP_SECONDS,
@@ -231,6 +234,11 @@ def test_run_t3_materializes_and_reloads_a_terminal_checkpoint(
     assert evidence["terminal_resume_verified"] is True
     assert [item["state"] for item in evidence["checkpoints"]] == ["RUNNING", "COMPLETED"]
     assert len(index["checkpoints"]) == 2
+    configuration = module.orjson.loads((output / "configuration.json").read_bytes())
+    assert configuration["maximum_duration_seconds"] == 21_600
+    assert configuration["capture_duration_seconds"] == 21_540
+    max_seconds_index = capture_commands[0].index("--max-seconds")
+    assert capture_commands[0][max_seconds_index + 1] == "21540"
 
 
 def test_run_t3_refuses_modified_frozen_bounds(tmp_path: Path) -> None:
@@ -241,12 +249,17 @@ def test_run_t3_refuses_modified_frozen_bounds(tmp_path: Path) -> None:
         campaign_id="campaign",
         token_id=["1", "2"],
         max_seconds=60,
+        capture_seconds=module.T3_CAPTURE_DURATION_SECONDS,
         max_frames=module.T3_MAXIMUM_FRAME_COUNT,
         checkpoint_interval=module.T3_EXPECTED_CHECKPOINT_INTERVAL_SECONDS,
         max_checkpoint_gap=module.T3_MAXIMUM_CHECKPOINT_GAP_SECONDS,
         max_rss_bytes=module.T3_MAXIMUM_RESIDENT_MEMORY_BYTES,
         max_artifact_bytes=module.T3_MAXIMUM_ARTIFACT_BYTES,
     )
+    with pytest.raises(ValueError, match="frozen protocol"):
+        module.run_t3(args)
+    args.max_seconds = module.T3_MAXIMUM_DURATION_SECONDS
+    args.capture_seconds -= 1
     with pytest.raises(ValueError, match="frozen protocol"):
         module.run_t3(args)
 

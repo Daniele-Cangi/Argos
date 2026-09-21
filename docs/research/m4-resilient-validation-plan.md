@@ -31,6 +31,11 @@ asynchronous research cohort and is never inferred from technical passage.
 Live network access is unnecessary for T4–T7. Faults use deterministic adapters
 or recorded fixtures; tests never wait on real outages or settlements.
 
+T3's six-hour bound covers the complete runner timeline, including durable
+terminal materialization. The live capture budget is therefore 21,540 seconds,
+reserving 60 seconds for orderly shutdown and terminal checkpoint persistence;
+the assessor still rejects any total runner duration above 21,600 seconds.
+
 ## Scenario result contract
 
 Each scenario must eventually emit a versioned result containing:
