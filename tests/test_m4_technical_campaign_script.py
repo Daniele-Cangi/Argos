@@ -227,7 +227,8 @@ def test_run_t3_materializes_and_reloads_a_terminal_checkpoint(
     evidence = module.orjson.loads((output / "t3-evidence.json").read_bytes())
     index = module.orjson.loads((output / "checkpoint-index.json").read_bytes())
     assert result["status"] == "PASSED"
-    assert evidence["terminal_checkpoint_reloaded"] is True
+    assert evidence["persisted_checkpoint_chain_reloaded"] is True
+    assert evidence["terminal_resume_verified"] is True
     assert [item["state"] for item in evidence["checkpoints"]] == ["RUNNING", "COMPLETED"]
     assert len(index["checkpoints"]) == 2
 
@@ -248,3 +249,35 @@ def test_run_t3_refuses_modified_frozen_bounds(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="frozen protocol"):
         module.run_t3(args)
+
+
+def test_t3_reload_refuses_missing_or_unexpected_checkpoint_files(tmp_path: Path) -> None:
+    module = _load_script()
+    checkpoint = module.EnduranceCheckpointV1(
+        ordinal=0,
+        observed_at=module.datetime.now(module.UTC),
+        state="COMPLETED",
+        resident_memory_bytes=0,
+        artifact_bytes=0,
+    )
+    module._write_json(tmp_path / "000000.json", checkpoint.to_record())
+    assert module._reload_endurance_checkpoints(tmp_path, 1) == (checkpoint,)
+    (tmp_path / "unexpected.json").write_bytes(b"{}")
+    with pytest.raises(ValueError, match="incomplete or unexpected"):
+        module._reload_endurance_checkpoints(tmp_path, 1)
+
+
+def test_t3_terminal_resume_probe_rejects_nonterminal_or_duplicate_state() -> None:
+    module = _load_script()
+    running = module.EnduranceCheckpointV1(
+        ordinal=0,
+        observed_at=module.datetime.now(module.UTC),
+        state="RUNNING",
+        resident_memory_bytes=0,
+        artifact_bytes=0,
+    )
+    assert module._probe_terminal_resume(()) is False
+    assert module._probe_terminal_resume((running,)) is False
+    terminal = running.model_copy(update={"state": "COMPLETED"})
+    assert module._probe_terminal_resume((terminal,)) is True
+    assert module._probe_terminal_resume((terminal, terminal)) is False

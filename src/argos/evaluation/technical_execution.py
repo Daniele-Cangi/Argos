@@ -401,13 +401,16 @@ class EnduranceScenarioEvidenceV1(VersionedModel):
     loop_counts: tuple[int, int, int]
     store_counts: tuple[int, int, int]
     raw_payload_count: int = Field(ge=0)
+    maximum_duration_seconds: int = Field(gt=0)
+    maximum_frame_count: int = Field(gt=0)
     expected_checkpoint_interval_seconds: int = Field(gt=0)
     maximum_checkpoint_gap_seconds: int = Field(gt=0)
     maximum_resident_memory_bytes: int = Field(gt=0)
     maximum_artifact_bytes: int = Field(gt=0)
     checkpoint_errors: tuple[str, ...] = ()
     checkpoints: tuple[EnduranceCheckpointV1, ...]
-    terminal_checkpoint_reloaded: bool
+    persisted_checkpoint_chain_reloaded: bool
+    terminal_resume_verified: bool
     artifact_identities: tuple[str, ...]
 
     @field_validator("started_at", "ended_at")
@@ -418,12 +421,16 @@ class EnduranceScenarioEvidenceV1(VersionedModel):
     @model_validator(mode="after")
     def _chain_and_protocol(self) -> EnduranceScenarioEvidenceV1:
         frozen = (
+            self.maximum_duration_seconds,
+            self.maximum_frame_count,
             self.expected_checkpoint_interval_seconds,
             self.maximum_checkpoint_gap_seconds,
             self.maximum_resident_memory_bytes,
             self.maximum_artifact_bytes,
         )
         if frozen != (
+            T3_MAXIMUM_DURATION_SECONDS,
+            T3_MAXIMUM_FRAME_COUNT,
             T3_EXPECTED_CHECKPOINT_INTERVAL_SECONDS,
             T3_MAXIMUM_CHECKPOINT_GAP_SECONDS,
             T3_MAXIMUM_RESIDENT_MEMORY_BYTES,
@@ -465,6 +472,12 @@ def assess_endurance_scenario(evidence: EnduranceScenarioEvidenceV1) -> Technica
         reasons.append("capture reports operator interruption")
     if evidence.frames_consumed == 0:
         reasons.append("capture consumed no frames")
+    if evidence.frames_consumed > evidence.maximum_frame_count:
+        reasons.append("capture exceeded its declared frame-count bound")
+    if (
+        evidence.ended_at - evidence.started_at
+    ).total_seconds() > evidence.maximum_duration_seconds:
+        reasons.append("capture exceeded its declared duration bound")
     if evidence.loop_counts[2] or evidence.store_counts[2]:
         reasons.append("capture contains rejected observations")
     if evidence.decode_failures:
@@ -479,8 +492,10 @@ def assess_endurance_scenario(evidence: EnduranceScenarioEvidenceV1) -> Technica
         reasons.append("fewer than two checkpoints were recorded")
     elif evidence.checkpoints[-1].state != "COMPLETED":
         reasons.append("checkpoint chain has no terminal checkpoint")
-    if not evidence.terminal_checkpoint_reloaded:
-        reasons.append("terminal checkpoint was not reloadable")
+    if not evidence.persisted_checkpoint_chain_reloaded:
+        reasons.append("persisted checkpoint chain was not reloadable")
+    if not evidence.terminal_resume_verified:
+        reasons.append("terminal state did not pass the deterministic resume probe")
     if evidence.checkpoint_errors:
         reasons.append("checkpointing reported errors: " + "; ".join(evidence.checkpoint_errors))
     gaps = []

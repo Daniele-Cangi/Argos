@@ -442,6 +442,30 @@ def _write_endurance_checkpoint(
     return checkpoint
 
 
+def _reload_endurance_checkpoints(
+    directory: Path, expected_count: int
+) -> tuple[EnduranceCheckpointV1, ...]:
+    paths = sorted(directory.glob("*.json"))
+    expected_names = [f"{ordinal:06d}.json" for ordinal in range(expected_count)]
+    if [path.name for path in paths] != expected_names:
+        raise ValueError("persisted checkpoint files are incomplete or unexpected")
+    return tuple(
+        EnduranceCheckpointV1.from_record(orjson.loads(path.read_bytes())) for path in paths
+    )
+
+
+def _probe_terminal_resume(checkpoints: tuple[EnduranceCheckpointV1, ...]) -> bool:
+    """Verify a fresh owner derives one unambiguous next position without writing it."""
+
+    if not checkpoints or checkpoints[-1].state != "COMPLETED":
+        return False
+    identities = tuple(item.checkpoint_sha256 for item in checkpoints)
+    if len(identities) != len(set(identities)):
+        return False
+    next_ordinal = checkpoints[-1].ordinal + 1
+    return next_ordinal == len(checkpoints) and bool(identities[-1])
+
+
 def run_t3(args: argparse.Namespace) -> int:
     """Run the frozen six-hour endurance capture with durable checkpoints."""
 
@@ -525,7 +549,7 @@ def run_t3(args: argparse.Namespace) -> int:
         final_resident = 0
         checkpoint_errors.append(f"AccessDenied: {error}")
     capture_ended_at = datetime.now(UTC)
-    terminal = _write_endurance_checkpoint(
+    _write_endurance_checkpoint(
         checkpoint_dir,
         checkpoints,
         observed_at=capture_ended_at,
@@ -533,9 +557,9 @@ def run_t3(args: argparse.Namespace) -> int:
         resident_memory_bytes=final_resident,
         artifact_bytes=_artifact_bytes(output),
     )
-    terminal_path = checkpoint_dir / f"{terminal.ordinal:06d}.json"
-    terminal_reloaded = EnduranceCheckpointV1.from_record(orjson.loads(terminal_path.read_bytes()))
-    terminal_checkpoint_reloaded = terminal_reloaded == terminal
+    persisted_checkpoints = _reload_endurance_checkpoints(checkpoint_dir, len(checkpoints))
+    persisted_checkpoint_chain_reloaded = persisted_checkpoints == tuple(checkpoints)
+    terminal_resume_verified = _probe_terminal_resume(persisted_checkpoints)
     if return_code not in (0, 130):
         raise subprocess.CalledProcessError(return_code, process.args)
     capture = orjson.loads(stdout_path.read_bytes())
@@ -570,14 +594,14 @@ def run_t3(args: argparse.Namespace) -> int:
         checkpoint_index_path,
         {
             "schema_version": "endurance_checkpoint_index.v1",
-            "terminal_checkpoint_sha256": terminal.checkpoint_sha256,
+            "terminal_checkpoint_sha256": persisted_checkpoints[-1].checkpoint_sha256,
             "checkpoints": [
                 {
                     "ordinal": item.ordinal,
                     "path": f"checkpoints/{item.ordinal:06d}.json",
                     "sha256": item.checkpoint_sha256,
                 }
-                for item in checkpoints
+                for item in persisted_checkpoints
             ],
         },
     )
@@ -613,13 +637,16 @@ def run_t3(args: argparse.Namespace) -> int:
             int(counts.get("rejected", 0)),
         ),
         raw_payload_count=len(raw_payloads),
+        maximum_duration_seconds=args.max_seconds,
+        maximum_frame_count=args.max_frames,
         expected_checkpoint_interval_seconds=args.checkpoint_interval,
         maximum_checkpoint_gap_seconds=args.max_checkpoint_gap,
         maximum_resident_memory_bytes=args.max_rss_bytes,
         maximum_artifact_bytes=args.max_artifact_bytes,
         checkpoint_errors=tuple(checkpoint_errors),
-        checkpoints=tuple(checkpoints),
-        terminal_checkpoint_reloaded=terminal_checkpoint_reloaded,
+        checkpoints=persisted_checkpoints,
+        persisted_checkpoint_chain_reloaded=persisted_checkpoint_chain_reloaded,
+        terminal_resume_verified=terminal_resume_verified,
         artifact_identities=tuple(_identity(path, output) for path in artifact_paths),
     )
     _write_json(output / "t3-evidence.json", evidence.to_record())

@@ -50,12 +50,15 @@ def _evidence(**overrides: object) -> EnduranceScenarioEvidenceV1:
         "loop_counts": (20, 0, 0),
         "store_counts": (20, 0, 0),
         "raw_payload_count": 10,
+        "maximum_duration_seconds": 21_600,
+        "maximum_frame_count": 300_000,
         "expected_checkpoint_interval_seconds": T3_EXPECTED_CHECKPOINT_INTERVAL_SECONDS,
         "maximum_checkpoint_gap_seconds": T3_MAXIMUM_CHECKPOINT_GAP_SECONDS,
         "maximum_resident_memory_bytes": T3_MAXIMUM_RESIDENT_MEMORY_BYTES,
         "maximum_artifact_bytes": T3_MAXIMUM_ARTIFACT_BYTES,
         "checkpoints": _checkpoints(),
-        "terminal_checkpoint_reloaded": True,
+        "persisted_checkpoint_chain_reloaded": True,
+        "terminal_resume_verified": True,
         "artifact_identities": ("sha256:abc:checkpoint-index.json",),
     }
     values.update(overrides)
@@ -77,7 +80,8 @@ def test_t3_passes_with_intact_chain_and_reloadable_terminal_state() -> None:
         ({"loop_counts": (19, 0, 1), "store_counts": (19, 0, 1)}, "rejected"),
         ({"store_counts": (19, 1, 0)}, "counts disagree"),
         ({"raw_payload_count": 0}, "raw archive is empty"),
-        ({"terminal_checkpoint_reloaded": False}, "not reloadable"),
+        ({"persisted_checkpoint_chain_reloaded": False}, "not reloadable"),
+        ({"terminal_resume_verified": False}, "resume probe"),
         ({"checkpoint_errors": ("AccessDenied",)}, "reported errors"),
         ({"decode_failures": 1}, "decode failures"),
         ({"unknown_event_type": 1}, "unknown event types"),
@@ -101,6 +105,8 @@ def test_t3_refuses_weakened_frozen_bounds() -> None:
         _evidence(maximum_checkpoint_gap_seconds=900)
     with pytest.raises(ValidationError, match="frozen protocol"):
         _evidence(maximum_artifact_bytes=T3_MAXIMUM_ARTIFACT_BYTES * 2)
+    with pytest.raises(ValidationError, match="frozen protocol"):
+        _evidence(maximum_duration_seconds=21_601)
 
 
 def test_t3_rejects_invalid_checkpoint_fields() -> None:
@@ -174,6 +180,15 @@ def test_t3_reports_checkpoint_cadence_and_resource_failures() -> None:
     high_storage = terminal.model_copy(update={"artifact_bytes": T3_MAXIMUM_ARTIFACT_BYTES + 1})
     result = assess_endurance_scenario(_evidence(checkpoints=(first, high_storage)))
     assert "storage" in (result.reason or "")
+
+
+def test_t3_assessor_enforces_duration_and_frame_bounds() -> None:
+    result = assess_endurance_scenario(_evidence(frames_consumed=300_001))
+    assert "frame-count" in (result.reason or "")
+    result = assess_endurance_scenario(
+        _evidence(ended_at=NOW + timedelta(seconds=21_601), checkpoints=())
+    )
+    assert "duration" in (result.reason or "")
 
 
 def test_t3_reports_an_empty_checkpoint_set_without_crashing() -> None:
