@@ -7,6 +7,7 @@ without a network, clock, subprocess, or ambient filesystem.
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 from typing import ClassVar
 
@@ -22,9 +23,12 @@ from argos.evaluation.technical_campaign import (
 )
 
 __all__ = [
+    "EnduranceCheckpointV1",
+    "EnduranceScenarioEvidenceV1",
     "FunctionalScenarioEvidenceV1",
     "StabilityResourceSampleV1",
     "StabilityScenarioEvidenceV1",
+    "assess_endurance_scenario",
     "assess_functional_scenario",
     "assess_stability_scenario",
 ]
@@ -33,6 +37,12 @@ T2_EXPECTED_SAMPLE_INTERVAL_SECONDS = 60
 T2_MAXIMUM_SAMPLE_GAP_SECONDS = 120
 T2_MAXIMUM_RESIDENT_MEMORY_BYTES = 536_870_912
 T2_MAXIMUM_ARTIFACT_BYTES = 2_147_483_648
+T3_EXPECTED_CHECKPOINT_INTERVAL_SECONDS = 300
+T3_MAXIMUM_CHECKPOINT_GAP_SECONDS = 600
+T3_MAXIMUM_RESIDENT_MEMORY_BYTES = 536_870_912
+T3_MAXIMUM_ARTIFACT_BYTES = 4_294_967_296
+T3_MAXIMUM_DURATION_SECONDS = 21_600
+T3_MAXIMUM_FRAME_COUNT = 300_000
 
 
 class FunctionalScenarioEvidenceV1(VersionedModel):
@@ -328,5 +338,208 @@ def assess_stability_scenario(evidence: StabilityScenarioEvidenceV1) -> Technica
         reason="; ".join(reasons) if reasons else None,
         follow_up_action=(
             "inspect the capture and resource samples before rerunning T2" if reasons else None
+        ),
+    )
+
+
+class EnduranceCheckpointV1(VersionedModel):
+    """One immutable, hash-linked T3 checkpoint."""
+
+    schema_version: ClassVar[str] = "endurance_checkpoint.v1"
+
+    ordinal: int = Field(ge=0)
+    observed_at: datetime
+    state: str
+    resident_memory_bytes: int = Field(ge=0)
+    artifact_bytes: int = Field(ge=0)
+    previous_checkpoint_sha256: str | None = None
+
+    @field_validator("observed_at")
+    @classmethod
+    def _utc_time(cls, value: datetime) -> datetime:
+        return ensure_utc(value)
+
+    @field_validator("state")
+    @classmethod
+    def _state(cls, value: str) -> str:
+        if value not in {"RUNNING", "COMPLETED"}:
+            raise ValueError("checkpoint state must be RUNNING or COMPLETED")
+        return value
+
+    @field_validator("previous_checkpoint_sha256")
+    @classmethod
+    def _previous_hash(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        lowered = value.lower()
+        if len(lowered) != SHA256_LENGTH or any(c not in "0123456789abcdef" for c in lowered):
+            raise ValueError("previous checkpoint identity must be a sha256")
+        return lowered
+
+    @property
+    def checkpoint_sha256(self) -> str:
+        import orjson
+
+        raw = orjson.dumps(self.to_record(), option=orjson.OPT_SORT_KEYS)
+        return hashlib.sha256(raw).hexdigest()
+
+
+class EnduranceScenarioEvidenceV1(VersionedModel):
+    """Recorded T3 checkpoint chain, resource envelope and final accounting."""
+
+    schema_version: ClassVar[str] = "endurance_scenario_evidence.v1"
+
+    campaign_id: str = Field(min_length=1)
+    capture_run_id: str = Field(min_length=1)
+    started_at: datetime
+    ended_at: datetime
+    capture_completed: bool
+    capture_interrupted: bool
+    frames_consumed: int = Field(ge=0)
+    decode_failures: int = Field(ge=0)
+    unknown_event_type: int = Field(ge=0)
+    loop_counts: tuple[int, int, int]
+    store_counts: tuple[int, int, int]
+    raw_payload_count: int = Field(ge=0)
+    maximum_duration_seconds: int = Field(gt=0)
+    maximum_frame_count: int = Field(gt=0)
+    expected_checkpoint_interval_seconds: int = Field(gt=0)
+    maximum_checkpoint_gap_seconds: int = Field(gt=0)
+    maximum_resident_memory_bytes: int = Field(gt=0)
+    maximum_artifact_bytes: int = Field(gt=0)
+    checkpoint_errors: tuple[str, ...] = ()
+    checkpoints: tuple[EnduranceCheckpointV1, ...]
+    persisted_checkpoint_chain_reloaded: bool
+    terminal_resume_verified: bool
+    artifact_identities: tuple[str, ...]
+
+    @field_validator("started_at", "ended_at")
+    @classmethod
+    def _utc_times(cls, value: datetime) -> datetime:
+        return ensure_utc(value)
+
+    @model_validator(mode="after")
+    def _chain_and_protocol(self) -> EnduranceScenarioEvidenceV1:
+        frozen = (
+            self.maximum_duration_seconds,
+            self.maximum_frame_count,
+            self.expected_checkpoint_interval_seconds,
+            self.maximum_checkpoint_gap_seconds,
+            self.maximum_resident_memory_bytes,
+            self.maximum_artifact_bytes,
+        )
+        if frozen != (
+            T3_MAXIMUM_DURATION_SECONDS,
+            T3_MAXIMUM_FRAME_COUNT,
+            T3_EXPECTED_CHECKPOINT_INTERVAL_SECONDS,
+            T3_MAXIMUM_CHECKPOINT_GAP_SECONDS,
+            T3_MAXIMUM_RESIDENT_MEMORY_BYTES,
+            T3_MAXIMUM_ARTIFACT_BYTES,
+        ):
+            raise ValueError("T3 cadence and resource bounds must match the frozen protocol")
+        if self.ended_at < self.started_at:
+            raise ValueError("T3 end cannot precede its start")
+        if [item.ordinal for item in self.checkpoints] != list(range(len(self.checkpoints))):
+            raise ValueError("checkpoint ordinals must be contiguous from zero")
+        for index, checkpoint in enumerate(self.checkpoints):
+            expected = None if index == 0 else self.checkpoints[index - 1].checkpoint_sha256
+            if checkpoint.previous_checkpoint_sha256 != expected:
+                raise ValueError("checkpoint hash chain is broken")
+            if checkpoint.observed_at < self.started_at or checkpoint.observed_at > self.ended_at:
+                raise ValueError("checkpoints must lie inside the scenario timeline")
+            if index and checkpoint.observed_at < self.checkpoints[index - 1].observed_at:
+                raise ValueError("checkpoint times must not regress")
+        if self.checkpoints and any(item.state != "RUNNING" for item in self.checkpoints[:-1]):
+            raise ValueError("only the final checkpoint may be terminal")
+        if any(item < 0 for item in (*self.loop_counts, *self.store_counts)):
+            raise ValueError("capture counts must not be negative")
+        if any(not item.strip() for item in (*self.checkpoint_errors, *self.artifact_identities)):
+            raise ValueError("errors and artifact identities must not be blank")
+        if not self.artifact_identities or len(set(self.artifact_identities)) != len(
+            self.artifact_identities
+        ):
+            raise ValueError("T3 requires unique artifact identities")
+        return self
+
+
+def assess_endurance_scenario(evidence: EnduranceScenarioEvidenceV1) -> TechnicalScenarioResultV1:
+    """Apply the frozen T3 accounting, checkpoint and resource rules."""
+
+    reasons: list[str] = []
+    if not evidence.capture_completed:
+        reasons.append("capture run is not completed")
+    if evidence.capture_interrupted:
+        reasons.append("capture reports operator interruption")
+    if evidence.frames_consumed == 0:
+        reasons.append("capture consumed no frames")
+    if evidence.frames_consumed > evidence.maximum_frame_count:
+        reasons.append("capture exceeded its declared frame-count bound")
+    if (
+        evidence.ended_at - evidence.started_at
+    ).total_seconds() > evidence.maximum_duration_seconds:
+        reasons.append("capture exceeded its declared duration bound")
+    if evidence.loop_counts[2] or evidence.store_counts[2]:
+        reasons.append("capture contains rejected observations")
+    if evidence.decode_failures:
+        reasons.append("capture contains decode failures")
+    if evidence.unknown_event_type:
+        reasons.append("capture contains unknown event types")
+    if evidence.loop_counts != evidence.store_counts:
+        reasons.append("capture loop and durable store counts disagree")
+    if evidence.raw_payload_count == 0:
+        reasons.append("raw archive is empty")
+    if len(evidence.checkpoints) < 2:
+        reasons.append("fewer than two checkpoints were recorded")
+    elif evidence.checkpoints[-1].state != "COMPLETED":
+        reasons.append("checkpoint chain has no terminal checkpoint")
+    if not evidence.persisted_checkpoint_chain_reloaded:
+        reasons.append("persisted checkpoint chain was not reloadable")
+    if not evidence.terminal_resume_verified:
+        reasons.append("terminal state did not pass the deterministic resume probe")
+    if evidence.checkpoint_errors:
+        reasons.append("checkpointing reported errors: " + "; ".join(evidence.checkpoint_errors))
+    gaps = []
+    if evidence.checkpoints:
+        gaps = [
+            (evidence.checkpoints[0].observed_at - evidence.started_at).total_seconds(),
+            (evidence.ended_at - evidence.checkpoints[-1].observed_at).total_seconds(),
+        ]
+        gaps.extend(
+            (current.observed_at - previous.observed_at).total_seconds()
+            for previous, current in zip(
+                evidence.checkpoints, evidence.checkpoints[1:], strict=False
+            )
+        )
+    if gaps and max(gaps) > evidence.maximum_checkpoint_gap_seconds:
+        reasons.append("checkpoint cadence exceeded its declared maximum gap")
+    if any(
+        item.resident_memory_bytes > evidence.maximum_resident_memory_bytes
+        for item in evidence.checkpoints
+    ):
+        reasons.append("resident memory exceeded its declared bound")
+    if any(item.artifact_bytes > evidence.maximum_artifact_bytes for item in evidence.checkpoints):
+        reasons.append("artifact storage exceeded its declared bound")
+
+    status = TechnicalScenarioStatus.FAILED if reasons else TechnicalScenarioStatus.PASSED
+    return TechnicalScenarioResultV1(
+        campaign_id=evidence.campaign_id,
+        scenario=TechnicalScenario.ENDURANCE,
+        status=status,
+        started_at=evidence.started_at,
+        last_checkpoint_at=(
+            evidence.checkpoints[-1].observed_at if evidence.checkpoints else evidence.started_at
+        ),
+        ended_at=evidence.ended_at,
+        observed_frame_count=evidence.frames_consumed,
+        artifact_identities=evidence.artifact_identities,
+        observed_outcome=(
+            "bounded endurance capture completed with an intact durable checkpoint chain and "
+            "a reloadable terminal state"
+            if not reasons
+            else None
+        ),
+        reason="; ".join(reasons) if reasons else None,
+        follow_up_action=(
+            "inspect the capture and checkpoint chain before rerunning T3" if reasons else None
         ),
     )

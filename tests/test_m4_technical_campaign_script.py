@@ -153,3 +153,131 @@ def test_run_t2_materializes_evidence_from_a_controlled_capture(
     assert result["status"] == expected_status
     assert len(evidence["samples"]) == 2
     assert evidence["raw_payload_count"] == 1
+
+
+def test_run_t3_materializes_and_reloads_a_terminal_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_script()
+    output = tmp_path / "t3"
+
+    class FakeProcess:
+        pid = 42
+        args = ("fake-capture",)
+
+        def __init__(self, command, *, cwd, stdout, stderr):
+            del command, cwd, stderr
+            (output / "events.sqlite3").write_bytes(b"sqlite-evidence")
+            manifest = output / "campaign-t3.manifest.json"
+            manifest.write_bytes(b"{}")
+            raw = output / "raw" / "clob_market_ws" / "a.raw.json"
+            raw.parent.mkdir(parents=True)
+            raw.write_bytes(b"raw")
+            stdout.write(
+                module.orjson.dumps(
+                    {
+                        "capture_run_id": "campaign-t3",
+                        "interrupted": False,
+                        "manifest_path": str(manifest),
+                        "loop_health": {
+                            "frames_consumed": 1,
+                            "decode_failures": 0,
+                            "accepted": 2,
+                            "duplicate": 0,
+                            "rejected": 0,
+                            "unknown_event_type": 0,
+                        },
+                        "store_counts": {"accepted": 2, "duplicate": 0, "rejected": 0},
+                    }
+                )
+            )
+            stdout.flush()
+
+        def wait(self, timeout):
+            del timeout
+            return 0
+
+    class FakeStore:
+        def get_capture_run(self, run_id):
+            assert run_id == "campaign-t3"
+            return SimpleNamespace(completion_status=module.CompletionStatus.COMPLETED)
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(module, "_clean_revision", lambda root: "a" * 40)
+    monkeypatch.setattr(module.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(module, "_tree_resident_bytes", lambda pid, tracked: 123)
+    monkeypatch.setattr(module, "_resident_bytes", lambda processes: 0)
+    monkeypatch.setattr(module, "open_sqlite_event_store", lambda path: FakeStore())
+    args = Namespace(
+        repository=tmp_path,
+        output=output,
+        campaign_id="campaign",
+        token_id=["1", "2"],
+        max_seconds=module.T3_MAXIMUM_DURATION_SECONDS,
+        max_frames=module.T3_MAXIMUM_FRAME_COUNT,
+        checkpoint_interval=module.T3_EXPECTED_CHECKPOINT_INTERVAL_SECONDS,
+        max_checkpoint_gap=module.T3_MAXIMUM_CHECKPOINT_GAP_SECONDS,
+        max_rss_bytes=module.T3_MAXIMUM_RESIDENT_MEMORY_BYTES,
+        max_artifact_bytes=module.T3_MAXIMUM_ARTIFACT_BYTES,
+    )
+    assert module.run_t3(args) == 0
+    result = module.orjson.loads((output / "t3-result.json").read_bytes())
+    evidence = module.orjson.loads((output / "t3-evidence.json").read_bytes())
+    index = module.orjson.loads((output / "checkpoint-index.json").read_bytes())
+    assert result["status"] == "PASSED"
+    assert evidence["persisted_checkpoint_chain_reloaded"] is True
+    assert evidence["terminal_resume_verified"] is True
+    assert [item["state"] for item in evidence["checkpoints"]] == ["RUNNING", "COMPLETED"]
+    assert len(index["checkpoints"]) == 2
+
+
+def test_run_t3_refuses_modified_frozen_bounds(tmp_path: Path) -> None:
+    module = _load_script()
+    args = Namespace(
+        repository=tmp_path,
+        output=tmp_path / "t3",
+        campaign_id="campaign",
+        token_id=["1", "2"],
+        max_seconds=60,
+        max_frames=module.T3_MAXIMUM_FRAME_COUNT,
+        checkpoint_interval=module.T3_EXPECTED_CHECKPOINT_INTERVAL_SECONDS,
+        max_checkpoint_gap=module.T3_MAXIMUM_CHECKPOINT_GAP_SECONDS,
+        max_rss_bytes=module.T3_MAXIMUM_RESIDENT_MEMORY_BYTES,
+        max_artifact_bytes=module.T3_MAXIMUM_ARTIFACT_BYTES,
+    )
+    with pytest.raises(ValueError, match="frozen protocol"):
+        module.run_t3(args)
+
+
+def test_t3_reload_refuses_missing_or_unexpected_checkpoint_files(tmp_path: Path) -> None:
+    module = _load_script()
+    checkpoint = module.EnduranceCheckpointV1(
+        ordinal=0,
+        observed_at=module.datetime.now(module.UTC),
+        state="COMPLETED",
+        resident_memory_bytes=0,
+        artifact_bytes=0,
+    )
+    module._write_json(tmp_path / "000000.json", checkpoint.to_record())
+    assert module._reload_endurance_checkpoints(tmp_path, 1) == (checkpoint,)
+    (tmp_path / "unexpected.json").write_bytes(b"{}")
+    with pytest.raises(ValueError, match="incomplete or unexpected"):
+        module._reload_endurance_checkpoints(tmp_path, 1)
+
+
+def test_t3_terminal_resume_probe_rejects_nonterminal_or_duplicate_state() -> None:
+    module = _load_script()
+    running = module.EnduranceCheckpointV1(
+        ordinal=0,
+        observed_at=module.datetime.now(module.UTC),
+        state="RUNNING",
+        resident_memory_bytes=0,
+        artifact_bytes=0,
+    )
+    assert module._probe_terminal_resume(()) is False
+    assert module._probe_terminal_resume((running,)) is False
+    terminal = running.model_copy(update={"state": "COMPLETED"})
+    assert module._probe_terminal_resume((terminal,)) is True
+    assert module._probe_terminal_resume((terminal, terminal)) is False

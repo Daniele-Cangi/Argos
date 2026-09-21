@@ -120,9 +120,12 @@ from argos.evaluation.technical_campaign import (
     TechnicalScenarioStatus,
 )
 from argos.evaluation.technical_execution import (
+    EnduranceCheckpointV1,
+    EnduranceScenarioEvidenceV1,
     FunctionalScenarioEvidenceV1,
     StabilityResourceSampleV1,
     StabilityScenarioEvidenceV1,
+    assess_endurance_scenario,
     assess_functional_scenario,
     assess_stability_scenario,
 )
@@ -142,6 +145,8 @@ __all__ = [
     "CaptureRunSummaryV1",
     "CohortReport",
     "CutoffBasis",
+    "EnduranceCheckpointV1",
+    "EnduranceScenarioEvidenceV1",
     "EvaluationDecisionV1",
     "EvaluationExclusionV1",
     "EvaluationPolicyV1",
@@ -197,6 +202,7 @@ __all__ = [
     "aggregate_prospective_experiment_v2",
     "aggregate_prospective_experiment_v3",
     "aggregate_prospective_terminal_experiment",
+    "assess_endurance_scenario",
     "assess_functional_scenario",
     "assess_stability_scenario",
     "brier_score",
