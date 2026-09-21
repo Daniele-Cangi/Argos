@@ -126,6 +126,8 @@ def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
     assert shipped == {
         "capture_run_summary.v1": "CaptureRunSummaryV1",
         "functional_scenario_evidence.v1": "FunctionalScenarioEvidenceV1",
+        "endurance_checkpoint.v1": "EnduranceCheckpointV1",
+        "endurance_scenario_evidence.v1": "EnduranceScenarioEvidenceV1",
         "stability_resource_sample.v1": "StabilityResourceSampleV1",
         "stability_scenario_evidence.v1": "StabilityScenarioEvidenceV1",
         "lifecycle_poll_evidence.v1": "LifecyclePollEvidenceV1",

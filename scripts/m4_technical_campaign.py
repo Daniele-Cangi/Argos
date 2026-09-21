@@ -18,9 +18,18 @@ from argos.evaluation.technical_execution import (
     T2_MAXIMUM_ARTIFACT_BYTES,
     T2_MAXIMUM_RESIDENT_MEMORY_BYTES,
     T2_MAXIMUM_SAMPLE_GAP_SECONDS,
+    T3_EXPECTED_CHECKPOINT_INTERVAL_SECONDS,
+    T3_MAXIMUM_ARTIFACT_BYTES,
+    T3_MAXIMUM_CHECKPOINT_GAP_SECONDS,
+    T3_MAXIMUM_DURATION_SECONDS,
+    T3_MAXIMUM_FRAME_COUNT,
+    T3_MAXIMUM_RESIDENT_MEMORY_BYTES,
+    EnduranceCheckpointV1,
+    EnduranceScenarioEvidenceV1,
     FunctionalScenarioEvidenceV1,
     StabilityResourceSampleV1,
     StabilityScenarioEvidenceV1,
+    assess_endurance_scenario,
     assess_functional_scenario,
     assess_stability_scenario,
 )
@@ -411,6 +420,215 @@ def run_t2(args: argparse.Namespace) -> int:
     return 0 if result.status.value == "PASSED" else 1
 
 
+def _write_endurance_checkpoint(
+    directory: Path,
+    checkpoints: list[EnduranceCheckpointV1],
+    *,
+    observed_at: datetime,
+    state: str,
+    resident_memory_bytes: int,
+    artifact_bytes: int,
+) -> EnduranceCheckpointV1:
+    checkpoint = EnduranceCheckpointV1(
+        ordinal=len(checkpoints),
+        observed_at=observed_at,
+        state=state,
+        resident_memory_bytes=resident_memory_bytes,
+        artifact_bytes=artifact_bytes,
+        previous_checkpoint_sha256=(checkpoints[-1].checkpoint_sha256 if checkpoints else None),
+    )
+    _write_json(directory / f"{checkpoint.ordinal:06d}.json", checkpoint.to_record())
+    checkpoints.append(checkpoint)
+    return checkpoint
+
+
+def run_t3(args: argparse.Namespace) -> int:
+    """Run the frozen six-hour endurance capture with durable checkpoints."""
+
+    frozen = (
+        args.max_seconds,
+        args.max_frames,
+        args.checkpoint_interval,
+        args.max_checkpoint_gap,
+        args.max_rss_bytes,
+        args.max_artifact_bytes,
+    )
+    if frozen != (
+        T3_MAXIMUM_DURATION_SECONDS,
+        T3_MAXIMUM_FRAME_COUNT,
+        T3_EXPECTED_CHECKPOINT_INTERVAL_SECONDS,
+        T3_MAXIMUM_CHECKPOINT_GAP_SECONDS,
+        T3_MAXIMUM_RESIDENT_MEMORY_BYTES,
+        T3_MAXIMUM_ARTIFACT_BYTES,
+    ):
+        raise ValueError("T3 execution bounds must match the frozen protocol")
+    root = Path(args.repository).resolve()
+    revision = _clean_revision(root)
+    output = Path(args.output).resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    checkpoint_dir = output / "checkpoints"
+    checkpoint_dir.mkdir()
+    run_id = f"{args.campaign_id}-t3"
+    db_path = output / "events.sqlite3"
+    started_at = datetime.now(UTC)
+    config_path = output / "configuration.json"
+    _write_json(
+        config_path,
+        {
+            "schema_version": "technical_t3_configuration.v1",
+            "campaign_id": args.campaign_id,
+            "code_revision": revision,
+            "token_ids": sorted(args.token_id),
+            "maximum_duration_seconds": args.max_seconds,
+            "maximum_frame_count": args.max_frames,
+            "checkpoint_interval_seconds": args.checkpoint_interval,
+            "maximum_checkpoint_gap_seconds": args.max_checkpoint_gap,
+            "maximum_resident_memory_bytes": args.max_rss_bytes,
+            "maximum_artifact_bytes": args.max_artifact_bytes,
+            "raw_archive": True,
+        },
+    )
+    stdout_path = output / "capture.stdout.json"
+    stderr_path = output / "capture.stderr.log"
+    checkpoints: list[EnduranceCheckpointV1] = []
+    checkpoint_errors: list[str] = []
+    tracked_processes: dict[int, psutil.Process] = {}
+    with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
+        process = subprocess.Popen(
+            _capture_command(args, run_id, db_path), cwd=root, stdout=stdout, stderr=stderr
+        )
+        while True:
+            observed_at = datetime.now(UTC)
+            try:
+                resident = _tree_resident_bytes(process.pid, tracked_processes)
+            except psutil.NoSuchProcess:
+                resident = 0
+            except psutil.AccessDenied as error:
+                resident = 0
+                checkpoint_errors.append(f"AccessDenied: {error}")
+            _write_endurance_checkpoint(
+                checkpoint_dir,
+                checkpoints,
+                observed_at=observed_at,
+                state="RUNNING",
+                resident_memory_bytes=resident,
+                artifact_bytes=_artifact_bytes(output),
+            )
+            try:
+                return_code = process.wait(timeout=args.checkpoint_interval)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    try:
+        final_resident = _resident_bytes(tuple(tracked_processes.values()))
+    except psutil.AccessDenied as error:
+        final_resident = 0
+        checkpoint_errors.append(f"AccessDenied: {error}")
+    capture_ended_at = datetime.now(UTC)
+    terminal = _write_endurance_checkpoint(
+        checkpoint_dir,
+        checkpoints,
+        observed_at=capture_ended_at,
+        state="COMPLETED",
+        resident_memory_bytes=final_resident,
+        artifact_bytes=_artifact_bytes(output),
+    )
+    terminal_path = checkpoint_dir / f"{terminal.ordinal:06d}.json"
+    terminal_reloaded = EnduranceCheckpointV1.from_record(orjson.loads(terminal_path.read_bytes()))
+    terminal_checkpoint_reloaded = terminal_reloaded == terminal
+    if return_code not in (0, 130):
+        raise subprocess.CalledProcessError(return_code, process.args)
+    capture = orjson.loads(stdout_path.read_bytes())
+    if not isinstance(capture, dict):
+        raise ValueError("capture did not emit a JSON object")
+    capture_report_path = output / "capture-report.json"
+    _write_json(capture_report_path, capture)
+    store = open_sqlite_event_store(db_path)
+    try:
+        capture_run = store.get_capture_run(run_id)
+    finally:
+        store.close()
+    loop = capture.get("loop_health") or {}
+    counts = capture.get("store_counts") or {}
+    raw_payloads = tuple((output / "raw").glob("*/*.raw.json"))
+    raw_index_path = output / "raw-index.json"
+    _write_json(
+        raw_index_path,
+        {
+            "schema_version": "technical_raw_index.v1",
+            "payloads": [
+                {
+                    "path": path.resolve().relative_to(output).as_posix(),
+                    "sha256": _sha256(path),
+                }
+                for path in sorted(raw_payloads)
+            ],
+        },
+    )
+    checkpoint_index_path = output / "checkpoint-index.json"
+    _write_json(
+        checkpoint_index_path,
+        {
+            "schema_version": "endurance_checkpoint_index.v1",
+            "terminal_checkpoint_sha256": terminal.checkpoint_sha256,
+            "checkpoints": [
+                {
+                    "ordinal": item.ordinal,
+                    "path": f"checkpoints/{item.ordinal:06d}.json",
+                    "sha256": item.checkpoint_sha256,
+                }
+                for item in checkpoints
+            ],
+        },
+    )
+    artifact_paths = (
+        config_path,
+        db_path,
+        capture_report_path,
+        stderr_path,
+        raw_index_path,
+        checkpoint_index_path,
+        Path(str(capture["manifest_path"])),
+    )
+    evidence = EnduranceScenarioEvidenceV1(
+        campaign_id=args.campaign_id,
+        capture_run_id=run_id,
+        started_at=started_at,
+        ended_at=capture_ended_at,
+        capture_completed=(
+            capture_run is not None and capture_run.completion_status is CompletionStatus.COMPLETED
+        ),
+        capture_interrupted=bool(capture.get("interrupted")),
+        frames_consumed=int(loop.get("frames_consumed", 0)),
+        decode_failures=int(loop.get("decode_failures", 0)),
+        unknown_event_type=int(loop.get("unknown_event_type", 0)),
+        loop_counts=(
+            int(loop.get("accepted", 0)),
+            int(loop.get("duplicate", 0)),
+            int(loop.get("rejected", 0)),
+        ),
+        store_counts=(
+            int(counts.get("accepted", 0)),
+            int(counts.get("duplicate", 0)),
+            int(counts.get("rejected", 0)),
+        ),
+        raw_payload_count=len(raw_payloads),
+        expected_checkpoint_interval_seconds=args.checkpoint_interval,
+        maximum_checkpoint_gap_seconds=args.max_checkpoint_gap,
+        maximum_resident_memory_bytes=args.max_rss_bytes,
+        maximum_artifact_bytes=args.max_artifact_bytes,
+        checkpoint_errors=tuple(checkpoint_errors),
+        checkpoints=tuple(checkpoints),
+        terminal_checkpoint_reloaded=terminal_checkpoint_reloaded,
+        artifact_identities=tuple(_identity(path, output) for path in artifact_paths),
+    )
+    _write_json(output / "t3-evidence.json", evidence.to_record())
+    result = assess_endurance_scenario(evidence)
+    _write_json(output / "t3-result.json", result.to_record())
+    print(orjson.dumps(result.to_record(), option=orjson.OPT_INDENT_2).decode())
+    return 0 if result.status.value == "PASSED" else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
@@ -435,6 +653,20 @@ def main() -> int:
         max_sample_gap=T2_MAXIMUM_SAMPLE_GAP_SECONDS,
         max_rss_bytes=T2_MAXIMUM_RESIDENT_MEMORY_BYTES,
         max_artifact_bytes=T2_MAXIMUM_ARTIFACT_BYTES,
+    )
+    t3 = commands.add_parser("run-t3")
+    t3.add_argument("--campaign-id", required=True)
+    t3.add_argument("--token-id", action="append", required=True)
+    t3.add_argument("--output", required=True)
+    t3.add_argument("--repository", default=".")
+    t3.set_defaults(
+        handler=run_t3,
+        max_seconds=T3_MAXIMUM_DURATION_SECONDS,
+        max_frames=T3_MAXIMUM_FRAME_COUNT,
+        checkpoint_interval=T3_EXPECTED_CHECKPOINT_INTERVAL_SECONDS,
+        max_checkpoint_gap=T3_MAXIMUM_CHECKPOINT_GAP_SECONDS,
+        max_rss_bytes=T3_MAXIMUM_RESIDENT_MEMORY_BYTES,
+        max_artifact_bytes=T3_MAXIMUM_ARTIFACT_BYTES,
     )
     args = parser.parse_args()
     if len(args.token_id) != 2 or len(set(args.token_id)) != 2:
