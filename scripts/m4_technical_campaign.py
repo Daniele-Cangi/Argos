@@ -18,6 +18,7 @@ from argos.evaluation.technical_execution import (
     T2_MAXIMUM_ARTIFACT_BYTES,
     T2_MAXIMUM_RESIDENT_MEMORY_BYTES,
     T2_MAXIMUM_SAMPLE_GAP_SECONDS,
+    T3_CAPTURE_DURATION_SECONDS,
     T3_EXPECTED_CHECKPOINT_INTERVAL_SECONDS,
     T3_MAXIMUM_ARTIFACT_BYTES,
     T3_MAXIMUM_CHECKPOINT_GAP_SECONDS,
@@ -471,6 +472,7 @@ def run_t3(args: argparse.Namespace) -> int:
 
     frozen = (
         args.max_seconds,
+        args.capture_seconds,
         args.max_frames,
         args.checkpoint_interval,
         args.max_checkpoint_gap,
@@ -479,6 +481,7 @@ def run_t3(args: argparse.Namespace) -> int:
     )
     if frozen != (
         T3_MAXIMUM_DURATION_SECONDS,
+        T3_CAPTURE_DURATION_SECONDS,
         T3_MAXIMUM_FRAME_COUNT,
         T3_EXPECTED_CHECKPOINT_INTERVAL_SECONDS,
         T3_MAXIMUM_CHECKPOINT_GAP_SECONDS,
@@ -504,6 +507,7 @@ def run_t3(args: argparse.Namespace) -> int:
             "code_revision": revision,
             "token_ids": sorted(args.token_id),
             "maximum_duration_seconds": args.max_seconds,
+            "capture_duration_seconds": args.capture_seconds,
             "maximum_frame_count": args.max_frames,
             "checkpoint_interval_seconds": args.checkpoint_interval,
             "maximum_checkpoint_gap_seconds": args.max_checkpoint_gap,
@@ -518,8 +522,9 @@ def run_t3(args: argparse.Namespace) -> int:
     checkpoint_errors: list[str] = []
     tracked_processes: dict[int, psutil.Process] = {}
     with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
+        capture_args = argparse.Namespace(**{**vars(args), "max_seconds": args.capture_seconds})
         process = subprocess.Popen(
-            _capture_command(args, run_id, db_path), cwd=root, stdout=stdout, stderr=stderr
+            _capture_command(capture_args, run_id, db_path), cwd=root, stdout=stdout, stderr=stderr
         )
         while True:
             observed_at = datetime.now(UTC)
@@ -638,6 +643,7 @@ def run_t3(args: argparse.Namespace) -> int:
         ),
         raw_payload_count=len(raw_payloads),
         maximum_duration_seconds=args.max_seconds,
+        capture_duration_seconds=args.capture_seconds,
         maximum_frame_count=args.max_frames,
         expected_checkpoint_interval_seconds=args.checkpoint_interval,
         maximum_checkpoint_gap_seconds=args.max_checkpoint_gap,
@@ -689,6 +695,7 @@ def main() -> int:
     t3.set_defaults(
         handler=run_t3,
         max_seconds=T3_MAXIMUM_DURATION_SECONDS,
+        capture_seconds=T3_CAPTURE_DURATION_SECONDS,
         max_frames=T3_MAXIMUM_FRAME_COUNT,
         checkpoint_interval=T3_EXPECTED_CHECKPOINT_INTERVAL_SECONDS,
         max_checkpoint_gap=T3_MAXIMUM_CHECKPOINT_GAP_SECONDS,

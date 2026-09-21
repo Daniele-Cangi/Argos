@@ -31,6 +31,14 @@ asynchronous research cohort and is never inferred from technical passage.
 Live network access is unnecessary for T4–T7. Faults use deterministic adapters
 or recorded fixtures; tests never wait on real outages or settlements.
 
+T3's six-hour bound covers the timeline from runner start through the durable
+terminal checkpoint. The live capture request is therefore 21,540 seconds,
+reserving 60 seconds for orderly source shutdown and terminal checkpoint
+persistence. The evidence contract freezes both values and the assessor rejects
+any measured start-to-terminal-checkpoint duration above 21,600 seconds.
+Post-capture raw indexing and result serialization are outside that measured
+window and cannot change the already persisted checkpoint chain.
+
 ## Scenario result contract
 
 Each scenario must eventually emit a versioned result containing:
