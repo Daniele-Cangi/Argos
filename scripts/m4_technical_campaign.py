@@ -643,6 +643,7 @@ def run_t3(args: argparse.Namespace) -> int:
         ),
         raw_payload_count=len(raw_payloads),
         maximum_duration_seconds=args.max_seconds,
+        capture_duration_seconds=args.capture_seconds,
         maximum_frame_count=args.max_frames,
         expected_checkpoint_interval_seconds=args.checkpoint_interval,
         maximum_checkpoint_gap_seconds=args.max_checkpoint_gap,

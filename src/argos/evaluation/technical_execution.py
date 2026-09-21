@@ -404,6 +404,7 @@ class EnduranceScenarioEvidenceV1(VersionedModel):
     store_counts: tuple[int, int, int]
     raw_payload_count: int = Field(ge=0)
     maximum_duration_seconds: int = Field(gt=0)
+    capture_duration_seconds: int = Field(gt=0)
     maximum_frame_count: int = Field(gt=0)
     expected_checkpoint_interval_seconds: int = Field(gt=0)
     maximum_checkpoint_gap_seconds: int = Field(gt=0)
@@ -424,6 +425,7 @@ class EnduranceScenarioEvidenceV1(VersionedModel):
     def _chain_and_protocol(self) -> EnduranceScenarioEvidenceV1:
         frozen = (
             self.maximum_duration_seconds,
+            self.capture_duration_seconds,
             self.maximum_frame_count,
             self.expected_checkpoint_interval_seconds,
             self.maximum_checkpoint_gap_seconds,
@@ -432,6 +434,7 @@ class EnduranceScenarioEvidenceV1(VersionedModel):
         )
         if frozen != (
             T3_MAXIMUM_DURATION_SECONDS,
+            T3_CAPTURE_DURATION_SECONDS,
             T3_MAXIMUM_FRAME_COUNT,
             T3_EXPECTED_CHECKPOINT_INTERVAL_SECONDS,
             T3_MAXIMUM_CHECKPOINT_GAP_SECONDS,

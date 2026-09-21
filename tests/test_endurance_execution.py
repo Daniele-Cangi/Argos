@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from argos.evaluation.technical_campaign import TechnicalScenarioStatus
 from argos.evaluation.technical_execution import (
+    T3_CAPTURE_DURATION_SECONDS,
     T3_EXPECTED_CHECKPOINT_INTERVAL_SECONDS,
     T3_MAXIMUM_ARTIFACT_BYTES,
     T3_MAXIMUM_CHECKPOINT_GAP_SECONDS,
@@ -51,6 +52,7 @@ def _evidence(**overrides: object) -> EnduranceScenarioEvidenceV1:
         "store_counts": (20, 0, 0),
         "raw_payload_count": 10,
         "maximum_duration_seconds": 21_600,
+        "capture_duration_seconds": T3_CAPTURE_DURATION_SECONDS,
         "maximum_frame_count": 300_000,
         "expected_checkpoint_interval_seconds": T3_EXPECTED_CHECKPOINT_INTERVAL_SECONDS,
         "maximum_checkpoint_gap_seconds": T3_MAXIMUM_CHECKPOINT_GAP_SECONDS,
@@ -107,6 +109,8 @@ def test_t3_refuses_weakened_frozen_bounds() -> None:
         _evidence(maximum_artifact_bytes=T3_MAXIMUM_ARTIFACT_BYTES * 2)
     with pytest.raises(ValidationError, match="frozen protocol"):
         _evidence(maximum_duration_seconds=21_601)
+    with pytest.raises(ValidationError, match="frozen protocol"):
+        _evidence(capture_duration_seconds=T3_CAPTURE_DURATION_SECONDS + 1)
 
 
 def test_t3_rejects_invalid_checkpoint_fields() -> None:
