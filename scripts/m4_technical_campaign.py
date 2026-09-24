@@ -691,6 +691,47 @@ def _fault_schedule(scenario: TechnicalScenario) -> DeterministicFaultScheduleV1
     )
 
 
+def _write_executor_configuration(
+    args: argparse.Namespace,
+    scenario: TechnicalScenario,
+    output: Path,
+    *,
+    bounds: dict[str, int],
+    fixture_identity: str,
+    activation_identity: object,
+) -> Path:
+    repository = Path(args.repository).resolve()
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+    ).stdout
+    path = output / "configuration.json"
+    _write_json(
+        path,
+        {
+            "schema_version": "technical_executor_configuration.v1",
+            "campaign_id": args.campaign_id,
+            "scenario": scenario.value,
+            "code_revision": revision,
+            "working_tree_clean": not status,
+            "working_tree_status_sha256": hashlib.sha256(status).hexdigest(),
+            "bounds": bounds,
+            "fixture_identity": fixture_identity,
+            "activation_identity": activation_identity,
+        },
+    )
+    return path
+
+
 def _technical_result(
     args: argparse.Namespace,
     scenario: TechnicalScenario,
@@ -768,6 +809,14 @@ def run_fault_scenario(args: argparse.Namespace) -> int:
     schedule = _fault_schedule(scenario)
     schedule_path = output / "fault-schedule.json"
     _write_json(schedule_path, schedule.to_record())
+    configuration_path = _write_executor_configuration(
+        args,
+        scenario,
+        output,
+        bounds={"activation_attempt_count": len(schedule.activation_attempts), "resume_count": 1},
+        fixture_identity=_sha256(schedule_path),
+        activation_identity=list(schedule.activation_attempts),
+    )
     checkpoint_path = output / "checkpoint.json"
     lock_path = output / "owner.lock"
     initial = ResumableMonitorCheckpointV1(
@@ -947,7 +996,7 @@ def run_fault_scenario(args: argparse.Namespace) -> int:
         output,
         evidence_path,
         "fault activated exactly once; durable head preserved; same ordinal resumed exactly once",
-        (schedule_path, checkpoint_path),
+        (configuration_path, schedule_path, checkpoint_path),
     )
     return 0
 
@@ -963,6 +1012,14 @@ def run_t7(args: argparse.Namespace) -> int:
     )
     schedule_path = output / "terminal-state-schedule.json"
     _write_json(schedule_path, schedule.to_record())
+    configuration_path = _write_executor_configuration(
+        args,
+        TechnicalScenario.TERMINAL_SIMULATION,
+        output,
+        bounds={"fixture_count": len(TERMINAL_STATE_MATRIX_V1)},
+        fixture_identity=_sha256(schedule_path),
+        activation_identity=[state.value for state in TERMINAL_STATE_MATRIX_V1],
+    )
     adapter = TerminalStateFixtureAdapter(schedule)
     observed = tuple(adapter.read_next() for _ in TERMINAL_STATE_MATRIX_V1)
     if observed != TERMINAL_STATE_MATRIX_V1:
@@ -1030,7 +1087,7 @@ def run_t7(args: argparse.Namespace) -> int:
         output,
         evidence_path,
         "unknown, proposed, disputed, final, and administrative close handled once in frozen order",
-        (schedule_path,),
+        (configuration_path, schedule_path),
     )
     return 0
 
@@ -1066,6 +1123,15 @@ def run_t8(args: argparse.Namespace) -> int:
         "umaResolutionStatuses": '["resolved"]',
     }
     raw = orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)
+    payload_identity = hashlib.sha256(raw).hexdigest()
+    configuration_path = _write_executor_configuration(
+        args,
+        TechnicalScenario.CROSS_VOLUME,
+        output,
+        bounds={"workspace_count": len(roots)},
+        fixture_identity=payload_identity,
+        activation_identity={"required_drives": ["C:", "D:"]},
+    )
     identities = []
     semantic_results = []
     input_paths = []
@@ -1099,7 +1165,7 @@ def run_t8(args: argparse.Namespace) -> int:
         output,
         evidence_path,
         "equivalent C: and D: workspaces produced identical semantic identities",
-        tuple(input_paths),
+        (configuration_path, *input_paths),
     )
     return 0
 
@@ -1161,12 +1227,14 @@ def main() -> int:
     t7 = commands.add_parser("run-t7")
     t7.add_argument("--campaign-id", required=True)
     t7.add_argument("--output", required=True)
+    t7.add_argument("--repository", default=".")
     t7.set_defaults(handler=run_t7)
     t8 = commands.add_parser("run-t8")
     t8.add_argument("--campaign-id", required=True)
     t8.add_argument("--output", required=True)
     t8.add_argument("--c-root", required=True)
     t8.add_argument("--d-root", required=True)
+    t8.add_argument("--repository", default=".")
     t8.set_defaults(handler=run_t8)
     args = parser.parse_args()
     if args.command in {"run-t1", "run-t2", "run-t3"} and (

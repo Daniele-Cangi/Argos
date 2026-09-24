@@ -359,7 +359,11 @@ def test_fault_cli_materializes_a_passing_result(
     result = next(output.glob("*-result.json"))
     result_record = module_orjson(result)
     assert result_record["status"] == "PASSED"
-    assert len(result_record["artifact_identities"]) == 3
+    assert len(result_record["artifact_identities"]) == 4
+    configuration = module_orjson(output / "configuration.json")
+    assert configuration["scenario"] == scenario
+    assert configuration["code_revision"]
+    assert configuration["fixture_identity"]
     evidence = module_orjson(output / "evidence.json")
     assert evidence["partial_checkpoint_absent"] is True
     assert evidence["exclusive_owner"] is True
