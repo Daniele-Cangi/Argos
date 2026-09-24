@@ -447,6 +447,7 @@ def test_t8_cli_materializes_failure_for_non_cross_volume_paths(tmp_path: Path) 
     result = module_orjson(output / "t8_cross_volume-result.json")
     assert result["status"] == "FAILED"
     assert "requires one C: root and one D: root" in str(result["reason"])
+    assert result["started_at"] < result["ended_at"]
 
 
 def test_cross_volume_processing_is_path_independent(tmp_path: Path) -> None:

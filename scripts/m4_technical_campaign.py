@@ -767,14 +767,31 @@ def _materialize_executor_failure(args: argparse.Namespace, error: Exception) ->
         )
         return 1
     now = datetime.now(UTC)
+    started_at = getattr(args, "executor_started_at", now)
+    last_checkpoint_at = started_at
+    checkpoint_path = output / "checkpoint.json"
+    if checkpoint_path.exists():
+        try:
+            checkpoint_record = orjson.loads(checkpoint_path.read_bytes())
+            last_checkpoint_at = datetime.fromisoformat(
+                str(checkpoint_record["updated_at"]).replace("Z", "+00:00")
+            ).astimezone(UTC)
+        except (KeyError, TypeError, ValueError, orjson.JSONDecodeError):
+            last_checkpoint_at = started_at
+    preserved_paths = tuple(
+        path
+        for path in sorted(output.iterdir())
+        if path.is_file() and path != result_path and not path.name.endswith((".tmp", ".partial"))
+    )
     result = TechnicalScenarioResultV1(
         campaign_id=args.campaign_id,
         scenario=scenario,
         status=TechnicalScenarioStatus.FAILED,
-        started_at=now,
-        last_checkpoint_at=now,
+        started_at=started_at,
+        last_checkpoint_at=last_checkpoint_at,
         ended_at=now,
         observed_frame_count=0,
+        artifact_identities=tuple(_identity(path, output) for path in preserved_paths),
         reason=f"{type(error).__name__}: {error}",
         follow_up_action="inspect the preserved evidence and repair this executor before rerun",
     )
@@ -796,6 +813,7 @@ def run_fault_scenario(args: argparse.Namespace) -> int:
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     started_at = datetime.now(UTC)
+    args.executor_started_at = started_at
     schedule = _fault_schedule(scenario)
     schedule_path = output / "fault-schedule.json"
     _write_json(schedule_path, schedule.to_record())
@@ -995,6 +1013,7 @@ def run_t7(args: argparse.Namespace) -> int:
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     started_at = datetime.now(UTC)
+    args.executor_started_at = started_at
     schedule = DeterministicFaultScheduleV1(
         schedule_id="terminal-state-matrix-v1",
         scenario=TechnicalScenario.TERMINAL_SIMULATION,
@@ -1103,6 +1122,7 @@ def run_t8(args: argparse.Namespace) -> int:
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     started_at = datetime.now(UTC)
+    args.executor_started_at = started_at
     roots = (Path(args.c_root).resolve(), Path(args.d_root).resolve())
     if {root.drive.upper() for root in roots} != {"C:", "D:"}:
         raise ValueError("T8 requires one C: root and one D: root")
