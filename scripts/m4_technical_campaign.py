@@ -699,21 +699,8 @@ def _write_executor_configuration(
     bounds: dict[str, int],
     fixture_identity: str,
     activation_identity: object,
+    code_revision: str,
 ) -> Path:
-    repository = Path(args.repository).resolve()
-    revision = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=repository,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    status = subprocess.run(
-        ["git", "status", "--porcelain=v1"],
-        cwd=repository,
-        check=True,
-        capture_output=True,
-    ).stdout
     path = output / "configuration.json"
     _write_json(
         path,
@@ -721,9 +708,8 @@ def _write_executor_configuration(
             "schema_version": "technical_executor_configuration.v1",
             "campaign_id": args.campaign_id,
             "scenario": scenario.value,
-            "code_revision": revision,
-            "working_tree_clean": not status,
-            "working_tree_status_sha256": hashlib.sha256(status).hexdigest(),
+            "code_revision": code_revision,
+            "working_tree_clean": True,
             "bounds": bounds,
             "fixture_identity": fixture_identity,
             "activation_identity": activation_identity,
@@ -740,6 +726,7 @@ def _technical_result(
     evidence_path: Path,
     outcome: str,
     artifact_paths: tuple[Path, ...] = (),
+    external_artifact_identities: tuple[str, ...] = (),
 ) -> TechnicalScenarioResultV1:
     ended_at = datetime.now(UTC)
     result = TechnicalScenarioResultV1(
@@ -750,8 +737,9 @@ def _technical_result(
         last_checkpoint_at=ended_at,
         ended_at=ended_at,
         observed_frame_count=0,
-        artifact_identities=tuple(
-            _identity(path, output) for path in (evidence_path, *artifact_paths)
+        artifact_identities=(
+            *tuple(_identity(path, output) for path in (evidence_path, *artifact_paths)),
+            *external_artifact_identities,
         ),
         observed_outcome=outcome,
     )
@@ -803,6 +791,8 @@ def run_fault_scenario(args: argparse.Namespace) -> int:
         TechnicalScenario.STORAGE_INTERRUPTION,
     }:
         raise ValueError("run-fault requires T4, T5, or T6")
+    repository = Path(args.repository).resolve()
+    revision = _clean_revision(repository)
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     started_at = datetime.now(UTC)
@@ -816,14 +806,13 @@ def run_fault_scenario(args: argparse.Namespace) -> int:
         bounds={"activation_attempt_count": len(schedule.activation_attempts), "resume_count": 1},
         fixture_identity=_sha256(schedule_path),
         activation_identity=list(schedule.activation_attempts),
+        code_revision=revision,
     )
     checkpoint_path = output / "checkpoint.json"
     lock_path = output / "owner.lock"
     initial = ResumableMonitorCheckpointV1(
         campaign_id=args.campaign_id,
-        configuration_sha256=hashlib.sha256(
-            orjson.dumps(schedule.to_record(), option=orjson.OPT_SORT_KEYS)
-        ).hexdigest(),
+        configuration_sha256=_sha256(configuration_path),
         next_ordinal=0,
         updated_at=started_at,
     )
@@ -919,7 +908,7 @@ def run_fault_scenario(args: argparse.Namespace) -> int:
                 str(ready_path),
                 str(checkpoint_path),
             ],
-            cwd=Path(args.repository).resolve(),
+            cwd=repository,
         )
         for _ in range(100):
             if ready_path.exists():
@@ -1002,6 +991,7 @@ def run_fault_scenario(args: argparse.Namespace) -> int:
 
 
 def run_t7(args: argparse.Namespace) -> int:
+    revision = _clean_revision(Path(args.repository).resolve())
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     started_at = datetime.now(UTC)
@@ -1019,6 +1009,7 @@ def run_t7(args: argparse.Namespace) -> int:
         bounds={"fixture_count": len(TERMINAL_STATE_MATRIX_V1)},
         fixture_identity=_sha256(schedule_path),
         activation_identity=[state.value for state in TERMINAL_STATE_MATRIX_V1],
+        code_revision=revision,
     )
     adapter = TerminalStateFixtureAdapter(schedule)
     observed = tuple(adapter.read_next() for _ in TERMINAL_STATE_MATRIX_V1)
@@ -1108,6 +1099,7 @@ def _process_cross_volume_input(
 
 
 def run_t8(args: argparse.Namespace) -> int:
+    revision = _clean_revision(Path(args.repository).resolve())
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     started_at = datetime.now(UTC)
@@ -1131,15 +1123,14 @@ def run_t8(args: argparse.Namespace) -> int:
         bounds={"workspace_count": len(roots)},
         fixture_identity=payload_identity,
         activation_identity={"required_drives": ["C:", "D:"]},
+        code_revision=revision,
     )
     identities = []
     semantic_results = []
-    input_paths = []
     for root in roots:
         root.mkdir(parents=True, exist_ok=True)
         path = root / "semantic-input.json"
         write_atomic_checkpoint(path, raw)
-        input_paths.append(path)
         identity, semantic_result = _process_cross_volume_input(path, normalized_at=started_at)
         identities.append(identity)
         semantic_results.append(semantic_result)
@@ -1165,7 +1156,11 @@ def run_t8(args: argparse.Namespace) -> int:
         output,
         evidence_path,
         "equivalent C: and D: workspaces produced identical semantic identities",
-        (configuration_path, *input_paths),
+        (configuration_path,),
+        tuple(
+            f"sha256:{identity}:{label}-semantic-input.json"
+            for label, identity in zip(("c", "d"), identities, strict=True)
+        ),
     )
     return 0
 

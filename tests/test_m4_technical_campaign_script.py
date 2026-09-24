@@ -308,6 +308,22 @@ def _run_campaign_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _clean_test_repository(path: Path) -> Path:
+    repository = path / "repository"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "Argos Tests"], cwd=repository, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "argos-tests@example.invalid"],
+        cwd=repository,
+        check=True,
+    )
+    (repository / "fixture.txt").write_text("frozen\n", encoding="utf-8")
+    subprocess.run(["git", "add", "fixture.txt"], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "fixture"], cwd=repository, check=True)
+    return repository
+
+
 @pytest.mark.parametrize(
     ("scenario", "expected"),
     [
@@ -344,6 +360,7 @@ def test_fault_cli_materializes_a_passing_result(
     tmp_path: Path, scenario: str, expected: dict[str, object]
 ) -> None:
     output = tmp_path / scenario.lower()
+    repository = _clean_test_repository(tmp_path)
     completed = _run_campaign_cli(
         "run-fault",
         "--campaign-id",
@@ -353,7 +370,7 @@ def test_fault_cli_materializes_a_passing_result(
         "--output",
         str(output),
         "--repository",
-        str(Path(__file__).parents[1]),
+        str(repository),
     )
     assert completed.returncode == 0, completed.stderr
     result = next(output.glob("*-result.json"))
@@ -364,6 +381,13 @@ def test_fault_cli_materializes_a_passing_result(
     assert configuration["scenario"] == scenario
     assert configuration["code_revision"]
     assert configuration["fixture_identity"]
+    checkpoint = module_orjson(output / "checkpoint.json")
+    import hashlib
+
+    assert (
+        checkpoint["configuration_sha256"]
+        == hashlib.sha256((output / "configuration.json").read_bytes()).hexdigest()
+    )
     evidence = module_orjson(output / "evidence.json")
     assert evidence["partial_checkpoint_absent"] is True
     assert evidence["exclusive_owner"] is True
@@ -383,8 +407,15 @@ def module_orjson(path: Path) -> dict[str, object]:
 
 def test_t7_cli_drives_real_resolution_normalization(tmp_path: Path) -> None:
     output = tmp_path / "t7"
+    repository = _clean_test_repository(tmp_path)
     completed = _run_campaign_cli(
-        "run-t7", "--campaign-id", "test-campaign", "--output", str(output)
+        "run-t7",
+        "--campaign-id",
+        "test-campaign",
+        "--output",
+        str(output),
+        "--repository",
+        str(repository),
     )
     assert completed.returncode == 0, completed.stderr
     evidence = module_orjson(output / "evidence.json")
@@ -398,6 +429,7 @@ def test_t7_cli_drives_real_resolution_normalization(tmp_path: Path) -> None:
 
 def test_t8_cli_materializes_failure_for_non_cross_volume_paths(tmp_path: Path) -> None:
     output = tmp_path / "t8"
+    repository = _clean_test_repository(tmp_path)
     completed = _run_campaign_cli(
         "run-t8",
         "--campaign-id",
@@ -408,6 +440,8 @@ def test_t8_cli_materializes_failure_for_non_cross_volume_paths(tmp_path: Path) 
         str(tmp_path / "one"),
         "--d-root",
         str(tmp_path / "two"),
+        "--repository",
+        str(repository),
     )
     assert completed.returncode == 1
     result = module_orjson(output / "t8_cross_volume-result.json")
@@ -440,11 +474,40 @@ def test_cross_volume_processing_is_path_independent(tmp_path: Path) -> None:
 
 def test_output_reuse_preserves_existing_result(tmp_path: Path) -> None:
     output = tmp_path / "t7"
-    first = _run_campaign_cli("run-t7", "--campaign-id", "test-campaign", "--output", str(output))
+    repository = _clean_test_repository(tmp_path)
+    arguments = (
+        "run-t7",
+        "--campaign-id",
+        "test-campaign",
+        "--output",
+        str(output),
+        "--repository",
+        str(repository),
+    )
+    first = _run_campaign_cli(*arguments)
     assert first.returncode == 0, first.stderr
     result_path = output / "t7_terminal_simulation-result.json"
     original = result_path.read_bytes()
-    second = _run_campaign_cli("run-t7", "--campaign-id", "test-campaign", "--output", str(output))
+    second = _run_campaign_cli(*arguments)
     assert second.returncode == 1
     assert result_path.read_bytes() == original
     assert "refusing to overwrite existing result artifact" in second.stderr
+
+
+def test_executor_rejects_dirty_repository_before_configuration(tmp_path: Path) -> None:
+    repository = _clean_test_repository(tmp_path)
+    (repository / "dirty.txt").write_text("dirty\n", encoding="utf-8")
+    output = tmp_path / "t7"
+    completed = _run_campaign_cli(
+        "run-t7",
+        "--campaign-id",
+        "test-campaign",
+        "--output",
+        str(output),
+        "--repository",
+        str(repository),
+    )
+    assert completed.returncode == 1
+    assert not (output / "configuration.json").exists()
+    result = module_orjson(output / "t7_terminal_simulation-result.json")
+    assert "clean working tree" in str(result["reason"])
