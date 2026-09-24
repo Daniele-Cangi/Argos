@@ -436,15 +436,11 @@ def test_cross_volume_processing_is_path_independent(tmp_path: Path) -> None:
 
 def test_output_reuse_preserves_existing_result(tmp_path: Path) -> None:
     output = tmp_path / "t7"
-    first = _run_campaign_cli(
-        "run-t7", "--campaign-id", "test-campaign", "--output", str(output)
-    )
+    first = _run_campaign_cli("run-t7", "--campaign-id", "test-campaign", "--output", str(output))
     assert first.returncode == 0, first.stderr
     result_path = output / "t7_terminal_simulation-result.json"
     original = result_path.read_bytes()
-    second = _run_campaign_cli(
-        "run-t7", "--campaign-id", "test-campaign", "--output", str(output)
-    )
+    second = _run_campaign_cli("run-t7", "--campaign-id", "test-campaign", "--output", str(output))
     assert second.returncode == 1
     assert result_path.read_bytes() == original
     assert "refusing to overwrite existing result artifact" in second.stderr

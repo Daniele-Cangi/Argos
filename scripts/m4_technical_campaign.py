@@ -1074,9 +1074,7 @@ def run_t8(args: argparse.Namespace) -> int:
         path = root / "semantic-input.json"
         write_atomic_checkpoint(path, raw)
         input_paths.append(path)
-        identity, semantic_result = _process_cross_volume_input(
-            path, normalized_at=started_at
-        )
+        identity, semantic_result = _process_cross_volume_input(path, normalized_at=started_at)
         identities.append(identity)
         semantic_results.append(semantic_result)
     if identities[0] != identities[1]:
