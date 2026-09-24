@@ -309,10 +309,40 @@ def _run_campaign_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
 
 
 @pytest.mark.parametrize(
-    "scenario",
-    ["T4_NETWORK_INTERRUPTION", "T5_PROCESS_INTERRUPTION", "T6_STORAGE_INTERRUPTION"],
+    ("scenario", "expected"),
+    [
+        (
+            "T4_NETWORK_INTERRUPTION",
+            {
+                "injected_error": "InjectedNetworkLoss",
+                "failed_next_ordinal": 0,
+                "explicit_gap_count": 1,
+                "resumed_next_ordinal": 1,
+            },
+        ),
+        (
+            "T5_PROCESS_INTERRUPTION",
+            {
+                "injected_error": "InjectedProcessTermination",
+                "failed_next_ordinal": 1,
+                "resumed_next_ordinal": 2,
+                "duplicate_owner_rejected": True,
+            },
+        ),
+        (
+            "T6_STORAGE_INTERRUPTION",
+            {
+                "injected_error": "InjectedStorageRefusal",
+                "failed_next_ordinal": 0,
+                "explicit_gap_count": 0,
+                "resumed_next_ordinal": 1,
+            },
+        ),
+    ],
 )
-def test_fault_cli_materializes_a_passing_result(tmp_path: Path, scenario: str) -> None:
+def test_fault_cli_materializes_a_passing_result(
+    tmp_path: Path, scenario: str, expected: dict[str, object]
+) -> None:
     output = tmp_path / scenario.lower()
     completed = _run_campaign_cli(
         "run-fault",
@@ -327,7 +357,16 @@ def test_fault_cli_materializes_a_passing_result(tmp_path: Path, scenario: str) 
     )
     assert completed.returncode == 0, completed.stderr
     result = next(output.glob("*-result.json"))
-    assert module_orjson(result)["status"] == "PASSED"
+    result_record = module_orjson(result)
+    assert result_record["status"] == "PASSED"
+    assert len(result_record["artifact_identities"]) == 3
+    evidence = module_orjson(output / "evidence.json")
+    assert evidence["partial_checkpoint_absent"] is True
+    assert evidence["exclusive_owner"] is True
+    for key, value in expected.items():
+        assert evidence[key] == value
+    if scenario == "T5_PROCESS_INTERRUPTION":
+        assert evidence["process_exit_code"] is not None
 
 
 def module_orjson(path: Path) -> dict[str, object]:
@@ -370,3 +409,42 @@ def test_t8_cli_materializes_failure_for_non_cross_volume_paths(tmp_path: Path) 
     result = module_orjson(output / "t8_cross_volume-result.json")
     assert result["status"] == "FAILED"
     assert "requires one C: root and one D: root" in str(result["reason"])
+
+
+def test_cross_volume_processing_is_path_independent(tmp_path: Path) -> None:
+    module = _load_script()
+    raw = module.orjson.dumps(
+        {
+            "id": "portable-market",
+            "conditionId": "portable-condition",
+            "closed": True,
+            "outcomePrices": '["1","0"]',
+            "clobTokenIds": '["yes-token","no-token"]',
+            "umaResolutionStatuses": '["resolved"]',
+        },
+        option=module.orjson.OPT_SORT_KEYS,
+    )
+    paths = (tmp_path / "one" / "input.json", tmp_path / "two" / "input.json")
+    for path in paths:
+        path.parent.mkdir()
+        path.write_bytes(raw)
+    now = module.datetime.now(module.UTC)
+    first = module._process_cross_volume_input(paths[0], normalized_at=now)
+    second = module._process_cross_volume_input(paths[1], normalized_at=now)
+    assert first == second
+
+
+def test_output_reuse_preserves_existing_result(tmp_path: Path) -> None:
+    output = tmp_path / "t7"
+    first = _run_campaign_cli(
+        "run-t7", "--campaign-id", "test-campaign", "--output", str(output)
+    )
+    assert first.returncode == 0, first.stderr
+    result_path = output / "t7_terminal_simulation-result.json"
+    original = result_path.read_bytes()
+    second = _run_campaign_cli(
+        "run-t7", "--campaign-id", "test-campaign", "--output", str(output)
+    )
+    assert second.returncode == 1
+    assert result_path.read_bytes() == original
+    assert "refusing to overwrite existing result artifact" in second.stderr

@@ -698,6 +698,7 @@ def _technical_result(
     output: Path,
     evidence_path: Path,
     outcome: str,
+    artifact_paths: tuple[Path, ...] = (),
 ) -> TechnicalScenarioResultV1:
     ended_at = datetime.now(UTC)
     result = TechnicalScenarioResultV1(
@@ -708,7 +709,9 @@ def _technical_result(
         last_checkpoint_at=ended_at,
         ended_at=ended_at,
         observed_frame_count=0,
-        artifact_identities=(_identity(evidence_path, output),),
+        artifact_identities=tuple(
+            _identity(path, output) for path in (evidence_path, *artifact_paths)
+        ),
         observed_outcome=outcome,
     )
     _write_json(output / f"{scenario.value.lower()}-result.json", result.to_record())
@@ -727,6 +730,13 @@ def _materialize_executor_failure(args: argparse.Namespace, error: Exception) ->
     )
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
+    result_path = output / f"{scenario.value.lower()}-result.json"
+    if result_path.exists():
+        print(
+            f"refusing to overwrite existing result artifact: {result_path}",
+            file=sys.stderr,
+        )
+        return 1
     now = datetime.now(UTC)
     result = TechnicalScenarioResultV1(
         campaign_id=args.campaign_id,
@@ -739,7 +749,7 @@ def _materialize_executor_failure(args: argparse.Namespace, error: Exception) ->
         reason=f"{type(error).__name__}: {error}",
         follow_up_action="inspect the preserved evidence and repair this executor before rerun",
     )
-    _write_json(output / f"{scenario.value.lower()}-result.json", result.to_record())
+    _write_json(result_path, result.to_record())
     print(orjson.dumps(result.to_record(), option=orjson.OPT_INDENT_2).decode())
     return 1
 
@@ -937,6 +947,7 @@ def run_fault_scenario(args: argparse.Namespace) -> int:
         output,
         evidence_path,
         "fault activated exactly once; durable head preserved; same ordinal resumed exactly once",
+        (schedule_path, checkpoint_path),
     )
     return 0
 
@@ -950,6 +961,8 @@ def run_t7(args: argparse.Namespace) -> int:
         scenario=TechnicalScenario.TERMINAL_SIMULATION,
         terminal_states=TERMINAL_STATE_MATRIX_V1,
     )
+    schedule_path = output / "terminal-state-schedule.json"
+    _write_json(schedule_path, schedule.to_record())
     adapter = TerminalStateFixtureAdapter(schedule)
     observed = tuple(adapter.read_next() for _ in TERMINAL_STATE_MATRIX_V1)
     if observed != TERMINAL_STATE_MATRIX_V1:
@@ -1017,8 +1030,24 @@ def run_t7(args: argparse.Namespace) -> int:
         output,
         evidence_path,
         "unknown, proposed, disputed, final, and administrative close handled once in frozen order",
+        (schedule_path,),
     )
     return 0
+
+
+def _process_cross_volume_input(
+    path: Path, *, normalized_at: datetime
+) -> tuple[str, dict[str, object]]:
+    raw = path.read_bytes()
+    identity = hashlib.sha256(raw).hexdigest()
+    normalized = normalize_gamma_resolution(
+        orjson.loads(raw),
+        source_payload_sha256=identity,
+        normalized_at=normalized_at,
+    )
+    if isinstance(normalized, ResolutionRefusal):
+        raise RuntimeError(f"cross-volume normalization refused: {normalized.reason.value}")
+    return identity, normalized.to_record()
 
 
 def run_t8(args: argparse.Namespace) -> int:
@@ -1039,20 +1068,17 @@ def run_t8(args: argparse.Namespace) -> int:
     raw = orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)
     identities = []
     semantic_results = []
+    input_paths = []
     for root in roots:
         root.mkdir(parents=True, exist_ok=True)
         path = root / "semantic-input.json"
         write_atomic_checkpoint(path, raw)
-        identities.append(hashlib.sha256(path.read_bytes()).hexdigest())
-        loaded = orjson.loads(path.read_bytes())
-        normalized = normalize_gamma_resolution(
-            loaded,
-            source_payload_sha256=identities[-1],
-            normalized_at=started_at,
+        input_paths.append(path)
+        identity, semantic_result = _process_cross_volume_input(
+            path, normalized_at=started_at
         )
-        if isinstance(normalized, ResolutionRefusal):
-            raise RuntimeError(f"cross-volume normalization refused: {normalized.reason.value}")
-        semantic_results.append(normalized.to_record())
+        identities.append(identity)
+        semantic_results.append(semantic_result)
     if identities[0] != identities[1]:
         raise RuntimeError("cross-volume semantic identities differ")
     if semantic_results[0] != semantic_results[1]:
@@ -1075,6 +1101,7 @@ def run_t8(args: argparse.Namespace) -> int:
         output,
         evidence_path,
         "equivalent C: and D: workspaces produced identical semantic identities",
+        tuple(input_paths),
     )
     return 0
 
