@@ -54,6 +54,7 @@ from argos.monitoring.resumable import (
     ResumableMonitorCheckpointV1,
     write_atomic_checkpoint,
 )
+from argos.resolution import ResolutionRefusal, ResolutionStatus, normalize_gamma_resolution
 from argos.store.event_store import CompletionStatus, open_sqlite_event_store
 
 
@@ -715,6 +716,34 @@ def _technical_result(
     return result
 
 
+def _materialize_executor_failure(args: argparse.Namespace, error: Exception) -> int:
+    scenario = (
+        TechnicalScenario(args.scenario)
+        if args.command == "run-fault"
+        else {
+            "run-t7": TechnicalScenario.TERMINAL_SIMULATION,
+            "run-t8": TechnicalScenario.CROSS_VOLUME,
+        }[args.command]
+    )
+    output = Path(args.output).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(UTC)
+    result = TechnicalScenarioResultV1(
+        campaign_id=args.campaign_id,
+        scenario=scenario,
+        status=TechnicalScenarioStatus.FAILED,
+        started_at=now,
+        last_checkpoint_at=now,
+        ended_at=now,
+        observed_frame_count=0,
+        reason=f"{type(error).__name__}: {error}",
+        follow_up_action="inspect the preserved evidence and repair this executor before rerun",
+    )
+    _write_json(output / f"{scenario.value.lower()}-result.json", result.to_record())
+    print(orjson.dumps(result.to_record(), option=orjson.OPT_INDENT_2).decode())
+    return 1
+
+
 def run_fault_scenario(args: argparse.Namespace) -> int:
     scenario = TechnicalScenario(args.scenario)
     if scenario not in {
@@ -811,14 +840,26 @@ def run_fault_scenario(args: argparse.Namespace) -> int:
     else:
         ready_path = output / "child-ready"
         child_code = (
-            "import sys,time; from pathlib import Path; "
-            "from argos.monitoring.resumable import ExclusiveFileLease; "
+            "import sys,time; from datetime import UTC,datetime; from pathlib import Path; "
+            "from argos.monitoring.resumable import "
+            "ExclusiveFileLease,PollCommit,ResumableMonitor; "
             "lock=Path(sys.argv[1]); ready=Path(sys.argv[2]); "
+            "checkpoint=Path(sys.argv[3]); monitor=ResumableMonitor(checkpoint,lock); "
+            "monitor.run_once(poll=lambda head: PollCommit(ordinal=head.next_ordinal,"
+            "receipt_id='receipt-000000',record_sha256='b'*64,persisted_at=head.updated_at,"
+            "previous_receipt_id=head.last_receipt_id),failure_time=lambda: datetime.now(UTC)); "
             "lease=ExclusiveFileLease(lock); lease.__enter__(); "
             "ready.write_text('ready'); time.sleep(60)"
         )
         child = subprocess.Popen(
-            [sys.executable, "-c", child_code, str(lock_path), str(ready_path)],
+            [
+                sys.executable,
+                "-c",
+                child_code,
+                str(lock_path),
+                str(ready_path),
+                str(checkpoint_path),
+            ],
             cwd=Path(args.repository).resolve(),
         )
         for _ in range(100):
@@ -839,15 +880,23 @@ def run_fault_scenario(args: argparse.Namespace) -> int:
             duplicate_owner_rejected = True
         else:
             duplicate_owner_rejected = False
-        child.terminate()
+        try:
+            adapter.invoke(0, lambda: None)
+        except InjectedFault as error:
+            first_error = type(error).__name__
+            child.terminate()
+        else:
+            child.kill()
+            raise RuntimeError("declared process interruption did not activate")
         process_exit_code = child.wait(timeout=10)
-        first_error = "InjectedProcessTermination"
         failed = ResumableMonitor(checkpoint_path, lock_path).load()
+        if failed.next_ordinal != 1 or failed.last_receipt_id != "receipt-000000":
+            raise RuntimeError("terminated owner did not leave one durable poll")
         resumed = ResumableMonitor(checkpoint_path, lock_path).run_once(
             poll=lambda checkpoint: PollCommit(
                 ordinal=checkpoint.next_ordinal,
-                receipt_id="receipt-000000",
-                record_sha256="b" * 64,
+                receipt_id="receipt-000001",
+                record_sha256="c" * 64,
                 persisted_at=started_at,
                 previous_receipt_id=checkpoint.last_receipt_id,
             ),
@@ -855,7 +904,11 @@ def run_fault_scenario(args: argparse.Namespace) -> int:
         )
         if not duplicate_owner_rejected:
             raise RuntimeError("concurrent T5 owner was not rejected")
-    if resumed.next_ordinal != 1 or resumed.last_receipt_id != "receipt-000000":
+    expected_next = 2 if scenario is TechnicalScenario.PROCESS_INTERRUPTION else 1
+    expected_receipt = (
+        "receipt-000001" if scenario is TechnicalScenario.PROCESS_INTERRUPTION else "receipt-000000"
+    )
+    if resumed.next_ordinal != expected_next or resumed.last_receipt_id != expected_receipt:
         raise RuntimeError("same-ordinal resume did not commit exactly once")
     if checkpoint_path.with_suffix(".json.partial").exists():
         raise RuntimeError("partial checkpoint was exposed")
@@ -907,6 +960,45 @@ def run_t7(args: argparse.Namespace) -> int:
         exhausted = True
     else:
         exhausted = False
+    handled = []
+    for index, state in enumerate(observed):
+        payload = {
+            "id": f"market-{index}",
+            "conditionId": f"condition-{index}",
+            "closed": True,
+            "outcomePrices": '["0","0"]' if state.value == "ADMINISTRATIVE_CLOSE" else '["1","0"]',
+            "clobTokenIds": '["yes-token","no-token"]',
+            "umaResolutionStatuses": orjson.dumps(
+                []
+                if state.value == "UNKNOWN"
+                else [
+                    {
+                        "PROPOSED": "proposed",
+                        "DISPUTED": "disputed",
+                        "FINAL": "resolved",
+                    }.get(state.value, "")
+                ]
+            ).decode(),
+        }
+        digest = hashlib.sha256(orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)).hexdigest()
+        normalized = normalize_gamma_resolution(
+            payload, source_payload_sha256=digest, normalized_at=started_at
+        )
+        if isinstance(normalized, ResolutionRefusal):
+            handled.append({"state": state.value, "refusal": normalized.reason.value})
+        else:
+            handled.append(
+                {"state": state.value, "normalized_status": normalized.resolution_status.value}
+            )
+    expected_handling = [
+        {"state": "UNKNOWN", "normalized_status": ResolutionStatus.UNKNOWN.value},
+        {"state": "PROPOSED", "normalized_status": ResolutionStatus.PROPOSED.value},
+        {"state": "DISPUTED", "normalized_status": ResolutionStatus.DISPUTED.value},
+        {"state": "FINAL", "normalized_status": ResolutionStatus.FINAL.value},
+        {"state": "ADMINISTRATIVE_CLOSE", "refusal": "no_determinable_outcome"},
+    ]
+    if handled != expected_handling:
+        raise RuntimeError("terminal-state normalization disagrees with the frozen matrix")
     evidence_path = output / "evidence.json"
     _write_json(
         evidence_path,
@@ -915,6 +1007,7 @@ def run_t7(args: argparse.Namespace) -> int:
             "states": [state.value for state in observed],
             "complete_exact_order": True,
             "fixture_exhausted": exhausted,
+            "handled_outcomes": handled,
         },
     )
     _technical_result(
@@ -936,19 +1029,34 @@ def run_t8(args: argparse.Namespace) -> int:
     if {root.drive.upper() for root in roots} != {"C:", "D:"}:
         raise ValueError("T8 requires one C: root and one D: root")
     payload = {
-        "schema_version": "cross_volume_fixture.v1",
-        "campaign_id": args.campaign_id,
-        "observations": [{"ordinal": 0, "value": "portable"}],
+        "id": "portable-market",
+        "conditionId": "portable-condition",
+        "closed": True,
+        "outcomePrices": '["1","0"]',
+        "clobTokenIds": '["yes-token","no-token"]',
+        "umaResolutionStatuses": '["resolved"]',
     }
     raw = orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)
     identities = []
+    semantic_results = []
     for root in roots:
         root.mkdir(parents=True, exist_ok=True)
         path = root / "semantic-input.json"
         write_atomic_checkpoint(path, raw)
         identities.append(hashlib.sha256(path.read_bytes()).hexdigest())
+        loaded = orjson.loads(path.read_bytes())
+        normalized = normalize_gamma_resolution(
+            loaded,
+            source_payload_sha256=identities[-1],
+            normalized_at=started_at,
+        )
+        if isinstance(normalized, ResolutionRefusal):
+            raise RuntimeError(f"cross-volume normalization refused: {normalized.reason.value}")
+        semantic_results.append(normalized.to_record())
     if identities[0] != identities[1]:
         raise RuntimeError("cross-volume semantic identities differ")
+    if semantic_results[0] != semantic_results[1]:
+        raise RuntimeError("cross-volume normalized evidence differs")
     evidence_path = output / "evidence.json"
     _write_json(
         evidence_path,
@@ -957,6 +1065,7 @@ def run_t8(args: argparse.Namespace) -> int:
             "drives": [root.drive.upper() for root in roots],
             "semantic_sha256": identities[0],
             "path_independent": True,
+            "normalized_evidence": semantic_results[0],
         },
     )
     _technical_result(
@@ -1039,7 +1148,12 @@ def main() -> int:
         len(args.token_id) != 2 or len(set(args.token_id)) != 2
     ):
         parser.error(f"{args.command} requires exactly two distinct --token-id values")
-    return int(args.handler(args))
+    try:
+        return int(args.handler(args))
+    except Exception as error:
+        if args.command in {"run-fault", "run-t7", "run-t8"}:
+            return _materialize_executor_failure(args, error)
+        raise
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import subprocess
+import sys
 from argparse import Namespace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -294,3 +295,78 @@ def test_t3_terminal_resume_probe_rejects_nonterminal_or_duplicate_state() -> No
     terminal = running.model_copy(update={"state": "COMPLETED"})
     assert module._probe_terminal_resume((terminal,)) is True
     assert module._probe_terminal_resume((terminal, terminal)) is False
+
+
+def _run_campaign_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
+    script = Path(__file__).parents[1] / "scripts" / "m4_technical_campaign.py"
+    return subprocess.run(
+        [sys.executable, str(script), *arguments],
+        cwd=Path(__file__).parents[1],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["T4_NETWORK_INTERRUPTION", "T5_PROCESS_INTERRUPTION", "T6_STORAGE_INTERRUPTION"],
+)
+def test_fault_cli_materializes_a_passing_result(tmp_path: Path, scenario: str) -> None:
+    output = tmp_path / scenario.lower()
+    completed = _run_campaign_cli(
+        "run-fault",
+        "--campaign-id",
+        "test-campaign",
+        "--scenario",
+        scenario,
+        "--output",
+        str(output),
+        "--repository",
+        str(Path(__file__).parents[1]),
+    )
+    assert completed.returncode == 0, completed.stderr
+    result = next(output.glob("*-result.json"))
+    assert module_orjson(result)["status"] == "PASSED"
+
+
+def module_orjson(path: Path) -> dict[str, object]:
+    import orjson
+
+    value = orjson.loads(path.read_bytes())
+    assert isinstance(value, dict)
+    return value
+
+
+def test_t7_cli_drives_real_resolution_normalization(tmp_path: Path) -> None:
+    output = tmp_path / "t7"
+    completed = _run_campaign_cli(
+        "run-t7", "--campaign-id", "test-campaign", "--output", str(output)
+    )
+    assert completed.returncode == 0, completed.stderr
+    evidence = module_orjson(output / "evidence.json")
+    handled = evidence["handled_outcomes"]
+    assert isinstance(handled, list)
+    assert handled[-1] == {
+        "refusal": "no_determinable_outcome",
+        "state": "ADMINISTRATIVE_CLOSE",
+    }
+
+
+def test_t8_cli_materializes_failure_for_non_cross_volume_paths(tmp_path: Path) -> None:
+    output = tmp_path / "t8"
+    completed = _run_campaign_cli(
+        "run-t8",
+        "--campaign-id",
+        "test-campaign",
+        "--output",
+        str(output),
+        "--c-root",
+        str(tmp_path / "one"),
+        "--d-root",
+        str(tmp_path / "two"),
+    )
+    assert completed.returncode == 1
+    result = module_orjson(output / "t8_cross_volume-result.json")
+    assert result["status"] == "FAILED"
+    assert "requires one C: root and one D: root" in str(result["reason"])
