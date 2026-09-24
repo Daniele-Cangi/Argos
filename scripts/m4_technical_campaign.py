@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import os
 import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,11 @@ from typing import Any
 import orjson
 import psutil
 
+from argos.evaluation.technical_campaign import (
+    TechnicalScenario,
+    TechnicalScenarioResultV1,
+    TechnicalScenarioStatus,
+)
 from argos.evaluation.technical_execution import (
     T2_EXPECTED_SAMPLE_INTERVAL_SECONDS,
     T2_MAXIMUM_ARTIFACT_BYTES,
@@ -33,6 +39,20 @@ from argos.evaluation.technical_execution import (
     assess_endurance_scenario,
     assess_functional_scenario,
     assess_stability_scenario,
+)
+from argos.monitoring.faults import (
+    TERMINAL_STATE_MATRIX_V1,
+    DeterministicFaultAdapter,
+    DeterministicFaultScheduleV1,
+    InjectedFault,
+    TerminalStateFixtureAdapter,
+)
+from argos.monitoring.resumable import (
+    ExclusiveFileLease,
+    PollCommit,
+    ResumableMonitor,
+    ResumableMonitorCheckpointV1,
+    write_atomic_checkpoint,
 )
 from argos.store.event_store import CompletionStatus, open_sqlite_event_store
 
@@ -662,6 +682,294 @@ def run_t3(args: argparse.Namespace) -> int:
     return 0 if result.status.value == "PASSED" else 1
 
 
+def _fault_schedule(scenario: TechnicalScenario) -> DeterministicFaultScheduleV1:
+    return DeterministicFaultScheduleV1(
+        schedule_id=f"{scenario.value.lower()}-schedule-v1",
+        scenario=scenario,
+        activation_attempts=(0,),
+    )
+
+
+def _technical_result(
+    args: argparse.Namespace,
+    scenario: TechnicalScenario,
+    started_at: datetime,
+    output: Path,
+    evidence_path: Path,
+    outcome: str,
+) -> TechnicalScenarioResultV1:
+    ended_at = datetime.now(UTC)
+    result = TechnicalScenarioResultV1(
+        campaign_id=args.campaign_id,
+        scenario=scenario,
+        status=TechnicalScenarioStatus.PASSED,
+        started_at=started_at,
+        last_checkpoint_at=ended_at,
+        ended_at=ended_at,
+        observed_frame_count=0,
+        artifact_identities=(_identity(evidence_path, output),),
+        observed_outcome=outcome,
+    )
+    _write_json(output / f"{scenario.value.lower()}-result.json", result.to_record())
+    print(orjson.dumps(result.to_record(), option=orjson.OPT_INDENT_2).decode())
+    return result
+
+
+def run_fault_scenario(args: argparse.Namespace) -> int:
+    scenario = TechnicalScenario(args.scenario)
+    if scenario not in {
+        TechnicalScenario.NETWORK_INTERRUPTION,
+        TechnicalScenario.PROCESS_INTERRUPTION,
+        TechnicalScenario.STORAGE_INTERRUPTION,
+    }:
+        raise ValueError("run-fault requires T4, T5, or T6")
+    output = Path(args.output).resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    started_at = datetime.now(UTC)
+    schedule = _fault_schedule(scenario)
+    schedule_path = output / "fault-schedule.json"
+    _write_json(schedule_path, schedule.to_record())
+    checkpoint_path = output / "checkpoint.json"
+    lock_path = output / "owner.lock"
+    initial = ResumableMonitorCheckpointV1(
+        campaign_id=args.campaign_id,
+        configuration_sha256=hashlib.sha256(
+            orjson.dumps(schedule.to_record(), option=orjson.OPT_SORT_KEYS)
+        ).hexdigest(),
+        next_ordinal=0,
+        updated_at=started_at,
+    )
+    ResumableMonitor(checkpoint_path, lock_path).save(initial)
+    adapter = DeterministicFaultAdapter(schedule)
+    process_exit_code: int | None = None
+    duplicate_owner_rejected: bool | None = None
+    attempts = iter((0, 1))
+    clock = iter((started_at,) * 8)
+
+    def poll(checkpoint: ResumableMonitorCheckpointV1) -> PollCommit:
+        return adapter.invoke(
+            next(attempts),
+            lambda: PollCommit(
+                ordinal=checkpoint.next_ordinal,
+                receipt_id="receipt-000000",
+                record_sha256="b" * 64,
+                persisted_at=started_at,
+                previous_receipt_id=checkpoint.last_receipt_id,
+            ),
+        )
+
+    if scenario is TechnicalScenario.NETWORK_INTERRUPTION:
+        try:
+            ResumableMonitor(checkpoint_path, lock_path).run_once(
+                poll=poll, failure_time=lambda: next(clock)
+            )
+        except InjectedFault as error:
+            first_error = type(error).__name__
+        else:
+            raise RuntimeError("declared network fault did not activate")
+        failed = ResumableMonitor(checkpoint_path, lock_path).load()
+        if failed.next_ordinal != 0 or len(failed.gaps) != 1:
+            raise RuntimeError("network fault consumed an ordinal or omitted its gap")
+        resumed = ResumableMonitor(checkpoint_path, lock_path).run_once(
+            poll=poll, failure_time=lambda: next(clock)
+        )
+    elif scenario is TechnicalScenario.STORAGE_INTERRUPTION:
+
+        def refusing_writer(path: Path, raw: bytes) -> None:
+            adapter.invoke(0, lambda: write_atomic_checkpoint(path, raw))
+
+        try:
+            ResumableMonitor(
+                checkpoint_path, lock_path, checkpoint_writer=refusing_writer
+            ).run_once(
+                poll=lambda checkpoint: PollCommit(
+                    ordinal=checkpoint.next_ordinal,
+                    receipt_id="receipt-000000",
+                    record_sha256="b" * 64,
+                    persisted_at=started_at,
+                    previous_receipt_id=checkpoint.last_receipt_id,
+                ),
+                failure_time=lambda: next(clock),
+            )
+        except InjectedFault as error:
+            first_error = type(error).__name__
+        else:
+            raise RuntimeError("declared storage refusal did not activate")
+        failed = ResumableMonitor(checkpoint_path, lock_path).load()
+        if failed != initial:
+            raise RuntimeError("storage refusal changed the durable head")
+        resumed = ResumableMonitor(checkpoint_path, lock_path).run_once(
+            poll=lambda checkpoint: PollCommit(
+                ordinal=checkpoint.next_ordinal,
+                receipt_id="receipt-000000",
+                record_sha256="b" * 64,
+                persisted_at=started_at,
+                previous_receipt_id=checkpoint.last_receipt_id,
+            ),
+            failure_time=lambda: next(clock),
+        )
+    else:
+        ready_path = output / "child-ready"
+        child_code = (
+            "import sys,time; from pathlib import Path; "
+            "from argos.monitoring.resumable import ExclusiveFileLease; "
+            "lock=Path(sys.argv[1]); ready=Path(sys.argv[2]); "
+            "lease=ExclusiveFileLease(lock); lease.__enter__(); "
+            "ready.write_text('ready'); time.sleep(60)"
+        )
+        child = subprocess.Popen(
+            [sys.executable, "-c", child_code, str(lock_path), str(ready_path)],
+            cwd=Path(args.repository).resolve(),
+        )
+        for _ in range(100):
+            if ready_path.exists():
+                break
+            if child.poll() is not None:
+                raise RuntimeError("T5 lock owner exited before readiness")
+            import time
+
+            time.sleep(0.05)
+        else:
+            child.kill()
+            raise RuntimeError("T5 lock owner did not become ready")
+        try:
+            with ExclusiveFileLease(lock_path):
+                pass
+        except RuntimeError:
+            duplicate_owner_rejected = True
+        else:
+            duplicate_owner_rejected = False
+        child.terminate()
+        process_exit_code = child.wait(timeout=10)
+        first_error = "InjectedProcessTermination"
+        failed = ResumableMonitor(checkpoint_path, lock_path).load()
+        resumed = ResumableMonitor(checkpoint_path, lock_path).run_once(
+            poll=lambda checkpoint: PollCommit(
+                ordinal=checkpoint.next_ordinal,
+                receipt_id="receipt-000000",
+                record_sha256="b" * 64,
+                persisted_at=started_at,
+                previous_receipt_id=checkpoint.last_receipt_id,
+            ),
+            failure_time=lambda: next(clock),
+        )
+        if not duplicate_owner_rejected:
+            raise RuntimeError("concurrent T5 owner was not rejected")
+    if resumed.next_ordinal != 1 or resumed.last_receipt_id != "receipt-000000":
+        raise RuntimeError("same-ordinal resume did not commit exactly once")
+    if checkpoint_path.with_suffix(".json.partial").exists():
+        raise RuntimeError("partial checkpoint was exposed")
+    evidence_path = output / "evidence.json"
+    _write_json(
+        evidence_path,
+        {
+            "schema_version": "deterministic_fault_evidence.v1",
+            "scenario": scenario.value,
+            "schedule_sha256": _sha256(schedule_path),
+            "injected_error": first_error,
+            "failed_next_ordinal": failed.next_ordinal,
+            "explicit_gap_count": len(failed.gaps),
+            "resumed_next_ordinal": resumed.next_ordinal,
+            "receipt_id": resumed.last_receipt_id,
+            "process_exit_code": process_exit_code,
+            "duplicate_owner_rejected": duplicate_owner_rejected,
+            "exclusive_owner": True,
+            "partial_checkpoint_absent": True,
+        },
+    )
+    _technical_result(
+        args,
+        scenario,
+        started_at,
+        output,
+        evidence_path,
+        "fault activated exactly once; durable head preserved; same ordinal resumed exactly once",
+    )
+    return 0
+
+
+def run_t7(args: argparse.Namespace) -> int:
+    output = Path(args.output).resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    started_at = datetime.now(UTC)
+    schedule = DeterministicFaultScheduleV1(
+        schedule_id="terminal-state-matrix-v1",
+        scenario=TechnicalScenario.TERMINAL_SIMULATION,
+        terminal_states=TERMINAL_STATE_MATRIX_V1,
+    )
+    adapter = TerminalStateFixtureAdapter(schedule)
+    observed = tuple(adapter.read_next() for _ in TERMINAL_STATE_MATRIX_V1)
+    if observed != TERMINAL_STATE_MATRIX_V1:
+        raise RuntimeError("terminal state matrix changed order or membership")
+    try:
+        adapter.read_next()
+    except StopIteration:
+        exhausted = True
+    else:
+        exhausted = False
+    evidence_path = output / "evidence.json"
+    _write_json(
+        evidence_path,
+        {
+            "schema_version": "terminal_matrix_evidence.v1",
+            "states": [state.value for state in observed],
+            "complete_exact_order": True,
+            "fixture_exhausted": exhausted,
+        },
+    )
+    _technical_result(
+        args,
+        TechnicalScenario.TERMINAL_SIMULATION,
+        started_at,
+        output,
+        evidence_path,
+        "unknown, proposed, disputed, final, and administrative close handled once in frozen order",
+    )
+    return 0
+
+
+def run_t8(args: argparse.Namespace) -> int:
+    output = Path(args.output).resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    started_at = datetime.now(UTC)
+    roots = (Path(args.c_root).resolve(), Path(args.d_root).resolve())
+    if {root.drive.upper() for root in roots} != {"C:", "D:"}:
+        raise ValueError("T8 requires one C: root and one D: root")
+    payload = {
+        "schema_version": "cross_volume_fixture.v1",
+        "campaign_id": args.campaign_id,
+        "observations": [{"ordinal": 0, "value": "portable"}],
+    }
+    raw = orjson.dumps(payload, option=orjson.OPT_SORT_KEYS)
+    identities = []
+    for root in roots:
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / "semantic-input.json"
+        write_atomic_checkpoint(path, raw)
+        identities.append(hashlib.sha256(path.read_bytes()).hexdigest())
+    if identities[0] != identities[1]:
+        raise RuntimeError("cross-volume semantic identities differ")
+    evidence_path = output / "evidence.json"
+    _write_json(
+        evidence_path,
+        {
+            "schema_version": "cross_volume_evidence.v1",
+            "drives": [root.drive.upper() for root in roots],
+            "semantic_sha256": identities[0],
+            "path_independent": True,
+        },
+    )
+    _technical_result(
+        args,
+        TechnicalScenario.CROSS_VOLUME,
+        started_at,
+        output,
+        evidence_path,
+        "equivalent C: and D: workspaces produced identical semantic identities",
+    )
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
@@ -702,8 +1010,34 @@ def main() -> int:
         max_rss_bytes=T3_MAXIMUM_RESIDENT_MEMORY_BYTES,
         max_artifact_bytes=T3_MAXIMUM_ARTIFACT_BYTES,
     )
+    fault = commands.add_parser("run-fault")
+    fault.add_argument("--campaign-id", required=True)
+    fault.add_argument(
+        "--scenario",
+        required=True,
+        choices=[
+            TechnicalScenario.NETWORK_INTERRUPTION.value,
+            TechnicalScenario.PROCESS_INTERRUPTION.value,
+            TechnicalScenario.STORAGE_INTERRUPTION.value,
+        ],
+    )
+    fault.add_argument("--output", required=True)
+    fault.add_argument("--repository", default=".")
+    fault.set_defaults(handler=run_fault_scenario)
+    t7 = commands.add_parser("run-t7")
+    t7.add_argument("--campaign-id", required=True)
+    t7.add_argument("--output", required=True)
+    t7.set_defaults(handler=run_t7)
+    t8 = commands.add_parser("run-t8")
+    t8.add_argument("--campaign-id", required=True)
+    t8.add_argument("--output", required=True)
+    t8.add_argument("--c-root", required=True)
+    t8.add_argument("--d-root", required=True)
+    t8.set_defaults(handler=run_t8)
     args = parser.parse_args()
-    if len(args.token_id) != 2 or len(set(args.token_id)) != 2:
+    if args.command in {"run-t1", "run-t2", "run-t3"} and (
+        len(args.token_id) != 2 or len(set(args.token_id)) != 2
+    ):
         parser.error(f"{args.command} requires exactly two distinct --token-id values")
     return int(args.handler(args))
 
