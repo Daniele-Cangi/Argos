@@ -447,7 +447,7 @@ def test_t8_cli_materializes_failure_for_non_cross_volume_paths(tmp_path: Path) 
     result = module_orjson(output / "t8_cross_volume-result.json")
     assert result["status"] == "FAILED"
     assert "requires one C: root and one D: root" in str(result["reason"])
-    assert result["started_at"] < result["ended_at"]
+    assert result["started_at"] <= result["ended_at"]
 
 
 def test_cross_volume_processing_is_path_independent(tmp_path: Path) -> None:
@@ -512,3 +512,18 @@ def test_executor_rejects_dirty_repository_before_configuration(tmp_path: Path) 
     assert not (output / "configuration.json").exists()
     result = module_orjson(output / "t7_terminal_simulation-result.json")
     assert "clean working tree" in str(result["reason"])
+
+
+def test_failure_materialization_preserves_known_execution_start(tmp_path: Path) -> None:
+    module = _load_script()
+    started_at = module.datetime(2026, 1, 2, 3, 4, 5, tzinfo=module.UTC)
+    args = module.argparse.Namespace(
+        command="run-t7",
+        campaign_id="test-campaign",
+        output=str(tmp_path / "failure"),
+        executor_started_at=started_at,
+    )
+    assert module._materialize_executor_failure(args, RuntimeError("injected")) == 1
+    result = module_orjson(tmp_path / "failure" / "t7_terminal_simulation-result.json")
+    assert result["started_at"] == "2026-01-02T03:04:05Z"
+    assert result["last_checkpoint_at"] == "2026-01-02T03:04:05Z"
