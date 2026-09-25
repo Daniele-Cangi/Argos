@@ -5,8 +5,8 @@ from pydantic import ValidationError
 
 from argos.evaluation.technical_campaign import TechnicalScenarioStatus
 from argos.evaluation.technical_execution import (
-    FunctionalScenarioEvidenceV1,
     T1_MAXIMUM_DURATION_SECONDS,
+    FunctionalScenarioEvidenceV1,
     assess_functional_scenario,
 )
 
