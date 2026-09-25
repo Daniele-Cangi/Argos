@@ -141,7 +141,8 @@ def test_run_t2_materializes_evidence_from_a_controlled_capture(
         output=output,
         campaign_id="campaign",
         token_id=["1", "2"],
-        max_seconds=7_200,
+        max_seconds=module.T2_MAXIMUM_DURATION_SECONDS,
+        capture_seconds=module.T2_CAPTURE_DURATION_SECONDS,
         max_frames=100_000,
         sample_interval=60,
         max_sample_gap=120,
@@ -154,6 +155,9 @@ def test_run_t2_materializes_evidence_from_a_controlled_capture(
     assert result["status"] == expected_status
     assert len(evidence["samples"]) == 2
     assert evidence["raw_payload_count"] == 1
+    configuration = module.orjson.loads((output / "configuration.json").read_bytes())
+    assert configuration["maximum_duration_seconds"] == 7_200
+    assert configuration["capture_duration_seconds"] == 7_140
 
 
 def test_run_t3_materializes_and_reloads_a_terminal_checkpoint(
