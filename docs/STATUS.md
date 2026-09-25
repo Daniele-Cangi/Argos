@@ -1,6 +1,39 @@
 # ARGOS status
 
-Last updated: 2026-09-20
+Last updated: 2026-09-25
+
+## 2026-09-25 bounded technical campaign result
+
+The ADR-0019 bounded technical matrix is complete. Campaign
+`m4-technical-20260924-t1-t3-v1`, executed from clean revision
+`179245a6de2a3270756d1be8d26d6a1a2684a9cc`, contains exactly one coherent
+result for T1 through T8 and all eight results are `PASSED` with no declared
+limitations. The portable aggregate is published at
+`experiments/m4-technical-20260924-v1/technical-campaign.json` and binds the
+configuration, public token inputs, deterministic fixture identities and every
+scenario artifact by SHA-256.
+
+T1 captured 290 frames and produced two identical read-only replay state
+hashes without mutating its SQLite database. T2 captured 1,582 frames over two
+hours with complete accounting and resource/cadence samples inside the frozen
+bounds. T3 captured 5,089 frames over six hours and persisted an intact,
+reloadable checkpoint chain. T4--T6 recovered honestly from deterministic
+network, process and storage failures; T7 handled every declared terminal
+state; T8 produced identical semantic identities from equivalent C: and D:
+inputs.
+
+An earlier T4--T8 operator run used a different campaign identifier. Those
+valid standalone results were not relabeled or admitted to the aggregate.
+Because the scenarios are deterministic and bounded, T4--T8 were rerun at the
+same clean revision using the T1--T3 campaign identifier. Only that coherent
+execution appears in `technical_campaign.v1`.
+
+The matrix establishes technical qualification, not forecast accuracy, edge,
+predictive superiority or calibration. V8 remains unchanged and blocked under
+its frozen protocol. The next authorized research step is to freeze a separate
+asynchronous cohort with 10--20 intended targets; ADR-0014's requirement for at
+least 30 resolved targets and outcome/category dispersion still governs any
+future calibration claim.
 
 ## 2026-09-20 V8 result and methodology correction
 

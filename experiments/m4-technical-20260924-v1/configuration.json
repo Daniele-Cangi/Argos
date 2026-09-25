@@ -1,0 +1,20 @@
+{
+  "campaign_id": "m4-technical-20260924-t1-t3-v1",
+  "code_revision": "179245a6de2a3270756d1be8d26d6a1a2684a9cc",
+  "execution_windows": {
+    "t1_t3": "2026-09-24T17:25:08.755776Z/2026-09-25T01:35:20.683135Z",
+    "t4_t8": "2026-09-25T10:26:28.517698Z/2026-09-25T10:26:40.259447Z"
+  },
+  "input_identities": [
+    "polymarket-token:55115078421062885512539156303747803058407616201213034911037320915726138659123",
+    "polymarket-token:1910830010387565971650098373488592514702818137344973088263643820608151819241",
+    "sha256:a4d12153cb1e41116b3a1861a410ce97a0484697f06bb4ccc0d31b35c1721248:fault-schedule-t4",
+    "sha256:aad5803285bef9505734944a10dc2890a2c944ccb7baada05f1c1ccd5ab7c92e:fault-schedule-t5",
+    "sha256:579d85142a5067367c2308f7844080e80de8f110d71b3c9c10c93160bb67693e:fault-schedule-t6",
+    "sha256:7e881d5773636f17ddcd9e79e032987759e120276b9e859c95875927e1f5a973:terminal-state-schedule-t7",
+    "sha256:39bdf82322da09911090997a1621cd6463b287b4e2c11415fad1a3cfb2b7e7b8:cross-volume-semantic-input-t8"
+  ],
+  "raw_artifact_root": "D:/Argos-m4-technical-20260924-t1-t3-v1",
+  "schema_version": "technical_campaign_configuration.v1",
+  "working_tree": "clean"
+}

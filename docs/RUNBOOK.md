@@ -53,9 +53,11 @@ own pass/fail evidence. Technical passage does not imply predictive accuracy or
 calibration. Resolution polling belongs to a separate resumable cohort and an
 unresolved target remains pending rather than becoming a fabricated negative.
 
-The repository does not yet contain the ADR-0019 scenario-result schema or
-resumable monitor. Until both exist and their adversarial tests pass, do not
-start a new live campaign under the new methodology.
+The repository contains the ADR-0019 scenario-result schema, resumable monitor
+and adversarial tests. The first complete bounded matrix is published under
+`experiments/m4-technical-20260924-v1/`; all T1--T8 scenarios passed. This
+technical qualification is a prerequisite for, but does not authorize or
+substitute for, a frozen predictive protocol.
 
 ## Governance checks
 
