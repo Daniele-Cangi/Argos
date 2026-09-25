@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from argos.evaluation.technical_campaign import TechnicalScenarioStatus
 from argos.evaluation.technical_execution import (
     FunctionalScenarioEvidenceV1,
+    T1_MAXIMUM_DURATION_SECONDS,
     assess_functional_scenario,
 )
 
@@ -77,6 +78,14 @@ def test_t1_reports_all_simultaneous_failures() -> None:
     )
     assert result.reason is not None
     assert result.reason.count(";") == 3
+
+
+def test_t1_fails_when_end_to_end_duration_exceeds_frozen_bound() -> None:
+    result = assess_functional_scenario(
+        _evidence(ended_at=NOW + timedelta(seconds=T1_MAXIMUM_DURATION_SECONDS + 1))
+    )
+    assert result.status is TechnicalScenarioStatus.FAILED
+    assert "duration exceeded" in (result.reason or "")
 
 
 def test_evidence_refuses_invalid_timeline_and_hashes() -> None:

@@ -54,10 +54,11 @@ calibration. Resolution polling belongs to a separate resumable cohort and an
 unresolved target remains pending rather than becoming a fabricated negative.
 
 The repository contains the ADR-0019 scenario-result schema, resumable monitor
-and adversarial tests. The first complete bounded matrix is published under
-`experiments/m4-technical-20260924-v1/`; all T1--T8 scenarios passed. This
-technical qualification is a prerequisite for, but does not authorize or
-substitute for, a frozen predictive protocol.
+and adversarial tests. A complete matrix must pass the end-to-end duration and
+frame bounds enforced by `technical_campaign.v1`, and its published claim must
+include repository-verifiable evidence bytes. Technical qualification is a
+prerequisite for, but does not authorize or substitute for, a frozen predictive
+protocol.
 
 ## Governance checks
 

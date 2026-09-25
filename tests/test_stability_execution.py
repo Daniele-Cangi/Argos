@@ -7,6 +7,7 @@ from argos.evaluation.technical_campaign import TechnicalScenarioStatus
 from argos.evaluation.technical_execution import (
     T2_EXPECTED_SAMPLE_INTERVAL_SECONDS,
     T2_MAXIMUM_ARTIFACT_BYTES,
+    T2_MAXIMUM_DURATION_SECONDS,
     T2_MAXIMUM_RESIDENT_MEMORY_BYTES,
     T2_MAXIMUM_SAMPLE_GAP_SECONDS,
     StabilityResourceSampleV1,
@@ -108,3 +109,12 @@ def test_t2_refuses_weakened_frozen_bounds() -> None:
         _evidence(maximum_sample_gap_seconds=600)
     with pytest.raises(ValidationError, match="frozen protocol"):
         _evidence(maximum_resident_memory_bytes=T2_MAXIMUM_RESIDENT_MEMORY_BYTES * 2)
+
+
+def test_t2_fails_when_end_to_end_duration_exceeds_frozen_bound() -> None:
+    end = NOW + timedelta(seconds=T2_MAXIMUM_DURATION_SECONDS + 1)
+    result = assess_stability_scenario(
+        _evidence(ended_at=end, samples=(_sample(0), _sample(1), _sample(2, seconds=7201)))
+    )
+    assert result.status is TechnicalScenarioStatus.FAILED
+    assert "duration exceeded" in (result.reason or "")

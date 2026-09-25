@@ -17,7 +17,7 @@ Work top to bottom unless a milestone dependency requires reordering.
       digests.
 - [x] Add a repository-tracked T2 stability executor with process-tree memory,
       artifact growth and cadence samples under frozen resource bounds.
-- [x] Execute the bounded T1-T8 matrix in
+- [ ] Execute the bounded T1-T8 matrix in
       `docs/research/m4-resilient-validation-plan.md` before freezing another
       live predictive campaign.
 - [ ] Add an append-only late-resolution record that can score a previously

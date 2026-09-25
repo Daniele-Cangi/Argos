@@ -33,6 +33,12 @@ __all__ = [
     "assess_stability_scenario",
 ]
 
+T1_MAXIMUM_DURATION_SECONDS = 600
+T1_TERMINALIZATION_RESERVE_SECONDS = 60
+T1_CAPTURE_DURATION_SECONDS = T1_MAXIMUM_DURATION_SECONDS - T1_TERMINALIZATION_RESERVE_SECONDS
+T2_MAXIMUM_DURATION_SECONDS = 7_200
+T2_TERMINALIZATION_RESERVE_SECONDS = 60
+T2_CAPTURE_DURATION_SECONDS = T2_MAXIMUM_DURATION_SECONDS - T2_TERMINALIZATION_RESERVE_SECONDS
 T2_EXPECTED_SAMPLE_INTERVAL_SECONDS = 60
 T2_MAXIMUM_SAMPLE_GAP_SECONDS = 120
 T2_MAXIMUM_RESIDENT_MEMORY_BYTES = 536_870_912
@@ -116,6 +122,8 @@ def assess_functional_scenario(evidence: FunctionalScenarioEvidenceV1) -> Techni
     """Apply the frozen T1 pass rule and preserve every failing condition."""
 
     reasons: list[str] = []
+    if (evidence.ended_at - evidence.started_at).total_seconds() > T1_MAXIMUM_DURATION_SECONDS:
+        reasons.append("scenario duration exceeded its frozen bound")
     if not evidence.capture_completed:
         reasons.append("capture run is not completed")
     if evidence.capture_interrupted:
@@ -275,6 +283,8 @@ def assess_stability_scenario(evidence: StabilityScenarioEvidenceV1) -> Technica
     """Apply the frozen T2 accounting, cadence and resource bounds."""
 
     reasons: list[str] = []
+    if (evidence.ended_at - evidence.started_at).total_seconds() > T2_MAXIMUM_DURATION_SECONDS:
+        reasons.append("scenario duration exceeded its frozen bound")
     if not evidence.capture_completed:
         reasons.append("capture run is not completed")
     if evidence.capture_interrupted:

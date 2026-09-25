@@ -2,38 +2,28 @@
 
 Last updated: 2026-09-25
 
-## 2026-09-25 bounded technical campaign result
+## 2026-09-25 bounded technical campaign correction
 
-The ADR-0019 bounded technical matrix is complete. Campaign
-`m4-technical-20260924-t1-t3-v1`, executed from clean revision
-`179245a6de2a3270756d1be8d26d6a1a2684a9cc`, contains exactly one coherent
-result for T1 through T8 and all eight results are `PASSED` with no declared
-limitations. The portable aggregate is published at
-`experiments/m4-technical-20260924-v1/technical-campaign.json` and binds the
-configuration, public token inputs, deterministic fixture identities and every
-scenario artifact by SHA-256.
+The first attempted ADR-0019 aggregate is not technically qualified. Review
+found that T1's end-to-end interval was 610.441618 seconds against its 600
+second limit and T2's was 7,202.452643 seconds against its 7,200 second limit.
+Their capture requests respected the old values, but the executors failed to
+reserve time for setup and terminal evidence materialization. The standalone
+assessors also omitted the end-to-end duration check. T1 and T2 therefore
+cannot remain `PASSED`; no timestamp or bound is widened retroactively.
 
-T1 captured 290 frames and produced two identical read-only replay state
-hashes without mutating its SQLite database. T2 captured 1,582 frames over two
-hours with complete accounting and resource/cadence samples inside the frozen
-bounds. T3 captured 5,089 frames over six hours and persisted an intact,
-reloadable checkpoint chain. T4--T6 recovered honestly from deterministic
-network, process and storage failures; T7 handled every declared terminal
-state; T8 produced identical semantic identities from equivalent C: and D:
-inputs.
+The same review found that a summary containing only hashes and a producer-local
+`D:` path is not independently verifiable from a clean checkout and therefore
+does not satisfy ADR-0017. The premature aggregate was removed from the proposed
+change. The corrected executors reserve terminalization time, assess the frozen
+duration explicitly, and make `technical_campaign.v1` reject a passing result
+outside its duration or frame bounds. A fresh complete T1--T8 campaign and
+repository-contained proof bytes are required before the backlog item can be
+closed.
 
-An earlier T4--T8 operator run used a different campaign identifier. Those
-valid standalone results were not relabeled or admitted to the aggregate.
-Because the scenarios are deterministic and bounded, T4--T8 were rerun at the
-same clean revision using the T1--T3 campaign identifier. Only that coherent
-execution appears in `technical_campaign.v1`.
-
-The matrix establishes technical qualification, not forecast accuracy, edge,
-predictive superiority or calibration. V8 remains unchanged and blocked under
-its frozen protocol. The next authorized research step is to freeze a separate
-asynchronous cohort with 10--20 intended targets; ADR-0014's requirement for at
-least 30 resolved targets and outcome/category dispersion still governs any
-future calibration claim.
+V8 remains unchanged and blocked under its frozen protocol. No forecast
+accuracy, edge, predictive superiority or calibration claim follows from this
+technical work.
 
 ## 2026-09-20 V8 result and methodology correction
 
