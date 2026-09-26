@@ -14,13 +14,15 @@ validated `TechnicalCampaignV1` aggregate derived from the original run.
 The repository verifier independently recomputes the byte hashes, scenario
 artifact identities, ordering, bounds, outcomes, runner terminal state and
 aggregate fields.
-This is technical qualification only, and remains proposed until review and
-CI on the closure PR are complete.
+This is technical qualification only. Closure PR #18 passed Windows/Ubuntu CI
+and was merged at `843327207cb1a4976cb158db24e33de44d0e7424`.
 
 The next M4 step is the asynchronous cohort described in
-`docs/research/m4-asynchronous-cohort-design.md`. No live cohort has been
-frozen or launched. The append-only late-resolution record and exact frozen
-UTC protocol remain prerequisites. V8's negative result is unchanged; no
+`docs/research/m4-asynchronous-cohort-design.md`. A versioned frozen-forecast
+snapshot and late-final-outcome boundary are under implementation on a
+dedicated branch, with adversarial temporal and archive checks. This does not
+yet supply an integrated live owner, scoring or a cohort protocol. No live
+cohort has been frozen or launched. V8's negative result is unchanged; no
 predictive or calibration claim has been established.
 
 ## 2026-09-25 bounded technical campaign correction

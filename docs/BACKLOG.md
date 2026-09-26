@@ -19,12 +19,13 @@ Work top to bottom unless a milestone dependency requires reordering.
       artifact growth and cadence samples under frozen resource bounds.
 - [x] Execute the fresh bounded T1-T8 matrix in
       `docs/research/m4-resilient-validation-plan.md`: all eight scenarios
-      passed on 2026-09-26. Repository-contained proof is proposed in the
-      closure PR and still requires independent review and green CI before a
-      live predictive campaign is frozen.
+      passed on 2026-09-26. Repository-contained proof passed Windows/Ubuntu
+      CI and closure PR #18 was merged. This qualifies machinery, not
+      prediction.
 - [ ] Add an append-only late-resolution record that can score a previously
       frozen forecast without reconstructing a historical first-observed
-      cutoff.
+      cutoff. A versioned snapshot/outcome schema and archive verifier are
+      under review; operator integration and scoring remain open.
 - [ ] Build the next asynchronous cohort with at least 10-20 intended targets;
       retain ADR-0014's 30-resolved-target and dispersion requirements for any
       calibration claim.

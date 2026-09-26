@@ -100,6 +100,8 @@ class EvidenceArtifactKind(StrEnum):
     TARGET_TERMINAL = "target_terminal_evidence"
     TARGET_EXCLUSION = "target_exclusion"
     EXPERIMENT_AGGREGATE = "experiment_aggregate"
+    FROZEN_FORECAST_SNAPSHOT = "frozen_forecast_snapshot"
+    LATE_FINAL_OUTCOME = "late_final_outcome"
 
 
 class ProspectiveExperimentProtocolV1(VersionedModel):

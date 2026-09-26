@@ -1,11 +1,11 @@
 # M4 asynchronous prospective cohort: design gate
 
-Status: design in progress, **no live cohort frozen or launched**. The owner's
-2026-09-26 decision authorizes beginning this phase; it does not turn T1–T8
-into a predictive or calibration result. A live start still requires the
-reproducible proof publication, append-only late-resolution boundary, clean
-code revision, exact UTC windows, and a persisted protocol before first target
-selection or capture.
+Status: design and implementation in progress, **no live cohort frozen or
+launched**. The owner's 2026-09-26 decision authorizes beginning this phase;
+it does not turn T1–T8 into a predictive or calibration result. Technical proof
+publication and CI are complete in merged PR #18. A live start still requires
+an integrated late-resolution owner and scorer, clean code revision, exact UTC
+windows, and a persisted protocol before first target selection or capture.
 
 ## Separate the clocks
 
@@ -53,10 +53,18 @@ claim edge or superiority from a partial cohort.
 
 ## Implementation and launch gate
 
-1. Merge the corrected T1–T8 implementation and repository-contained proof
-   only after clean-checkout verification and CI pass.
-2. Implement and adversarially verify the append-only late-resolution record
-   and an exclusive resumable lifecycle owner; preserve original raw bytes.
+1. Complete: merge the corrected T1–T8 implementation and repository-contained
+   proof after clean-checkout verification and Windows/Ubuntu CI pass (PR #18).
+2. In progress: implement and adversarially verify the append-only
+   late-resolution record and an exclusive resumable lifecycle owner; preserve
+   original raw bytes. `FrozenForecastSnapshotV1` binds the four baseline
+   forecasts, target receipt, capture identity, manifest hash, revision and
+   configuration. `LateFinalOutcomeV1` binds the original protocol, durable
+   snapshot, contiguous lifecycle/receipt chain and actual first-observed
+   final retrieval time. Archive verification reloads every referenced record
+   and source payload, re-normalizes Gamma finality and refuses an earlier raw
+   final hidden as nonfinal. This schema/verification slice is not yet a live
+   owner, gap ledger or scorer, so it does not satisfy the full gate.
 3. Freeze the exact UTC blocks, query, bounds, cutoff rule, stopping rule,
    missingness, metrics, input identities and code revision in a new protocol.
    Test candidate availability without admitting probe observations.
