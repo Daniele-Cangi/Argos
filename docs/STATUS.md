@@ -9,9 +9,11 @@ The fresh `m4-technical-20260926-v1` run completed T1–T8 in order, all
 `7b75006c6adb1f01d84ab675e46960d47c12cc64`. The original source tree
 remains on D:. `experiments/m4-technical-20260926-v1/proof/` now contains a
 post-run repository copy of all 14,638 proof files (including the separate
-T8 C: fixture), a SHA-256 file manifest and an index binding its ZIP bytes.
+T8 C: fixture), a SHA-256 file manifest, a superseding proof index and a
+validated `TechnicalCampaignV1` aggregate derived from the original run.
 The repository verifier independently recomputes the byte hashes, scenario
-artifact identities, ordering, bounds, outcomes and runner terminal state.
+artifact identities, ordering, bounds, outcomes, runner terminal state and
+aggregate fields.
 This is technical qualification only, and remains proposed until review and
 CI on the closure PR are complete.
 
