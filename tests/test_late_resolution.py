@@ -580,6 +580,48 @@ def test_late_outcome_rejects_false_receipt_order(tmp_path: Path, case: str, mes
         outcome.model_copy(update={"lifecycle_receipts": receipts})
 
 
+def test_late_record_cannot_relabel_an_in_deadline_final_as_late(tmp_path: Path) -> None:
+    outcome = _late_record(tmp_path)
+    final, receipt = _observation_with(
+        tmp_path, outcome.lifecycle_observations[-1], retrieved_at=DEADLINE
+    )
+    with pytest.raises(ValidationError, match="follow the old lifecycle deadline"):
+        outcome.model_copy(
+            update={
+                "selected_cutoff": DEADLINE,
+                "lifecycle_observations": (outcome.lifecycle_observations[0], final),
+                "lifecycle_receipts": (outcome.lifecycle_receipts[0], receipt),
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("normalized_at", "message"),
+    [
+        (FINAL_AT - timedelta(seconds=1), "predates source retrieval"),
+        (FINAL_AT + timedelta(seconds=2), "postdates source receipt"),
+    ],
+)
+def test_resolution_normalization_must_fit_retrieval_and_receipt(
+    tmp_path: Path, normalized_at: datetime, message: str
+) -> None:
+    outcome = _late_record(tmp_path)
+    resolution = outcome.resolution.model_copy(update={"normalized_at": normalized_at})
+    final, receipt = _observation_with(
+        tmp_path,
+        outcome.lifecycle_observations[-1],
+        resolution_record_sha256=record_sha256(resolution.to_record()),
+    )
+    with pytest.raises(ValidationError, match=message):
+        outcome.model_copy(
+            update={
+                "resolution": resolution,
+                "lifecycle_observations": (outcome.lifecycle_observations[0], final),
+                "lifecycle_receipts": (outcome.lifecycle_receipts[0], receipt),
+            }
+        )
+
+
 def test_backdated_first_observed_cutoff_is_refused_even_with_matching_id(
     tmp_path: Path,
 ) -> None:
