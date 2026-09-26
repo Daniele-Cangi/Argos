@@ -55,3 +55,16 @@ def test_digest_valid_but_false_aggregate_is_refused(tmp_path: Path) -> None:
     completed = _verify(tmp_path)
     assert completed.returncode != 0
     assert "declared status counts" in completed.stderr
+
+
+def test_supersession_cannot_discard_limitations(tmp_path: Path) -> None:
+    for name in ("proof-index.json", "proof-index-v2.json"):
+        shutil.copyfile(PROOF / name, tmp_path / name)
+    index = json.loads((tmp_path / "proof-index-v2.json").read_bytes())
+    index["limitations"] = []
+    (tmp_path / "proof-index-v2.json").write_bytes(
+        (json.dumps(index, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    )
+    completed = _verify(tmp_path)
+    assert completed.returncode != 0
+    assert "supersession changed limitations" in completed.stderr

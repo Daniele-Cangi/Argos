@@ -185,7 +185,14 @@ def verify(proof: Path) -> None:
     if digest(previous) != index.get("predecessor_index_sha256"):
         raise ValueError("proof index supersession chain is broken")
     v1 = json.loads(previous)
-    for key in ("campaign_id", "code_revision", "archive", "manifest", "result_paths"):
+    for key in (
+        "campaign_id",
+        "code_revision",
+        "archive",
+        "manifest",
+        "result_paths",
+        "limitations",
+    ):
         if index.get(key) != v1.get(key):
             raise ValueError(f"proof index supersession changed {key}")
     if index.get("campaign_id") != CAMPAIGN or index.get("code_revision") != REVISION:
