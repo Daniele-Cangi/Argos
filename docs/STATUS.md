@@ -1,6 +1,25 @@
 # ARGOS status
 
-Last updated: 2026-09-25
+Last updated: 2026-09-26
+
+## 2026-09-26 corrected technical qualification and M4 design gate
+
+The fresh `m4-technical-20260926-v1` run completed T1–T8 in order, all
+`PASSED`, against clean revision
+`7b75006c6adb1f01d84ab675e46960d47c12cc64`. The original source tree
+remains on D:. `experiments/m4-technical-20260926-v1/proof/` now contains a
+post-run repository copy of all 14,638 proof files (including the separate
+T8 C: fixture), a SHA-256 file manifest and an index binding its ZIP bytes.
+The repository verifier independently recomputes the byte hashes, scenario
+artifact identities, ordering, bounds, outcomes and runner terminal state.
+This is technical qualification only, and remains proposed until review and
+CI on the closure PR are complete.
+
+The next M4 step is the asynchronous cohort described in
+`docs/research/m4-asynchronous-cohort-design.md`. No live cohort has been
+frozen or launched. The append-only late-resolution record and exact frozen
+UTC protocol remain prerequisites. V8's negative result is unchanged; no
+predictive or calibration claim has been established.
 
 ## 2026-09-25 bounded technical campaign correction
 

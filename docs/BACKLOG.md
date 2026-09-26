@@ -17,9 +17,11 @@ Work top to bottom unless a milestone dependency requires reordering.
       digests.
 - [x] Add a repository-tracked T2 stability executor with process-tree memory,
       artifact growth and cadence samples under frozen resource bounds.
-- [ ] Execute the bounded T1-T8 matrix in
-      `docs/research/m4-resilient-validation-plan.md` before freezing another
-      live predictive campaign.
+- [x] Execute the fresh bounded T1-T8 matrix in
+      `docs/research/m4-resilient-validation-plan.md`: all eight scenarios
+      passed on 2026-09-26. Repository-contained proof is proposed in the
+      closure PR and still requires independent review and green CI before a
+      live predictive campaign is frozen.
 - [ ] Add an append-only late-resolution record that can score a previously
       frozen forecast without reconstructing a historical first-observed
       cutoff.
