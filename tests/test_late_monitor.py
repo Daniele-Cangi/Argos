@@ -18,6 +18,7 @@ from argos.baselines import (
 from argos.clock import ensure_utc
 from argos.config.manifest import WorkingTreeStatus
 from argos.domain.provenance import SourceProvenanceV1, sha256_hex
+from argos.domain.versioning import SchemaVersionError
 from argos.evaluation import (
     AcrossTargetWeighting,
     CutoffBasis,
@@ -44,8 +45,10 @@ from argos.evaluation import (
 )
 from argos.evaluation.late_monitor import LateResolutionStatus
 from argos.evaluation.prospective import build_target_id, persist_evidence_record
+from argos.monitoring.resumable import ResumableMonitorCheckpointV1
 from argos.resolution import ResolutionStatus
 from argos.sources.gamma import GammaResponse
+from argos.store.raw_archive import write_raw_payload
 
 BASE = datetime(2026, 9, 1, tzinfo=UTC)
 START = BASE + timedelta(hours=1)
@@ -483,6 +486,45 @@ async def test_resume_reconciles_archived_observation_before_polling_again(tmp_p
 
 
 @pytest.mark.anyio
+async def test_resume_rejects_checkpoint_head_that_disagrees_with_archive_prefix(
+    tmp_path: Path,
+) -> None:
+    schedule_at = DEADLINE + timedelta(seconds=20)
+    first_at = schedule_at + timedelta(seconds=1)
+    second_at = first_at + timedelta(seconds=61)
+    clock = _Clock(schedule_at)
+    monitor = _monitor(
+        tmp_path,
+        clock,
+        [
+            _response(_pending_payload(), first_at),
+            _response(_pending_payload(), second_at),
+        ],
+    )
+
+    first = await monitor.poll_once()
+    assert first.observation is not None
+    checkpoint = first.checkpoint.model_copy(
+        update={
+            "last_receipt_id": "different-receipt",
+            "last_record_sha256": "0" * 64,
+        }
+    )
+    clock.set(first.next_poll_at or first_at)
+    second = await monitor.poll_once()
+    assert second.observation is not None and second.observation.ordinal == 2
+
+    restarted = _monitor(tmp_path, _Clock(second_at + timedelta(seconds=1)), [])
+    restarted.monitor.save(checkpoint)
+    with pytest.raises(
+        ValueError, match="checkpoint head disagrees with its durable lifecycle prefix"
+    ):
+        await restarted.poll_once()
+
+    assert cast(_Source, restarted.source).calls == 0
+
+
+@pytest.mark.anyio
 async def test_resume_reconciles_archived_finality_before_stopping(tmp_path: Path) -> None:
     schedule_at = DEADLINE + timedelta(seconds=20)
     final_at = schedule_at + timedelta(seconds=1)
@@ -896,12 +938,14 @@ async def test_late_final_score_cannot_predate_the_observed_cutoff(tmp_path: Pat
     [
         ("missing_outcome", "requires a bound final outcome"),
         ("not_final", "requires a bound final outcome"),
-        ("incomplete_accounting", "account for every planned baseline"),
+        ("incomplete_accounting", "denominator disagrees with the frozen snapshot"),
         ("scored_without_evaluations", "requires at least one evaluation"),
         ("unscorable_with_evaluations", "cannot carry evaluations"),
         ("duplicate_evaluations", "unique frozen forecasts"),
         ("overlapping_abstention", "both scored and abstained"),
         ("epsilon_mismatch", "declared clipping epsilon"),
+        ("forecast_not_in_snapshot", "accounting does not match the frozen forecasts"),
+        ("score_disagrees_with_snapshot", "late evaluation disagrees with its frozen forecast"),
         ("wrong_identity", "identity disagrees"),
     ],
 )
@@ -935,10 +979,14 @@ async def test_late_score_record_rejects_inconsistent_final_claims(
     elif mutation == "duplicate_evaluations":
         record["evaluations"][1] = record["evaluations"][0]
     elif mutation == "overlapping_abstention":
+        record["evaluations"] = record["evaluations"][:3]
         record["abstained_forecast_ids"] = [record["evaluations"][0]["forecast_id"]]
-        record["planned_forecast_count"] += 1
     elif mutation == "epsilon_mismatch":
         record["log_loss_epsilon"] = "0.01"
+    elif mutation == "forecast_not_in_snapshot":
+        record["evaluations"][0]["forecast_id"] = "not-in-the-frozen-snapshot"
+    elif mutation == "score_disagrees_with_snapshot":
+        record["evaluations"][0]["evaluation_run_id"] = "not-the-frozen-run"
     else:
         record["result_id"] = "wrong-result-id"
 
@@ -1061,6 +1109,267 @@ async def test_late_resume_records_a_gap_instead_of_backfilling(tmp_path: Path) 
     ]
     assert len(evidence_gaps) == 1
     assert evidence_gaps[0]["attempted_ordinal"] == 2
+
+
+@pytest.mark.anyio
+async def test_gap_archive_recovers_idempotently_after_checkpoint_save_failure(
+    tmp_path: Path,
+) -> None:
+    schedule_at = DEADLINE + timedelta(seconds=20)
+    first_at = schedule_at + timedelta(seconds=1)
+    second_at = first_at + timedelta(seconds=200)
+    clock = _Clock(schedule_at)
+    monitor = _monitor(
+        tmp_path,
+        clock,
+        [
+            _response(_pending_payload(), first_at),
+            _response(_pending_payload(), second_at),
+        ],
+    )
+
+    first = await monitor.poll_once()
+    assert first.next_poll_at is not None
+    original_save = monitor.monitor.save
+    failed = False
+
+    def fail_once_when_gap_is_checkpointed(checkpoint: Any) -> None:
+        nonlocal failed
+        if checkpoint.gaps and not failed:
+            failed = True
+            raise OSError("simulated checkpoint rename failure")
+        original_save(checkpoint)
+
+    monitor.monitor.save = fail_once_when_gap_is_checkpointed  # type: ignore[method-assign]
+    clock.set(first.next_poll_at + timedelta(seconds=121))
+    with pytest.raises(OSError, match="simulated checkpoint rename failure"):
+        await monitor.poll_once()
+
+    gap_paths = [
+        path
+        for path in (tmp_path / "evidence" / "argos_evidence").glob("*.raw.json")
+        if orjson.loads(path.read_bytes()).get("schema_version")
+        == LifecycleMonitorGapEvidenceV1.schema_version
+    ]
+    assert len(gap_paths) == 1
+
+    restarted = _monitor(tmp_path, _Clock(clock.now()), [])
+    recovered = await restarted.poll_once()
+    assert not recovered.poll_performed
+    assert len(recovered.checkpoint.gaps) == 1
+    gap_paths_after_recovery = [
+        path
+        for path in (tmp_path / "evidence" / "argos_evidence").glob("*.raw.json")
+        if orjson.loads(path.read_bytes()).get("schema_version")
+        == LifecycleMonitorGapEvidenceV1.schema_version
+    ]
+    assert len(gap_paths_after_recovery) == 1
+
+
+@pytest.mark.anyio
+async def test_append_failure_gap_uses_the_durable_observation_as_predecessor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    schedule_at = DEADLINE + timedelta(seconds=20)
+    retrieved_at = schedule_at + timedelta(seconds=1)
+    monitor = _monitor(
+        tmp_path,
+        _Clock(schedule_at),
+        [_response(_pending_payload(), retrieved_at)],
+    )
+    original_persist = persist_evidence_record
+    failed = False
+
+    def fail_receipt_link_once(directory: Path, **kwargs: Any) -> Any:
+        nonlocal failed
+        record = kwargs.get("record")
+        if (
+            not failed
+            and getattr(record, "schema_version", None) == "lifecycle_receipt_chain_link.v1"
+        ):
+            failed = True
+            raise OSError("simulated receipt-link append failure")
+        return original_persist(directory, **kwargs)
+
+    monkeypatch.setattr(
+        "argos.evaluation.late_monitor.persist_evidence_record", fail_receipt_link_once
+    )
+    with pytest.raises(OSError, match="simulated receipt-link append failure"):
+        await monitor.poll_once()
+
+    records = [
+        orjson.loads(path.read_bytes())
+        for path in (tmp_path / "evidence" / "argos_evidence").glob("*.raw.json")
+    ]
+    observations = [
+        record
+        for record in records
+        if record.get("schema_version") == LifecycleObservationV1.schema_version
+    ]
+    gaps = [
+        record
+        for record in records
+        if record.get("schema_version") == LifecycleMonitorGapEvidenceV1.schema_version
+    ]
+    assert len(observations) == len(gaps) == 1
+    assert gaps[0]["predecessor_observation_id"] == observations[0]["lifecycle_observation_id"]
+    receipt_links = [
+        record
+        for record in records
+        if record.get("schema_version") == "lifecycle_receipt_chain_link.v1"
+    ]
+    assert len(receipt_links) == 1
+    assert (
+        gaps[0]["predecessor_receipt_id"] == receipt_links[0]["observation_receipt"]["receipt_id"]
+    )
+
+
+@pytest.mark.anyio
+async def test_malformed_archived_lifecycle_record_fails_closed(tmp_path: Path) -> None:
+    clock = _Clock(DEADLINE + timedelta(seconds=20))
+    monitor = _monitor(tmp_path, clock, [])
+    malformed = b"{not-json"
+    write_raw_payload(
+        monitor.evidence_archive,
+        raw=malformed,
+        provenance=SourceProvenanceV1(
+            source="argos_evidence",
+            endpoint=f"argos-evidence://{LifecycleObservationV1.schema_version}/malformed",
+            retrieved_at=clock.now(),
+            raw_sha256=sha256_hex(malformed),
+            byte_length=len(malformed),
+        ),
+    )
+
+    restarted = _monitor(tmp_path, clock, [])
+    with pytest.raises(ValueError, match="evidence archive contains malformed JSON"):
+        restarted._load_chain()
+
+
+def test_lifecycle_evidence_decoder_rejects_nonobjects_and_unknown_schemas() -> None:
+    with pytest.raises(ValueError, match="not a JSON object"):
+        LateLifecycleMonitor._decode_evidence_record(b"[]")
+    with pytest.raises(ValueError, match="no schema version"):
+        LateLifecycleMonitor._decode_evidence_record(b"{}")
+    with pytest.raises(SchemaVersionError, match="no registered model declares"):
+        LateLifecycleMonitor._decode_evidence_record(b'{"schema_version":"future.v99"}')
+
+
+def test_archived_gap_reconciliation_is_idempotent_and_persists_its_anchor(
+    tmp_path: Path,
+) -> None:
+    now = DEADLINE + timedelta(seconds=20)
+    monitor = _monitor(tmp_path, _Clock(now), [])
+    checkpoint = monitor._initial_checkpoint()
+    started_at = checkpoint.updated_at + timedelta(seconds=1)
+    ended_at = started_at + timedelta(seconds=2)
+    monitor._persist_gap(
+        checkpoint=checkpoint,
+        started_at=started_at,
+        ended_at=ended_at,
+        reason="simulated owner interruption",
+    )
+
+    reconciled = monitor._reconcile_archived_gaps(checkpoint, checkpoint)
+    repeated = monitor._reconcile_archived_gaps(checkpoint, reconciled)
+    assert len(reconciled.gaps) == 1
+    assert repeated == reconciled
+    assert repeated.updated_at == ended_at
+
+
+@pytest.mark.anyio
+async def test_archived_gap_ahead_of_durable_chain_is_rejected(tmp_path: Path) -> None:
+    schedule_at = DEADLINE + timedelta(seconds=20)
+    first_at = schedule_at + timedelta(seconds=1)
+    second_at = first_at + timedelta(seconds=61)
+    clock = _Clock(schedule_at)
+    monitor = _monitor(
+        tmp_path,
+        clock,
+        [
+            _response(_pending_payload(), first_at),
+            _response(_pending_payload(), second_at),
+        ],
+    )
+    first = await monitor.poll_once()
+    assert first.next_poll_at is not None
+    clock.set(first.next_poll_at)
+    second = await monitor.poll_once()
+    assert second.checkpoint.next_ordinal == 2
+    monitor._persist_gap(
+        checkpoint=second.checkpoint,
+        started_at=clock.now(),
+        ended_at=clock.now() + timedelta(seconds=1),
+        reason="impossible third attempt in an empty checkpoint",
+    )
+
+    checkpoint = monitor._initial_checkpoint()
+    with pytest.raises(ValueError, match="future poll ordinal"):
+        monitor._reconcile_archived_gaps(checkpoint, checkpoint)
+
+
+def test_archived_gap_that_predates_checkpoint_is_rejected(tmp_path: Path) -> None:
+    monitor = _monitor(tmp_path, _Clock(DEADLINE + timedelta(seconds=20)), [])
+    initial = monitor._initial_checkpoint()
+    started_at = initial.updated_at + timedelta(seconds=1)
+    ended_at = started_at + timedelta(seconds=2)
+    monitor._persist_gap(
+        checkpoint=initial,
+        started_at=started_at,
+        ended_at=ended_at,
+        reason="simulated owner interruption",
+    )
+    advanced_checkpoint = ResumableMonitorCheckpointV1(
+        campaign_id=initial.campaign_id,
+        configuration_sha256=initial.configuration_sha256,
+        next_ordinal=0,
+        updated_at=started_at + timedelta(seconds=1),
+    )
+
+    with pytest.raises(ValueError, match="regresses behind the checkpoint"):
+        monitor._reconcile_archived_gaps(advanced_checkpoint, advanced_checkpoint)
+
+
+def test_gap_persistence_is_idempotent_and_invalidates_failed_archive_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = DEADLINE + timedelta(seconds=20)
+    monitor = _monitor(tmp_path, _Clock(now), [])
+    checkpoint = monitor._initial_checkpoint()
+    started_at = checkpoint.updated_at + timedelta(seconds=1)
+    ended_at = started_at + timedelta(seconds=2)
+    first = monitor._persist_gap(
+        checkpoint=checkpoint,
+        started_at=started_at,
+        ended_at=ended_at,
+        reason="same immutable gap",
+    )
+    second = monitor._persist_gap(
+        checkpoint=checkpoint,
+        started_at=started_at,
+        ended_at=ended_at,
+        reason="same immutable gap",
+    )
+    assert first == second
+    assert len(monitor._load_gap_evidence()) == 1
+
+    failing_monitor = _monitor(tmp_path / "failed", _Clock(now), [])
+
+    def fail_gap_write(directory: Path, **kwargs: Any) -> Any:
+        if isinstance(kwargs.get("record"), LifecycleMonitorGapEvidenceV1):
+            raise OSError("simulated gap archive failure")
+        return persist_evidence_record(directory, **kwargs)
+
+    monkeypatch.setattr("argos.evaluation.late_monitor.persist_evidence_record", fail_gap_write)
+    failed_checkpoint = failing_monitor._initial_checkpoint()
+    with pytest.raises(OSError, match="simulated gap archive failure"):
+        failing_monitor._persist_gap(
+            checkpoint=failed_checkpoint,
+            started_at=failed_checkpoint.updated_at + timedelta(seconds=1),
+            ended_at=failed_checkpoint.updated_at + timedelta(seconds=2),
+            reason="failed immutable gap",
+        )
+    assert failing_monitor._gap_cache is None
 
 
 @pytest.mark.anyio

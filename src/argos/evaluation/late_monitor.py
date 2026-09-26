@@ -23,7 +23,7 @@ from pydantic import Field, field_validator, model_validator
 
 from argos.clock import Clock, ensure_utc
 from argos.domain.provenance import SourceProvenanceV1
-from argos.domain.versioning import VersionedModel, ensure_supported_version
+from argos.domain.versioning import VersionedModel, ensure_supported_version, resolve_schema
 from argos.evaluation.bundle import record_sha256
 from argos.evaluation.late_resolution import (
     FrozenForecastSnapshotV1,
@@ -48,6 +48,7 @@ from argos.evaluation.scoring import (
     score_forecast_v2,
 )
 from argos.monitoring.resumable import (
+    MonitorGapV1,
     PollCommit,
     ResumableMonitor,
     ResumableMonitorCheckpointV1,
@@ -413,7 +414,7 @@ class LateScoreDisposition(StrEnum):
 
 
 class LateScoringResultV1(VersionedModel):
-    """Per-target scoring outcome; pending targets carry no fabricated score."""
+    """Per-target score bound to the immutable forecast snapshot."""
 
     schema_version: ClassVar[str] = "late_scoring_result.v1"
 
@@ -421,6 +422,7 @@ class LateScoringResultV1(VersionedModel):
     experiment_id: str = Field(min_length=1)
     target_id: str = Field(min_length=1)
     snapshot_id: str = Field(min_length=1)
+    snapshot: FrozenForecastSnapshotV1
     late_outcome_id: str | None = Field(default=None, min_length=1)
     disposition: LateScoreDisposition
     latest_finality: ResolutionStatus
@@ -437,6 +439,15 @@ class LateScoringResultV1(VersionedModel):
 
     @model_validator(mode="after")
     def _scoring_state_is_truthful(self) -> LateScoringResultV1:
+        if (
+            self.snapshot.snapshot_id != self.snapshot_id
+            or self.snapshot.target.experiment_id != self.experiment_id
+            or self.snapshot.target.target_id != self.target_id
+        ):
+            raise ValueError("late score is not bound to its frozen forecast snapshot")
+        forecasts = {forecast.forecast_id: forecast for forecast in self.snapshot.forecasts}
+        if self.planned_forecast_count != len(forecasts):
+            raise ValueError("late score denominator disagrees with the frozen snapshot")
         if self.disposition is LateScoreDisposition.PENDING_RESOLUTION:
             if (
                 self.late_outcome_id is not None
@@ -463,6 +474,35 @@ class LateScoringResultV1(VersionedModel):
                 raise ValueError("a frozen forecast cannot be both scored and abstained")
             if any(item.log_loss_epsilon != self.log_loss_epsilon for item in self.evaluations):
                 raise ValueError("late evaluations disagree with the declared clipping epsilon")
+            accounted_ids = set(forecast_ids).union(self.abstained_forecast_ids)
+            if accounted_ids != set(forecasts):
+                raise ValueError("late score accounting does not match the frozen forecasts")
+            for evaluation in self.evaluations:
+                forecast = forecasts.get(evaluation.forecast_id)
+                if forecast is None:
+                    raise ValueError("late evaluation names no frozen forecast")
+                if (
+                    forecast.abstained
+                    or forecast.raw_score is None
+                    or evaluation.evaluation_run_id != forecast.evaluation_run_id
+                    or evaluation.contract_id
+                    != (forecast.contract_id or self.snapshot.target.contract_id)
+                    or evaluation.forecast_method != forecast.method.value
+                    or evaluation.condition_id != forecast.condition_id
+                    or evaluation.token_id != forecast.token_id
+                    or evaluation.score != forecast.raw_score
+                    or evaluation.calibration_status != forecast.calibration_status.value
+                ):
+                    raise ValueError("late evaluation disagrees with its frozen forecast")
+            abstained_forecasts = {
+                forecast_id
+                for forecast_id, forecast in forecasts.items()
+                if forecast.abstained or forecast.raw_score is None
+            }
+            if set(self.abstained_forecast_ids) != abstained_forecasts:
+                raise ValueError("late score abstentions disagree with the frozen snapshot")
+            if len({item.resolution_id for item in self.evaluations}) > 1:
+                raise ValueError("late evaluations disagree on their final resolution")
         if len(set(self.abstained_forecast_ids)) != len(self.abstained_forecast_ids):
             raise ValueError("abstained forecast ids must be unique")
         expected_id = _late_score_identity(
@@ -486,6 +526,7 @@ class LateScoringResultV1(VersionedModel):
 
     def to_record(self) -> dict[str, Any]:
         record = super().to_record()
+        record["snapshot"] = self.snapshot.to_record()
         record["evaluations"] = [item.to_record() for item in self.evaluations]
         return record
 
@@ -493,6 +534,7 @@ class LateScoringResultV1(VersionedModel):
     def from_record(cls, record: dict[str, Any]) -> LateScoringResultV1:
         payload = dict(record)
         ensure_supported_version(payload.pop("schema_version", None), (cls.schema_version,))
+        payload["snapshot"] = FrozenForecastSnapshotV1.from_record(dict(payload["snapshot"]))
         payload["evaluations"] = tuple(
             ForecastEvaluationV2.from_record(dict(item)) for item in payload.get("evaluations", ())
         )
@@ -521,6 +563,7 @@ def pending_late_resolution_score(
         "experiment_id": snapshot.target.experiment_id,
         "target_id": snapshot.target.target_id,
         "snapshot_id": snapshot.snapshot_id,
+        "snapshot": snapshot,
         "late_outcome_id": None,
         "disposition": LateScoreDisposition.PENDING_RESOLUTION,
         "latest_finality": finality,
@@ -578,6 +621,7 @@ def score_late_final_outcome(
         "experiment_id": outcome.protocol.experiment_id,
         "target_id": outcome.snapshot.target.target_id,
         "snapshot_id": outcome.snapshot.snapshot_id,
+        "snapshot": outcome.snapshot,
         "late_outcome_id": outcome.late_outcome_id,
         "disposition": disposition,
         "latest_finality": ResolutionStatus.FINAL,
@@ -666,6 +710,9 @@ class LateLifecycleMonitor:
         self.evidence_archive = Path(evidence_archive)
         self._chain_cache: (
             list[tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1]] | None
+        ) = None
+        self._gap_cache: (
+            list[tuple[LifecycleMonitorGapEvidenceV1, EvidencePersistenceReceiptV1]] | None
         ) = None
         self._campaign_id = f"{protocol.experiment_id}:{target.target_id}"
         self._configuration_sha256 = record_sha256(
@@ -861,25 +908,25 @@ class LateLifecycleMonitor:
         if checkpoint.next_ordinal > len(chain):
             raise ValueError("checkpoint is ahead of the durable lifecycle evidence")
         reconciled = checkpoint
-        if checkpoint.next_ordinal == len(chain):
-            if chain:
-                tail, receipt = chain[-1]
-                if (
-                    checkpoint.last_receipt_id != receipt.receipt_id
-                    or checkpoint.last_record_sha256 != receipt.artifact_sha256
-                    or checkpoint.last_success_at != receipt.persisted_at
-                ):
-                    raise ValueError("checkpoint head disagrees with durable lifecycle receipts")
-            elif any(
-                value is not None
-                for value in (
-                    checkpoint.last_receipt_id,
-                    checkpoint.last_record_sha256,
-                    checkpoint.last_success_at,
-                )
+        if checkpoint.next_ordinal:
+            checkpoint_observation, checkpoint_receipt = chain[checkpoint.next_ordinal - 1]
+            if (
+                checkpoint_observation.ordinal != checkpoint.next_ordinal
+                or checkpoint.last_receipt_id != checkpoint_receipt.receipt_id
+                or checkpoint.last_record_sha256 != checkpoint_receipt.artifact_sha256
+                or checkpoint.last_success_at != checkpoint_receipt.persisted_at
             ):
-                raise ValueError("empty durable lifecycle chain has a nonempty checkpoint head")
-        else:
+                raise ValueError("checkpoint head disagrees with its durable lifecycle prefix")
+        elif any(
+            value is not None
+            for value in (
+                checkpoint.last_receipt_id,
+                checkpoint.last_record_sha256,
+                checkpoint.last_success_at,
+            )
+        ):
+            raise ValueError("empty durable lifecycle chain has a nonempty checkpoint head")
+        if checkpoint.next_ordinal < len(chain):
             tail, receipt = chain[-1]
             if tail.ordinal <= checkpoint.next_ordinal:
                 raise ValueError("lifecycle evidence does not extend the stale checkpoint")
@@ -892,6 +939,7 @@ class LateLifecycleMonitor:
                     "updated_at": max(checkpoint.updated_at, receipt.persisted_at),
                 }
             )
+        reconciled = self._reconcile_archived_gaps(checkpoint, reconciled)
 
         if chain and chain[-1][0].finality is ResolutionStatus.FINAL:
             # The durable observation is authoritative if a crash happened
@@ -937,6 +985,44 @@ class LateLifecycleMonitor:
             reconciled = gap
         return reconciled
 
+    def _reconcile_archived_gaps(
+        self,
+        checkpoint: ResumableMonitorCheckpointV1,
+        reconciled: ResumableMonitorCheckpointV1,
+    ) -> ResumableMonitorCheckpointV1:
+        known = {
+            (gap.attempted_ordinal, gap.started_at, gap.ended_at, gap.reason)
+            for gap in reconciled.gaps
+        }
+        merged = list(reconciled.gaps)
+        updated_at = reconciled.updated_at
+        for evidence, _ in self._load_gap_evidence():
+            if evidence.attempted_ordinal > reconciled.next_ordinal + 1:
+                raise ValueError("durable lifecycle gap refers to a future poll ordinal")
+            key = (
+                evidence.attempted_ordinal - 1,
+                evidence.started_at,
+                evidence.ended_at,
+                evidence.reason,
+            )
+            if key in known:
+                continue
+            if evidence.started_at < checkpoint.updated_at:
+                raise ValueError("durable lifecycle gap regresses behind the checkpoint")
+            merged.append(
+                MonitorGapV1(
+                    attempted_ordinal=evidence.attempted_ordinal - 1,
+                    started_at=evidence.started_at,
+                    ended_at=evidence.ended_at,
+                    reason=evidence.reason,
+                )
+            )
+            known.add(key)
+            updated_at = max(updated_at, evidence.ended_at)
+        if tuple(merged) == reconciled.gaps and updated_at == reconciled.updated_at:
+            return reconciled
+        return reconciled.model_copy(update={"gaps": tuple(merged), "updated_at": updated_at})
+
     def _load_chain(
         self,
     ) -> list[tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1]]:
@@ -949,13 +1035,8 @@ class LateLifecycleMonitor:
         ] = {}
         for path in sorted((self.evidence_archive / "argos_evidence").glob("*.raw.json")):
             raw, provenance = read_raw_payload(self.evidence_archive, provenance_digest(path))
-            try:
-                decoded = orjson.loads(raw)
-            except orjson.JSONDecodeError:
-                continue
-            if not isinstance(decoded, dict) or decoded.get("schema_version") != (
-                LifecycleObservationV1.schema_version
-            ):
+            decoded, model = self._decode_evidence_record(raw)
+            if model is not LifecycleObservationV1:
                 continue
             observation = LifecycleObservationV1.from_record(decoded)
             if (
@@ -1049,13 +1130,8 @@ class LateLifecycleMonitor:
         found: dict[int, LifecycleReceiptChainLinkV1] = {}
         for path in sorted((self.evidence_archive / "argos_evidence").glob("*.raw.json")):
             raw, provenance = read_raw_payload(self.evidence_archive, provenance_digest(path))
-            try:
-                decoded = orjson.loads(raw)
-            except orjson.JSONDecodeError:
-                continue
-            if not isinstance(decoded, dict) or decoded.get("schema_version") != (
-                LifecycleReceiptChainLinkV1.schema_version
-            ):
+            decoded, model = self._decode_evidence_record(raw)
+            if model is not LifecycleReceiptChainLinkV1:
                 continue
             link = LifecycleReceiptChainLinkV1.from_record(decoded)
             if link.target_id != self.target.target_id or link.experiment_id != (
@@ -1080,6 +1156,55 @@ class LateLifecycleMonitor:
             verify_receipt_for_record(reconstructed, link)
             found[link.ordinal] = link
         return found
+
+    def _load_gap_evidence(
+        self,
+    ) -> list[tuple[LifecycleMonitorGapEvidenceV1, EvidencePersistenceReceiptV1]]:
+        if self._gap_cache is not None:
+            return self._gap_cache
+        found: dict[str, tuple[LifecycleMonitorGapEvidenceV1, EvidencePersistenceReceiptV1]] = {}
+        for path in sorted((self.evidence_archive / "argos_evidence").glob("*.raw.json")):
+            raw, provenance = read_raw_payload(self.evidence_archive, provenance_digest(path))
+            decoded, model = self._decode_evidence_record(raw)
+            if model is not LifecycleMonitorGapEvidenceV1:
+                continue
+            gap = LifecycleMonitorGapEvidenceV1.from_record(decoded)
+            if gap.experiment_id != self.protocol.experiment_id or gap.target_id != (
+                self.target.target_id
+            ):
+                continue
+            if gap.schedule_id != self.schedule.schedule_id:
+                raise ValueError("gap archive contains a different frozen target schedule")
+            self._verify_evidence_provenance(
+                record=gap,
+                provenance=provenance,
+                raw=raw,
+                artifact_id=gap.gap_id,
+            )
+            receipt = self._reconstruct_receipt(
+                gap,
+                provenance,
+                EvidenceArtifactKind.LIFECYCLE_MONITOR_GAP,
+            )
+            verify_receipt_for_record(receipt, gap)
+            if gap.gap_id in found:
+                raise ValueError("duplicate durable lifecycle gap identity")
+            found[gap.gap_id] = (gap, receipt)
+        self._gap_cache = list(found.values())
+        return self._gap_cache
+
+    @staticmethod
+    def _decode_evidence_record(raw: bytes) -> tuple[dict[str, Any], type[VersionedModel]]:
+        try:
+            decoded = orjson.loads(raw)
+        except orjson.JSONDecodeError as error:
+            raise ValueError("evidence archive contains malformed JSON") from error
+        if not isinstance(decoded, dict):
+            raise ValueError("evidence archive record is not a JSON object")
+        schema_version = decoded.get("schema_version")
+        if not isinstance(schema_version, str) or not schema_version:
+            raise ValueError("evidence archive record has no schema version")
+        return decoded, resolve_schema(schema_version)
 
     def _verify_evidence_provenance(
         self,
@@ -1252,6 +1377,8 @@ class LateLifecycleMonitor:
             artifact_id = record.lifecycle_observation_id
         elif isinstance(record, LifecycleReceiptChainLinkV1):
             artifact_id = record.link_id
+        elif isinstance(record, LifecycleMonitorGapEvidenceV1):
+            artifact_id = record.gap_id
         else:
             raise TypeError("unsupported lifecycle archive artifact")
         storage_identity = archive_relative_location(provenance)
@@ -1277,6 +1404,9 @@ class LateLifecycleMonitor:
         ended_at: datetime,
         error: Exception,
     ) -> None:
+        # The failed poll may already have persisted its observation before a
+        # later receipt/outcome write failed; rebuild before choosing a gap head.
+        self._chain_cache = None
         chain = self._load_chain()
         reason = f"{type(error).__name__}: {error}"[:1024]
         self._persist_gap(
@@ -1316,14 +1446,25 @@ class LateLifecycleMonitor:
             key: value for key, value in fields.items() if key not in {"experiment_id", "target_id"}
         }
         gap = LifecycleMonitorGapEvidenceV1(gap_id=_gap_id(**identity_fields), **fields)
-        persist_evidence_record(
-            self.evidence_archive,
-            record=gap,
-            experiment_id=self.protocol.experiment_id,
-            artifact_kind=EvidenceArtifactKind.LIFECYCLE_MONITOR_GAP,
-            artifact_id=gap.gap_id,
-            persisted_at=max(gap.ended_at, ensure_utc(self.clock.now())),
-        )
+        gap_chain = self._load_gap_evidence()
+        for existing, _ in gap_chain:
+            if existing.gap_id == gap.gap_id:
+                if existing != gap:
+                    raise ValueError("durable lifecycle gap identity has different fields")
+                return existing
+        try:
+            receipt = persist_evidence_record(
+                self.evidence_archive,
+                record=gap,
+                experiment_id=self.protocol.experiment_id,
+                artifact_kind=EvidenceArtifactKind.LIFECYCLE_MONITOR_GAP,
+                artifact_id=gap.gap_id,
+                persisted_at=max(gap.ended_at, ensure_utc(self.clock.now())),
+            )
+        except Exception:
+            self._gap_cache = None
+            raise
+        gap_chain.append((gap, receipt))
         return gap
 
     def _build_late_outcome(
