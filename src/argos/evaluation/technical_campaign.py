@@ -210,6 +210,23 @@ class TechnicalCampaignV1(VersionedModel):
         if any(item.campaign_id != self.campaign_id for item in self.results):
             raise ValueError("scenario result belongs to a different campaign")
 
+        specs = {item.scenario: item for item in self.specifications}
+        for result in self.results:
+            spec = specs[result.scenario]
+            if (
+                result.status is TechnicalScenarioStatus.PASSED
+                and result.observed_frame_count > spec.maximum_frame_count
+            ):
+                raise ValueError("scenario result exceeds its declared frame bound")
+            if (
+                result.status is TechnicalScenarioStatus.PASSED
+                and result.started_at is not None
+                and result.ended_at is not None
+                and (result.ended_at - result.started_at).total_seconds()
+                > spec.maximum_duration_seconds
+            ):
+                raise ValueError("scenario result exceeds its declared duration bound")
+
         actual = {
             status: sum(item.status is status for item in self.results)
             for status in TechnicalScenarioStatus

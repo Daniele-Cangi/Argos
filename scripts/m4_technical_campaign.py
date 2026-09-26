@@ -20,8 +20,12 @@ from argos.evaluation.technical_campaign import (
     TechnicalScenarioStatus,
 )
 from argos.evaluation.technical_execution import (
+    T1_CAPTURE_DURATION_SECONDS,
+    T1_MAXIMUM_DURATION_SECONDS,
+    T2_CAPTURE_DURATION_SECONDS,
     T2_EXPECTED_SAMPLE_INTERVAL_SECONDS,
     T2_MAXIMUM_ARTIFACT_BYTES,
+    T2_MAXIMUM_DURATION_SECONDS,
     T2_MAXIMUM_RESIDENT_MEMORY_BYTES,
     T2_MAXIMUM_SAMPLE_GAP_SECONDS,
     T3_CAPTURE_DURATION_SECONDS,
@@ -166,6 +170,11 @@ def _positive_int(value: str) -> int:
 
 
 def run_t1(args: argparse.Namespace) -> int:
+    if (args.max_seconds, args.capture_seconds) != (
+        T1_MAXIMUM_DURATION_SECONDS,
+        T1_CAPTURE_DURATION_SECONDS,
+    ):
+        raise ValueError("T1 execution bounds must match the frozen protocol")
     root = Path(args.repository).resolve()
     revision = _clean_revision(root)
     output = Path(args.output).resolve()
@@ -179,13 +188,15 @@ def run_t1(args: argparse.Namespace) -> int:
         "code_revision": revision,
         "token_ids": sorted(args.token_id),
         "maximum_duration_seconds": args.max_seconds,
+        "capture_duration_seconds": args.capture_seconds,
         "maximum_frame_count": args.max_frames,
         "raw_archive": True,
     }
     config_path = output / "configuration.json"
     _write_json(config_path, config)
 
-    capture_command = _capture_command(args, run_id, db_path)
+    capture_args = argparse.Namespace(**{**vars(args), "max_seconds": args.capture_seconds})
+    capture_command = _capture_command(capture_args, run_id, db_path)
     # Exit 130 is the command's documented, fully reported operator-interrupt
     # outcome. Preserve its JSON and let the deterministic assessor record a
     # FAILED T1 instead of turning it into an unreported runner exception.
@@ -287,6 +298,11 @@ def run_t1(args: argparse.Namespace) -> int:
 
 
 def run_t2(args: argparse.Namespace) -> int:
+    if (args.max_seconds, args.capture_seconds) != (
+        T2_MAXIMUM_DURATION_SECONDS,
+        T2_CAPTURE_DURATION_SECONDS,
+    ):
+        raise ValueError("T2 execution bounds must match the frozen protocol")
     root = Path(args.repository).resolve()
     revision = _clean_revision(root)
     output = Path(args.output).resolve()
@@ -303,6 +319,7 @@ def run_t2(args: argparse.Namespace) -> int:
             "code_revision": revision,
             "token_ids": sorted(args.token_id),
             "maximum_duration_seconds": args.max_seconds,
+            "capture_duration_seconds": args.capture_seconds,
             "maximum_frame_count": args.max_frames,
             "sample_interval_seconds": args.sample_interval,
             "maximum_sample_gap_seconds": args.max_sample_gap,
@@ -317,8 +334,12 @@ def run_t2(args: argparse.Namespace) -> int:
     sampling_errors: list[str] = []
     tracked_processes: dict[int, psutil.Process] = {}
     with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
+        capture_args = argparse.Namespace(**{**vars(args), "max_seconds": args.capture_seconds})
         process = subprocess.Popen(
-            _capture_command(args, run_id, db_path), cwd=root, stdout=stdout, stderr=stderr
+            _capture_command(capture_args, run_id, db_path),
+            cwd=root,
+            stdout=stdout,
+            stderr=stderr,
         )
         while True:
             observed_at = datetime.now(UTC)
@@ -1193,7 +1214,10 @@ def main() -> int:
     t1.add_argument("--token-id", action="append", required=True)
     t1.add_argument("--output", required=True)
     t1.add_argument("--repository", default=".")
-    t1.add_argument("--max-seconds", type=int, default=600)
+    t1.set_defaults(
+        max_seconds=T1_MAXIMUM_DURATION_SECONDS,
+        capture_seconds=T1_CAPTURE_DURATION_SECONDS,
+    )
     t1.add_argument("--max-frames", type=int, default=500)
     t1.set_defaults(handler=run_t1)
     t2 = commands.add_parser("run-t2")
@@ -1203,7 +1227,8 @@ def main() -> int:
     t2.add_argument("--repository", default=".")
     t2.set_defaults(
         handler=run_t2,
-        max_seconds=7_200,
+        max_seconds=T2_MAXIMUM_DURATION_SECONDS,
+        capture_seconds=T2_CAPTURE_DURATION_SECONDS,
         max_frames=100_000,
         sample_interval=T2_EXPECTED_SAMPLE_INTERVAL_SECONDS,
         max_sample_gap=T2_MAXIMUM_SAMPLE_GAP_SECONDS,

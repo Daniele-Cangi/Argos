@@ -93,6 +93,31 @@ def test_complete_passing_campaign_is_qualified_and_round_trips() -> None:
     assert TechnicalCampaignV1.from_record(campaign.to_record()) == campaign
 
 
+@pytest.mark.parametrize(
+    ("update", "message"),
+    [
+        ({"observed_frame_count": 501}, "frame bound"),
+        ({"ended_at": NOW + timedelta(seconds=601)}, "duration bound"),
+    ],
+)
+def test_passing_campaign_rejects_result_outside_scenario_bounds(
+    update: dict[str, object], message: str
+) -> None:
+    results = list(_campaign().results)
+    results[0] = results[0].model_copy(update=update)
+    with pytest.raises(ValidationError, match=message):
+        _campaign(results=tuple(results))
+
+
+def test_failed_result_may_record_that_a_bound_was_exceeded() -> None:
+    results = list(_campaign().results)
+    results[0] = _result(TechnicalScenario.FUNCTIONAL, TechnicalScenarioStatus.FAILED).model_copy(
+        update={"ended_at": NOW + timedelta(seconds=601), "observed_frame_count": 501}
+    )
+    campaign = _campaign(results=tuple(results))
+    assert campaign.failed_count == 1
+
+
 @pytest.mark.parametrize("collection", ["specifications", "results"])
 def test_a_campaign_cannot_hide_an_omitted_scenario(collection: str) -> None:
     values = tuple(_spec(item) for item in TechnicalScenario)

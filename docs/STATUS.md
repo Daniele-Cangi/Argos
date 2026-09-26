@@ -1,6 +1,50 @@
 # ARGOS status
 
-Last updated: 2026-09-20
+Last updated: 2026-09-26
+
+## 2026-09-26 corrected technical qualification and M4 design gate
+
+The fresh `m4-technical-20260926-v1` run completed T1–T8 in order, all
+`PASSED`, against clean revision
+`7b75006c6adb1f01d84ab675e46960d47c12cc64`. The original source tree
+remains on D:. `experiments/m4-technical-20260926-v1/proof/` now contains a
+post-run repository copy of all 14,638 proof files (including the separate
+T8 C: fixture), a SHA-256 file manifest, a superseding proof index and a
+validated `TechnicalCampaignV1` aggregate derived from the original run.
+The repository verifier independently recomputes the byte hashes, scenario
+artifact identities, ordering, bounds, outcomes, runner terminal state and
+aggregate fields.
+This is technical qualification only, and remains proposed until review and
+CI on the closure PR are complete.
+
+The next M4 step is the asynchronous cohort described in
+`docs/research/m4-asynchronous-cohort-design.md`. No live cohort has been
+frozen or launched. The append-only late-resolution record and exact frozen
+UTC protocol remain prerequisites. V8's negative result is unchanged; no
+predictive or calibration claim has been established.
+
+## 2026-09-25 bounded technical campaign correction
+
+The first attempted ADR-0019 aggregate is not technically qualified. Review
+found that T1's end-to-end interval was 610.441618 seconds against its 600
+second limit and T2's was 7,202.452643 seconds against its 7,200 second limit.
+Their capture requests respected the old values, but the executors failed to
+reserve time for setup and terminal evidence materialization. The standalone
+assessors also omitted the end-to-end duration check. T1 and T2 therefore
+cannot remain `PASSED`; no timestamp or bound is widened retroactively.
+
+The same review found that a summary containing only hashes and a producer-local
+`D:` path is not independently verifiable from a clean checkout and therefore
+does not satisfy ADR-0017. The premature aggregate was removed from the proposed
+change. The corrected executors reserve terminalization time, assess the frozen
+duration explicitly, and make `technical_campaign.v1` reject a passing result
+outside its duration or frame bounds. A fresh complete T1--T8 campaign and
+repository-contained proof bytes are required before the backlog item can be
+closed.
+
+V8 remains unchanged and blocked under its frozen protocol. No forecast
+accuracy, edge, predictive superiority or calibration claim follows from this
+technical work.
 
 ## 2026-09-20 V8 result and methodology correction
 
