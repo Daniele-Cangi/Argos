@@ -664,9 +664,9 @@ class LateLifecycleMonitor:
         self.clock = clock
         self.source_archive = Path(source_archive)
         self.evidence_archive = Path(evidence_archive)
-        self._chain_cache: list[
-            tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1]
-        ] | None = None
+        self._chain_cache: (
+            list[tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1]] | None
+        ) = None
         self._campaign_id = f"{protocol.experiment_id}:{target.target_id}"
         self._configuration_sha256 = record_sha256(
             {
@@ -1294,8 +1294,7 @@ class LateLifecycleMonitor:
         started_at: datetime,
         ended_at: datetime,
         reason: str,
-        chain: Sequence[tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1]]
-        | None = None,
+        chain: Sequence[tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1]] | None = None,
     ) -> LifecycleMonitorGapEvidenceV1:
         if chain is None:
             chain = self._load_chain()
