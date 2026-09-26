@@ -32,6 +32,13 @@ from argos.evaluation.claim_artifact import (
     ProspectiveClaimArtifactIndexV1,
     verify_published_claim_artifact,
 )
+from argos.evaluation.late_resolution import (
+    FrozenForecastSnapshotV1,
+    LateFinalOutcomeV1,
+    build_frozen_forecast_snapshot_id,
+    build_late_final_outcome_id,
+)
+from argos.evaluation.late_resolution_archive import verify_late_outcome_archives
 from argos.evaluation.numeric import (
     EVALUATION_DECIMAL_CONTEXT,
     EVALUATION_PRECISION,
@@ -163,8 +170,10 @@ __all__ = [
     "EvidencePersistenceReceiptV1",
     "ForecastEvaluationV1",
     "ForecastEvaluationV2",
+    "FrozenForecastSnapshotV1",
     "FunctionalScenarioEvidenceV1",
     "HeadlineStatus",
+    "LateFinalOutcomeV1",
     "LifecycleContinuityStatus",
     "LifecycleObservationV1",
     "LifecyclePollEvidenceV1",
@@ -208,6 +217,8 @@ __all__ = [
     "brier_score",
     "build_capture_rejection_evidence",
     "build_capture_run_summary",
+    "build_frozen_forecast_snapshot_id",
+    "build_late_final_outcome_id",
     "build_lifecycle_poll_evidence",
     "build_target_exclusion",
     "build_target_exclusion_v2",
@@ -224,5 +235,6 @@ __all__ = [
     "require_epsilon",
     "score_forecast",
     "spread_bucket",
+    "verify_late_outcome_archives",
     "verify_published_claim_artifact",
 ]
