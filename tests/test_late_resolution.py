@@ -30,6 +30,7 @@ from argos.evaluation.prospective import (
     AcrossTargetWeighting,
     CutoffBasis,
     EvidenceArtifactKind,
+    EvidencePersistenceReceiptV1,
     LifecycleObservationV1,
     ProspectiveExperimentProtocolV2,
     ProspectiveTargetV1,
@@ -140,9 +141,14 @@ def _observation(
 def _archived_gamma(
     tmp_path: Path, payload: dict[str, object], at: datetime
 ) -> tuple[str, int, str]:
-    raw = orjson.dumps(payload)
+    return _archived_source(tmp_path, orjson.dumps(payload), at)
+
+
+def _archived_source(
+    tmp_path: Path, raw: bytes, at: datetime, *, source: str = "gamma"
+) -> tuple[str, int, str]:
     provenance = SourceProvenanceV1(
-        source="gamma",
+        source=source,
         endpoint="https://gamma-api.polymarket.com/markets/market-1",
         http_status=200,
         retrieved_at=at,
@@ -151,6 +157,74 @@ def _archived_gamma(
     )
     write_raw_payload(tmp_path / "source", raw=raw, provenance=provenance)
     return provenance.raw_sha256, provenance.byte_length, archive_relative_location(provenance)
+
+
+def _receipt_with(
+    receipt: EvidencePersistenceReceiptV1, **changes: object
+) -> EvidencePersistenceReceiptV1:
+    fields = {**dict(receipt), **changes}
+    fields["receipt_id"] = build_persistence_receipt_id(
+        experiment_id=fields["experiment_id"],
+        artifact_kind=fields["artifact_kind"],
+        artifact_id=fields["artifact_id"],
+        artifact_schema_version=fields["artifact_schema_version"],
+        artifact_sha256=fields["artifact_sha256"],
+        artifact_byte_length=fields["artifact_byte_length"],
+        persisted_at=fields["persisted_at"],
+        storage_backend=fields["storage_backend"],
+        storage_identity=fields["storage_identity"],
+    )
+    return EvidencePersistenceReceiptV1.model_validate(fields)
+
+
+def _observation_with(
+    tmp_path: Path, observation: LifecycleObservationV1, **changes: object
+) -> tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1]:
+    fields = {**dict(observation), **changes}
+    fields.pop("lifecycle_observation_id")
+    updated = LifecycleObservationV1(
+        lifecycle_observation_id=build_lifecycle_observation_id(**fields), **fields
+    )
+    receipt = persist_evidence_record(
+        tmp_path / "evidence",
+        record=updated,
+        experiment_id=EXPERIMENT,
+        artifact_kind=EvidenceArtifactKind.LIFECYCLE_OBSERVATION,
+        artifact_id=updated.lifecycle_observation_id,
+        persisted_at=updated.retrieved_at + timedelta(seconds=1),
+    )
+    return updated, receipt
+
+
+def _late_outcome_with_final_source(
+    tmp_path: Path, outcome: LateFinalOutcomeV1, raw: bytes, *, source: str = "gamma"
+) -> LateFinalOutcomeV1:
+    digest, byte_length, location = _archived_source(tmp_path, raw, FINAL_AT, source=source)
+    resolution = outcome.resolution.model_copy(update={"source_payload_sha256": digest})
+    altered, receipt = _observation_with(
+        tmp_path,
+        outcome.lifecycle_observations[-1],
+        source=source,
+        raw_payload_sha256=digest,
+        byte_length=byte_length,
+        raw_payload_location=location,
+        resolution_record_sha256=record_sha256(resolution.to_record()),
+    )
+    receipts = (outcome.lifecycle_receipts[0], receipt)
+    return outcome.model_copy(
+        update={
+            "late_outcome_id": build_late_final_outcome_id(
+                protocol_receipt=outcome.protocol_receipt,
+                snapshot_receipt=outcome.snapshot_receipt,
+                lifecycle_receipts=receipts,
+                resolution=resolution,
+                selected_cutoff=outcome.selected_cutoff,
+            ),
+            "resolution": resolution,
+            "lifecycle_observations": (outcome.lifecycle_observations[0], altered),
+            "lifecycle_receipts": receipts,
+        }
+    )
 
 
 def _late_record(tmp_path: Path) -> LateFinalOutcomeV1:
@@ -352,6 +426,160 @@ def test_late_finality_round_trips_without_changing_the_old_deadline(tmp_path: P
     )
 
 
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("bad_hash", "snapshot hashes must be hexadecimal"),
+        ("wrong_receipt_kind", "target receipt names different evidence"),
+        ("freeze_before_selection", "cannot predate target persistence"),
+        ("missing_baseline", "one record per declared baseline"),
+        ("mixed_information_state", "different information states"),
+        ("wrong_capture", "different target or capture"),
+        ("forecast_after_freeze", "forecast was not available"),
+        ("wrong_identity", "snapshot identity disagrees"),
+    ],
+)
+def test_frozen_snapshot_rejects_false_evidence(tmp_path: Path, case: str, message: str) -> None:
+    snapshot = _late_record(tmp_path).snapshot
+    forecast_at = snapshot.forecasts[0].as_of_received_time
+    alterations: dict[str, object] = {
+        "bad_hash": {"capture_manifest_sha256": "g" * 64},
+        "wrong_receipt_kind": {
+            "target_receipt": _receipt_with(
+                snapshot.target_receipt, artifact_kind=EvidenceArtifactKind.MARKET_DEFINITION
+            )
+        },
+        "freeze_before_selection": {
+            "frozen_at": snapshot.target.selected_at - timedelta(seconds=1)
+        },
+        "missing_baseline": {"forecasts": snapshot.forecasts[:-1]},
+        "mixed_information_state": {
+            "forecasts": (
+                *snapshot.forecasts[:-1],
+                snapshot.forecasts[-1].model_copy(update={"as_of_ingest_sequence": 2}),
+            )
+        },
+        "wrong_capture": {"capture_run_id": "another-capture"},
+        "forecast_after_freeze": {"frozen_at": forecast_at - timedelta(seconds=1)},
+        "wrong_identity": {"snapshot_id": "frozen-forecast-false"},
+    }
+    with pytest.raises(ValidationError, match=message):
+        snapshot.model_copy(update=alterations[case])
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("wrong_protocol_receipt", "protocol receipt names different evidence"),
+        ("wrong_snapshot_receipt", "snapshot receipt names different evidence"),
+        ("protocol_persisted_late", "protocol was not durable"),
+        ("snapshot_receipt_before_freeze", "receipt predates the forecast freeze"),
+        ("no_lifecycle", "complete lifecycle receipt partition"),
+        ("missing_lifecycle_receipt", "complete lifecycle receipt partition"),
+        ("nonfinal_resolution", "only final resolution"),
+        ("wrong_identity", "late outcome identity disagrees"),
+    ],
+)
+def test_late_outcome_rejects_broken_binding(tmp_path: Path, case: str, message: str) -> None:
+    outcome = _late_record(tmp_path)
+    alterations: dict[str, dict[str, object]] = {
+        "wrong_protocol_receipt": {
+            "protocol_receipt": _receipt_with(
+                outcome.protocol_receipt, artifact_kind=EvidenceArtifactKind.TARGET_DECLARATION
+            )
+        },
+        "wrong_snapshot_receipt": {
+            "snapshot_receipt": _receipt_with(
+                outcome.snapshot_receipt, artifact_kind=EvidenceArtifactKind.TARGET_DECLARATION
+            )
+        },
+        "protocol_persisted_late": {
+            "protocol_receipt": _receipt_with(
+                outcome.protocol_receipt,
+                persisted_at=outcome.snapshot.target.selected_at + timedelta(seconds=1),
+            )
+        },
+        "snapshot_receipt_before_freeze": {
+            "snapshot_receipt": _receipt_with(
+                outcome.snapshot_receipt,
+                persisted_at=outcome.snapshot.frozen_at - timedelta(seconds=1),
+            )
+        },
+        "no_lifecycle": {"lifecycle_observations": (), "lifecycle_receipts": ()},
+        "missing_lifecycle_receipt": {"lifecycle_receipts": outcome.lifecycle_receipts[:-1]},
+        "nonfinal_resolution": {
+            "resolution": outcome.resolution.model_copy(
+                update={"resolution_status": ResolutionStatus.PROPOSED}
+            )
+        },
+        "wrong_identity": {"late_outcome_id": "late-final-false"},
+    }
+    with pytest.raises(ValidationError, match=message):
+        outcome.model_copy(update=alterations[case])
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("ordinal_skip", "ordinal chain has a gap"),
+        ("wrong_predecessor", "predecessor chain is broken"),
+        ("retrieval_regression", "retrieval time regressed"),
+        ("last_not_final", "no final lifecycle observation"),
+    ],
+)
+def test_late_outcome_rejects_false_lifecycle_chain(
+    tmp_path: Path, case: str, message: str
+) -> None:
+    outcome = _late_record(tmp_path)
+    last = outcome.lifecycle_observations[-1]
+    changes: dict[str, dict[str, object]] = {
+        "ordinal_skip": {"ordinal": 3},
+        "wrong_predecessor": {"previous_observation_id": "lifecycle-wrong"},
+        "retrieval_regression": {"retrieved_at": END},
+        "last_not_final": {
+            "finality": ResolutionStatus.PROPOSED,
+            "resolution_id": None,
+            "resolution_record_sha256": None,
+        },
+    }
+    altered, receipt = _observation_with(tmp_path, last, **changes[case])
+    with pytest.raises(ValidationError, match=message):
+        outcome.model_copy(
+            update={
+                "lifecycle_observations": (outcome.lifecycle_observations[0], altered),
+                "lifecycle_receipts": (outcome.lifecycle_receipts[0], receipt),
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("prior_after_next_poll", "not durable before next poll"),
+        ("final_receipt_before_poll", "receipt predates source retrieval"),
+    ],
+)
+def test_late_outcome_rejects_false_receipt_order(tmp_path: Path, case: str, message: str) -> None:
+    outcome = _late_record(tmp_path)
+    receipts = (
+        (
+            _receipt_with(
+                outcome.lifecycle_receipts[0], persisted_at=FINAL_AT + timedelta(seconds=1)
+            ),
+            outcome.lifecycle_receipts[1],
+        )
+        if case == "prior_after_next_poll"
+        else (
+            outcome.lifecycle_receipts[0],
+            _receipt_with(
+                outcome.lifecycle_receipts[1], persisted_at=FINAL_AT - timedelta(seconds=1)
+            ),
+        )
+    )
+    with pytest.raises(ValidationError, match=message):
+        outcome.model_copy(update={"lifecycle_receipts": receipts})
+
+
 def test_backdated_first_observed_cutoff_is_refused_even_with_matching_id(
     tmp_path: Path,
 ) -> None:
@@ -489,6 +717,51 @@ def test_corrupt_snapshot_bytes_block_archive_verification(tmp_path: Path) -> No
     with pytest.raises(ImmutabilityViolationError, match="no longer matches"):
         verify_late_outcome_archives(
             outcome, evidence_dir=tmp_path / "evidence", source_dir=tmp_path / "source"
+        )
+
+
+def test_changed_source_provenance_blocks_archive_verification(tmp_path: Path) -> None:
+    outcome = _late_record(tmp_path)
+    final = outcome.lifecycle_observations[-1]
+    source_path = tmp_path / "source" / final.raw_payload_location
+    sidecar = source_path.with_name(f"{final.raw_payload_sha256}.meta.json")
+    changed = orjson.loads(sidecar.read_bytes())
+    changed["source"] = "other"
+    sidecar.write_bytes(orjson.dumps(changed))
+    with pytest.raises(ValueError, match="source disagrees"):
+        verify_late_outcome_archives(
+            outcome, evidence_dir=tmp_path / "evidence", source_dir=tmp_path / "source"
+        )
+
+
+def test_non_gamma_source_cannot_be_verified_as_gamma(tmp_path: Path) -> None:
+    outcome = _late_record(tmp_path)
+    original = outcome.lifecycle_observations[-1]
+    payload = orjson.loads((tmp_path / "source" / original.raw_payload_location).read_bytes())
+    payload["fixture_marker"] = "distinct bytes"
+    altered = _late_outcome_with_final_source(
+        tmp_path, outcome, orjson.dumps(payload), source="other"
+    )
+    with pytest.raises(ValueError, match="only supports Gamma"):
+        verify_late_outcome_archives(
+            altered, evidence_dir=tmp_path / "evidence", source_dir=tmp_path / "source"
+        )
+
+
+@pytest.mark.parametrize(
+    ("raw", "message"),
+    [
+        (b"{", "not JSON"),
+        (b"[]", "not a market object"),
+        (b'{"id":"market-1","closed":false}', "does not yield the claimed resolution"),
+    ],
+)
+def test_false_final_raw_payload_is_refused(tmp_path: Path, raw: bytes, message: str) -> None:
+    outcome = _late_record(tmp_path)
+    altered = _late_outcome_with_final_source(tmp_path, outcome, raw)
+    with pytest.raises(ValueError, match=message):
+        verify_late_outcome_archives(
+            altered, evidence_dir=tmp_path / "evidence", source_dir=tmp_path / "source"
         )
 
 

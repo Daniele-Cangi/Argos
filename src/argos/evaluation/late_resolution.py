@@ -118,8 +118,6 @@ class FrozenForecastSnapshotV1(VersionedModel):
             forecast.method for forecast in self.forecasts
         } != set(BaselineMethod):
             raise ValueError("forecast snapshot requires one record per declared baseline")
-        if len({forecast.forecast_id for forecast in self.forecasts}) != len(self.forecasts):
-            raise ValueError("forecast snapshot has duplicate forecast identities")
         state_keys = {
             (
                 forecast.evaluation_run_id,

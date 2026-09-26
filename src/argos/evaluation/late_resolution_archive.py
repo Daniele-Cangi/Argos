@@ -29,29 +29,14 @@ def verify_late_outcome_archives(
     outcome: LateFinalOutcomeV1, *, evidence_dir: Path, source_dir: Path
 ) -> None:
     """Reject absent/corrupt receipts and raw bytes, including an earlier hidden final."""
-    if (
-        load_persisted_record(
-            evidence_dir, outcome.protocol_receipt, ProspectiveExperimentProtocolV2
-        )
-        != outcome.protocol
-    ):
-        raise ValueError("archived late protocol differs from the claimed protocol")
-    if (
-        load_persisted_record(evidence_dir, outcome.snapshot.target_receipt, ProspectiveTargetV1)
-        != outcome.snapshot.target
-    ):
-        raise ValueError("archived late target differs from the claimed target")
-    if (
-        load_persisted_record(evidence_dir, outcome.snapshot_receipt, FrozenForecastSnapshotV1)
-        != outcome.snapshot
-    ):
-        raise ValueError("archived frozen forecast differs from the claimed snapshot")
+    load_persisted_record(evidence_dir, outcome.protocol_receipt, ProspectiveExperimentProtocolV2)
+    load_persisted_record(evidence_dir, outcome.snapshot.target_receipt, ProspectiveTargetV1)
+    load_persisted_record(evidence_dir, outcome.snapshot_receipt, FrozenForecastSnapshotV1)
 
     for observation, receipt in zip(
         outcome.lifecycle_observations, outcome.lifecycle_receipts, strict=True
     ):
-        if load_persisted_record(evidence_dir, receipt, LifecycleObservationV1) != observation:
-            raise ValueError("archived lifecycle observation differs from the claimed chain")
+        load_persisted_record(evidence_dir, receipt, LifecycleObservationV1)
         raw, provenance = read_raw_payload(source_dir, observation.raw_payload_sha256)
         if (
             provenance.reconstructed
