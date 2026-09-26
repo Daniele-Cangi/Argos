@@ -1224,9 +1224,7 @@ class LateLifecycleMonitor:
             "reason": reason or "poll attempt failed without a reported exception",
         }
         identity_fields = {
-            key: value
-            for key, value in fields.items()
-            if key not in {"experiment_id", "target_id"}
+            key: value for key, value in fields.items() if key not in {"experiment_id", "target_id"}
         }
         gap = LifecycleMonitorGapEvidenceV1(gap_id=_gap_id(**identity_fields), **fields)
         persist_evidence_record(
