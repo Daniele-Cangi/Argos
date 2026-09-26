@@ -90,6 +90,29 @@ def _identity(prefix: str, fields: Mapping[str, Any]) -> str:
     return f"{prefix}-{record_sha256(material)[:32]}"
 
 
+def _normalize_gamma_base_url(value: str) -> str:
+    parsed = urlparse(value.strip().rstrip("/"))
+    if (
+        parsed.scheme.lower() != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("late-monitor Gamma base URL must be an HTTPS origin")
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise ValueError("late-monitor Gamma base URL has an invalid port") from error
+    host = parsed.hostname.lower()
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    authority = host if port in (None, 443) else f"{host}:{port}"
+    return f"https://{authority}"
+
+
 def build_late_monitoring_schedule_id(
     *,
     experiment_id: str,
@@ -101,6 +124,7 @@ def build_late_monitoring_schedule_id(
     maximum_gap_multiple: int,
     owner_code_revision: str,
     config_fingerprint: str,
+    gamma_base_url: str,
 ) -> str:
     return _identity(
         "late-monitoring-schedule",
@@ -114,6 +138,7 @@ def build_late_monitoring_schedule_id(
             "maximum_gap_multiple": maximum_gap_multiple,
             "owner_code_revision": owner_code_revision.lower(),
             "config_fingerprint": config_fingerprint.lower(),
+            "gamma_base_url": _normalize_gamma_base_url(gamma_base_url),
         },
     )
 
@@ -133,6 +158,7 @@ class LateMonitoringScheduleV1(VersionedModel):
     maximum_gap_multiple: int = Field(ge=2)
     owner_code_revision: str = Field(min_length=7, max_length=64)
     config_fingerprint: str = Field(min_length=64, max_length=64)
+    gamma_base_url: str = Field(min_length=1)
     created_at: datetime
 
     @field_validator("effective_at", "first_poll_at", "created_at")
@@ -156,6 +182,11 @@ class LateMonitoringScheduleV1(VersionedModel):
             raise ValueError("late monitoring owner revision must be hexadecimal")
         return lowered
 
+    @field_validator("gamma_base_url")
+    @classmethod
+    def _frozen_gamma_origin(cls, value: str) -> str:
+        return _normalize_gamma_base_url(value)
+
     @model_validator(mode="after")
     def _schedule_is_frozen_and_identifiable(self) -> LateMonitoringScheduleV1:
         if self.created_at > self.effective_at:
@@ -172,6 +203,7 @@ class LateMonitoringScheduleV1(VersionedModel):
             maximum_gap_multiple=self.maximum_gap_multiple,
             owner_code_revision=self.owner_code_revision,
             config_fingerprint=self.config_fingerprint,
+            gamma_base_url=self.gamma_base_url,
         )
         if self.schedule_id != expected:
             raise ValueError("late monitoring schedule identity disagrees with its fields")
@@ -660,6 +692,10 @@ class LateLifecycleMonitor:
             or self.schedule_receipt.artifact_kind
             is not EvidenceArtifactKind.LATE_MONITORING_SCHEDULE
             or self.schedule_receipt.artifact_id != self.schedule.schedule_id
+            or self.protocol_receipt.experiment_id != self.protocol.experiment_id
+            or self.target_receipt.experiment_id != self.protocol.experiment_id
+            or self.snapshot_receipt.experiment_id != self.protocol.experiment_id
+            or self.schedule_receipt.experiment_id != self.protocol.experiment_id
         ):
             raise ValueError("late monitor receipts do not match their evidence records")
         if (
@@ -676,6 +712,40 @@ class LateLifecycleMonitor:
             raise ValueError("late cadence must begin after the original lifecycle deadline")
         if self.schedule_receipt.persisted_at > self.schedule.effective_at:
             raise ValueError("late schedule was not durable before it became effective")
+        self._assert_schedule_isolation()
+
+    def _assert_schedule_isolation(self) -> None:
+        evidence_root = self.evidence_archive / "argos_evidence"
+        found_current_schedule = False
+        for path in sorted(evidence_root.glob("*.raw.json")):
+            raw, provenance = read_raw_payload(self.evidence_archive, provenance_digest(path))
+            try:
+                decoded = orjson.loads(raw)
+            except orjson.JSONDecodeError:
+                continue
+            if not isinstance(decoded, dict) or decoded.get("schema_version") != (
+                LateMonitoringScheduleV1.schema_version
+            ):
+                continue
+            archived_schedule = LateMonitoringScheduleV1.from_record(decoded)
+            if (
+                archived_schedule.experiment_id != self.protocol.experiment_id
+                or archived_schedule.target_id != self.target.target_id
+            ):
+                continue
+            self._verify_evidence_provenance(
+                record=archived_schedule,
+                provenance=provenance,
+                raw=raw,
+                artifact_id=archived_schedule.schedule_id,
+            )
+            if archived_schedule.schedule_id != self.schedule.schedule_id:
+                raise ValueError(
+                    "late-monitor archive already contains a different frozen schedule"
+                )
+            found_current_schedule = True
+        if not found_current_schedule:
+            raise ValueError("frozen late-monitor schedule is not durable in its evidence archive")
 
     def _initial_checkpoint(self) -> ResumableMonitorCheckpointV1:
         return ResumableMonitorCheckpointV1(
@@ -967,12 +1037,12 @@ class LateLifecycleMonitor:
             ):
                 continue
             link = LifecycleReceiptChainLinkV1.from_record(decoded)
-            if link.schedule_id != self.schedule.schedule_id:
-                continue
             if link.target_id != self.target.target_id or link.experiment_id != (
                 self.protocol.experiment_id
             ):
-                raise ValueError("receipt link names an unrelated selected target")
+                continue
+            if link.schedule_id != self.schedule.schedule_id:
+                raise ValueError("receipt archive contains a different frozen target schedule")
             if link.ordinal in found:
                 raise ValueError("duplicate lifecycle receipt-chain link ordinal")
             self._verify_evidence_provenance(
@@ -1010,11 +1080,12 @@ class LateLifecycleMonitor:
 
     def _verify_source_for_observation(self, observation: LifecycleObservationV1) -> None:
         raw, provenance = read_raw_payload(self.source_archive, observation.raw_payload_sha256)
+        self._verify_gamma_endpoint(observation.endpoint)
         if (
             provenance.reconstructed
             or provenance.source != "gamma"
             or provenance.endpoint != observation.endpoint
-            or provenance.retrieved_at != observation.retrieved_at
+            or provenance.retrieved_at > observation.retrieved_at
             or provenance.byte_length != observation.byte_length
             or archive_relative_location(provenance) != observation.raw_payload_location
         ):
@@ -1051,9 +1122,7 @@ class LateLifecycleMonitor:
         provenance = response.provenance
         if provenance.source != "gamma" or provenance.reconstructed:
             raise ValueError("late lifecycle polls require first-hand Gamma source bytes")
-        endpoint_path = urlparse(provenance.endpoint).path.rstrip("/")
-        if endpoint_path != f"/markets/{self.target.market_id}":
-            raise ValueError("Gamma response endpoint does not identify the selected market")
+        self._verify_gamma_endpoint(provenance.endpoint)
         if provenance.retrieved_at < checkpoint.updated_at:
             raise ValueError("Gamma retrieval time regresses behind durable monitor state")
         if provenance.retrieved_at < self.schedule.effective_at:
@@ -1370,6 +1439,37 @@ class LateLifecycleMonitor:
         ]:
             raise ValueError("Gamma token mapping disagrees with the frozen target")
 
+    def _verify_gamma_endpoint(self, endpoint: str) -> None:
+        expected = urlparse(self.schedule.gamma_base_url)
+        actual = urlparse(endpoint)
+        if (
+            expected.scheme.lower() != "https"
+            or not expected.hostname
+            or actual.scheme.lower() != "https"
+            or not actual.hostname
+            or actual.username is not None
+            or actual.password is not None
+            or actual.query
+            or actual.fragment
+        ):
+            raise ValueError("late lifecycle endpoint must be a credential-free HTTPS URL")
+        try:
+            expected_port = expected.port
+            actual_port = actual.port
+        except ValueError as error:
+            raise ValueError("late lifecycle endpoint has an invalid port") from error
+        if expected_port in (None, 443):
+            expected_port = None
+        if actual_port in (None, 443):
+            actual_port = None
+        if (
+            actual.scheme.lower() != expected.scheme.lower()
+            or actual.hostname.lower() != expected.hostname.lower()
+            or actual_port != expected_port
+            or actual.path.rstrip("/") != f"/markets/{self.target.market_id}"
+        ):
+            raise ValueError("Gamma response endpoint disagrees with the frozen Gamma origin")
+
 
 def provenance_digest(path: Path) -> str:
     name = path.name
@@ -1406,7 +1506,6 @@ def _nonfinal_status(payload: Mapping[str, Any]) -> ResolutionStatus:
     return {
         "proposed": ResolutionStatus.PROPOSED,
         "disputed": ResolutionStatus.DISPUTED,
-        "resolved": ResolutionStatus.FINAL,
     }.get(latest, ResolutionStatus.UNKNOWN)
 
 
