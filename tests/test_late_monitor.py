@@ -460,14 +460,20 @@ async def test_resume_reconciles_archived_observation_before_polling_again(tmp_p
     assert first.observation is not None and first.observation.ordinal == 1
     # Model a crash after the evidence archive rename but before checkpoint rename.
     monitor.monitor.save(monitor._initial_checkpoint())
-    clock.set(second_at - timedelta(seconds=1))
-    resumed = await monitor.poll_once()
+    restarted_clock = _Clock(second_at - timedelta(seconds=1))
+    restarted = _monitor(
+        tmp_path,
+        restarted_clock,
+        [_response(_pending_payload(), second_at)],
+    )
+    restarted.monitor.save(restarted._initial_checkpoint())
+    resumed = await restarted.poll_once()
     assert resumed.observation is not None
     assert resumed.observation.ordinal == 2
     assert resumed.observation.previous_observation_id == first.observation.lifecycle_observation_id
     assert resumed.checkpoint.next_ordinal == 2
-    assert cast(_Source, monitor.source).calls == 2
-    assert len(monitor._load_chain()) == 2
+    assert cast(_Source, restarted.source).calls == 1
+    assert len(restarted._load_chain()) == 2
     lifecycle_records = []
     for path in (tmp_path / "evidence" / "argos_evidence").glob("*.raw.json"):
         record = orjson.loads(path.read_bytes())
@@ -491,14 +497,15 @@ async def test_resume_reconciles_archived_finality_before_stopping(tmp_path: Pat
     assert first.outcome is not None
     # Simulate a crash after durable source/evidence writes but before checkpoint rename.
     monitor.monitor.save(monitor._initial_checkpoint())
-    clock.set(final_at + timedelta(seconds=60))
-    resumed = await monitor.poll_once()
+    restarted = _monitor(tmp_path, _Clock(final_at + timedelta(seconds=60)), [])
+    restarted.monitor.save(restarted._initial_checkpoint())
+    resumed = await restarted.poll_once()
 
     assert not resumed.poll_performed
     assert resumed.checkpoint.next_ordinal == 1
     assert resumed.observation == first.observation
     assert resumed.outcome == first.outcome
-    assert cast(_Source, monitor.source).calls == 1
+    assert cast(_Source, restarted.source).calls == 0
 
 
 @pytest.mark.anyio
@@ -535,6 +542,39 @@ async def test_poll_before_next_cadence_returns_last_pending_observation(tmp_pat
     assert deferred.progress.status.value == "pending_resolution"
     assert deferred.next_poll_at == first.next_poll_at
     assert cast(_Source, monitor.source).calls == 1
+
+
+@pytest.mark.anyio
+async def test_regular_polls_use_the_indexed_chain_without_rescanning_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    schedule_at = DEADLINE + timedelta(seconds=20)
+    first_at = schedule_at + timedelta(seconds=1)
+    second_at = first_at + timedelta(seconds=61)
+    clock = _Clock(schedule_at)
+    monitor = _monitor(
+        tmp_path,
+        clock,
+        [
+            _response(_pending_payload(), first_at),
+            _response(_pending_payload(), second_at),
+        ],
+    )
+    reads = 0
+    read_links = monitor._read_receipt_links
+
+    def count_link_archive_reads() -> dict[int, Any]:
+        nonlocal reads
+        reads += 1
+        return read_links()
+
+    monkeypatch.setattr(monitor, "_read_receipt_links", count_link_archive_reads)
+    first = await monitor.poll_once()
+    assert first.next_poll_at is not None
+    clock.set(first.next_poll_at)
+    await monitor.poll_once()
+
+    assert reads == 1
 
 
 @pytest.mark.parametrize(
@@ -818,6 +858,11 @@ async def test_progress_and_score_records_reject_pending_finality_claims(tmp_pat
     cast(_Clock, monitor.clock).set(result.next_poll_at)
     final = await monitor.poll_once()
     assert final.observation is not None
+    assert final.outcome is not None
+    final_progress_without_outcome = final.progress.to_record()
+    final_progress_without_outcome["late_outcome_id"] = None
+    with pytest.raises(ValueError, match="bound outcome"):
+        LateResolutionProgressV1.from_record(final_progress_without_outcome)
     with pytest.raises(ValueError, match="final observations must be scored"):
         pending_late_resolution_score(
             monitor.snapshot,

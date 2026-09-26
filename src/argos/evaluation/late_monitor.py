@@ -9,7 +9,7 @@ historical ``updatedAt`` value.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -397,11 +397,12 @@ class LateResolutionProgressV1(VersionedModel):
                 raise ValueError("pending target cannot carry a final outcome or cutoff")
         else:
             if (
-                self.last_observed_finality is not ResolutionStatus.FINAL
+                self.late_outcome_id is None
+                or self.last_observed_finality is not ResolutionStatus.FINAL
                 or self.selected_cutoff is None
                 or self.last_observed_at != self.selected_cutoff
             ):
-                raise ValueError("final progress requires its actual observed cutoff")
+                raise ValueError("final progress requires a bound outcome and actual cutoff")
         return self
 
 
@@ -663,6 +664,9 @@ class LateLifecycleMonitor:
         self.clock = clock
         self.source_archive = Path(source_archive)
         self.evidence_archive = Path(evidence_archive)
+        self._chain_cache: list[
+            tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1]
+        ] | None = None
         self._campaign_id = f"{protocol.experiment_id}:{target.target_id}"
         self._configuration_sha256 = record_sha256(
             {
@@ -813,9 +817,21 @@ class LateLifecycleMonitor:
         except _AlreadyFinal:
             checkpoint = self.monitor.load()
             return self._result_from_checkpoint(checkpoint, poll_performed=False, next_poll_at=None)
+        except Exception:
+            # A poll may have durably appended evidence before a later step or
+            # checkpoint write failed. Force the next attempt to reconcile the
+            # archive rather than trusting an in-memory head that may be stale.
+            self._chain_cache = None
+            raise
         if len(committed) != 1 or len(final_outcome) != 1:
+            self._chain_cache = None
             raise RuntimeError("late monitor returned without exactly one durable poll")
         observation, receipt = committed[0]
+        chain = self._load_chain()
+        if len(chain) + 1 != observation.ordinal:
+            self._chain_cache = None
+            raise RuntimeError("committed lifecycle ordinal disagrees with the cached chain head")
+        chain.append((observation, receipt))
         outcome_tuple = final_outcome[0]
         outcome = outcome_tuple[0] if outcome_tuple is not None else None
         outcome_receipt = outcome_tuple[1] if outcome_tuple is not None else None
@@ -923,7 +939,11 @@ class LateLifecycleMonitor:
 
     def _load_chain(
         self,
-    ) -> tuple[tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1], ...]:
+    ) -> list[tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1]]:
+        if self._chain_cache is not None:
+            return self._chain_cache
+        # A new owner or recovery pass fully verifies the archive once. Normal
+        # polls then append to this indexed head instead of rereading history.
         observation_records: dict[
             int, tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1]
         ] = {}
@@ -996,7 +1016,8 @@ class LateLifecycleMonitor:
                 raise ValueError("durable lifecycle chain continues after an earlier final")
             if finals[-1] and chain[-1][0].retrieved_at <= self.protocol.lifecycle_deadline:
                 raise ValueError("late lifecycle finality was observed before the frozen deadline")
-        return chain
+        self._chain_cache = list(chain)
+        return self._chain_cache
 
     def _verify_or_append_receipt_links(
         self,
@@ -1116,7 +1137,7 @@ class LateLifecycleMonitor:
     def _persist_poll(
         self,
         checkpoint: ResumableMonitorCheckpointV1,
-        chain: tuple[tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1], ...],
+        chain: Sequence[tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1]],
         response: GammaResponse,
     ) -> tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1, ResolutionV1 | None]:
         provenance = response.provenance
@@ -1273,7 +1294,7 @@ class LateLifecycleMonitor:
         started_at: datetime,
         ended_at: datetime,
         reason: str,
-        chain: tuple[tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1], ...]
+        chain: Sequence[tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1]]
         | None = None,
     ) -> LifecycleMonitorGapEvidenceV1:
         if chain is None:
@@ -1308,7 +1329,7 @@ class LateLifecycleMonitor:
 
     def _build_late_outcome(
         self,
-        chain: tuple[tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1], ...],
+        chain: Sequence[tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1]],
         resolution: ResolutionV1,
     ) -> LateFinalOutcomeV1:
         observations = tuple(item for item, _ in chain)
