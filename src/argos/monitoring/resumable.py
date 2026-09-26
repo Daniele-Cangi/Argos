@@ -8,7 +8,7 @@ network or wall-clock access.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from importlib import import_module
@@ -291,14 +291,23 @@ class ResumableMonitor:
         *,
         poll: Callable[[ResumableMonitorCheckpointV1], PollCommit],
         failure_time: Callable[[], datetime],
+        initial_checkpoint: ResumableMonitorCheckpointV1 | None = None,
+        reconcile: Callable[[ResumableMonitorCheckpointV1], ResumableMonitorCheckpointV1]
+        | None = None,
+        record_failure: Callable[
+            [ResumableMonitorCheckpointV1, datetime, datetime, Exception], None
+        ]
+        | None = None,
     ) -> ResumableMonitorCheckpointV1:
         with ExclusiveFileLease(self._lock_path):
-            checkpoint = self.load()
+            checkpoint = self._load_or_initialize(initial_checkpoint)
+            checkpoint = self._reconcile(checkpoint, reconcile)
             started_at = ensure_utc(failure_time())
             try:
                 commit = poll(checkpoint)
             except Exception as error:
                 ended_at = ensure_utc(failure_time())
+                self._record_failure(record_failure, checkpoint, started_at, ended_at, error)
                 failed = checkpoint_after_failure(
                     checkpoint,
                     started_at=started_at,
@@ -310,3 +319,89 @@ class ResumableMonitor:
             advanced = checkpoint_after_poll(checkpoint, commit)
             self.save(advanced)
             return advanced
+
+    async def run_once_async(
+        self,
+        *,
+        poll: Callable[[ResumableMonitorCheckpointV1], Awaitable[PollCommit]],
+        failure_time: Callable[[], datetime],
+        initial_checkpoint: ResumableMonitorCheckpointV1 | None = None,
+        reconcile: Callable[[ResumableMonitorCheckpointV1], ResumableMonitorCheckpointV1]
+        | None = None,
+        record_failure: Callable[
+            [ResumableMonitorCheckpointV1, datetime, datetime, Exception], None
+        ]
+        | None = None,
+    ) -> ResumableMonitorCheckpointV1:
+        """Async counterpart that holds the same process lease over the await.
+
+        Checkpoint reconciliation runs before any source request. This lets an
+        owner recover an artifact that was durably archived just before a crash
+        prevented its checkpoint update, rather than issuing that poll again.
+        """
+        with ExclusiveFileLease(self._lock_path):
+            checkpoint = self._load_or_initialize(initial_checkpoint)
+            checkpoint = self._reconcile(checkpoint, reconcile)
+            started_at = ensure_utc(failure_time())
+            try:
+                commit = await poll(checkpoint)
+            except Exception as error:
+                ended_at = ensure_utc(failure_time())
+                self._record_failure(record_failure, checkpoint, started_at, ended_at, error)
+                failed = checkpoint_after_failure(
+                    checkpoint,
+                    started_at=started_at,
+                    ended_at=ended_at,
+                    reason=f"{type(error).__name__}: {error}",
+                )
+                self.save(failed)
+                raise
+            advanced = checkpoint_after_poll(checkpoint, commit)
+            self.save(advanced)
+            return advanced
+
+    def _load_or_initialize(
+        self, initial_checkpoint: ResumableMonitorCheckpointV1 | None
+    ) -> ResumableMonitorCheckpointV1:
+        if self._checkpoint_path.exists():
+            return self.load()
+        if initial_checkpoint is None:
+            return self.load()
+        self.save(initial_checkpoint)
+        return initial_checkpoint
+
+    def _reconcile(
+        self,
+        checkpoint: ResumableMonitorCheckpointV1,
+        reconcile: Callable[[ResumableMonitorCheckpointV1], ResumableMonitorCheckpointV1] | None,
+    ) -> ResumableMonitorCheckpointV1:
+        if reconcile is None:
+            return checkpoint
+        reconciled = reconcile(checkpoint)
+        if (
+            reconciled.campaign_id != checkpoint.campaign_id
+            or reconciled.configuration_sha256 != checkpoint.configuration_sha256
+        ):
+            raise ValueError("checkpoint reconciliation cannot change monitor identity")
+        if reconciled != checkpoint:
+            self.save(reconciled)
+        return reconciled
+
+    @staticmethod
+    def _record_failure(
+        recorder: Callable[[ResumableMonitorCheckpointV1, datetime, datetime, Exception], None]
+        | None,
+        checkpoint: ResumableMonitorCheckpointV1,
+        started_at: datetime,
+        ended_at: datetime,
+        error: Exception,
+    ) -> None:
+        if recorder is None:
+            return
+        try:
+            recorder(checkpoint, started_at, ended_at, error)
+        except Exception as recording_error:
+            error.add_note(
+                "Could not persist the explicit monitor-gap artifact: "
+                f"{type(recording_error).__name__}: {recording_error}"
+            )

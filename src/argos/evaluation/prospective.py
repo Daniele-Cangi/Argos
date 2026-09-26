@@ -102,6 +102,9 @@ class EvidenceArtifactKind(StrEnum):
     EXPERIMENT_AGGREGATE = "experiment_aggregate"
     FROZEN_FORECAST_SNAPSHOT = "frozen_forecast_snapshot"
     LATE_FINAL_OUTCOME = "late_final_outcome"
+    LIFECYCLE_MONITOR_GAP = "lifecycle_monitor_gap"
+    LIFECYCLE_RECEIPT_CHAIN_LINK = "lifecycle_receipt_chain_link"
+    LATE_MONITORING_SCHEDULE = "late_monitoring_schedule"
 
 
 class ProspectiveExperimentProtocolV1(VersionedModel):
