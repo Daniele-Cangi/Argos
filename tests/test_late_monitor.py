@@ -43,7 +43,7 @@ from argos.evaluation import (
     score_late_final_outcome,
     verify_late_outcome_archives,
 )
-from argos.evaluation.late_monitor import LateResolutionStatus
+from argos.evaluation.late_monitor import LateResolutionStatus, _gap_id
 from argos.evaluation.prospective import build_target_id, persist_evidence_record
 from argos.monitoring.resumable import ResumableMonitorCheckpointV1
 from argos.resolution import ResolutionStatus
@@ -1270,11 +1270,66 @@ def test_archived_gap_reconciliation_is_idempotent_and_persists_its_anchor(
         reason="simulated owner interruption",
     )
 
-    reconciled = monitor._reconcile_archived_gaps(checkpoint, checkpoint)
-    repeated = monitor._reconcile_archived_gaps(checkpoint, reconciled)
+    chain = monitor._load_chain()
+    reconciled = monitor._reconcile_archived_gaps(checkpoint, checkpoint, chain)
+    repeated = monitor._reconcile_archived_gaps(checkpoint, reconciled, chain)
     assert len(reconciled.gaps) == 1
     assert repeated == reconciled
     assert repeated.updated_at == ended_at
+
+
+@pytest.mark.anyio
+async def test_archived_gap_predecessor_must_match_verified_lifecycle_chain(
+    tmp_path: Path,
+) -> None:
+    schedule_at = DEADLINE + timedelta(seconds=20)
+    retrieved_at = schedule_at + timedelta(seconds=1)
+    monitor = _monitor(
+        tmp_path,
+        _Clock(schedule_at),
+        [_response(_pending_payload(), retrieved_at)],
+    )
+    first = await monitor.poll_once()
+    chain = [(first.observation, first.receipt)]
+    attempted_ordinal = 2
+    started_at = retrieved_at + timedelta(seconds=1)
+    ended_at = started_at + timedelta(seconds=2)
+    reason = "forged predecessor"
+    fields = {
+        "schedule_id": monitor.schedule.schedule_id,
+        "experiment_id": monitor.protocol.experiment_id,
+        "target_id": monitor.target.target_id,
+        "attempted_ordinal": attempted_ordinal,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "predecessor_observation_id": "lifecycle-observation-from-no-ordinal",
+        "predecessor_receipt_id": "receipt-from-no-ordinal",
+        "reason": reason,
+    }
+    gap_id = _gap_id(
+        schedule_id=fields["schedule_id"],
+        attempted_ordinal=attempted_ordinal,
+        started_at=started_at,
+        ended_at=ended_at,
+        predecessor_observation_id=fields["predecessor_observation_id"],
+        predecessor_receipt_id=fields["predecessor_receipt_id"],
+        reason=reason,
+    )
+    gap = LifecycleMonitorGapEvidenceV1(gap_id=gap_id, **fields)
+    persist_evidence_record(
+        monitor.evidence_archive,
+        record=gap,
+        experiment_id=monitor.protocol.experiment_id,
+        artifact_kind=EvidenceArtifactKind.LIFECYCLE_MONITOR_GAP,
+        artifact_id=gap.gap_id,
+        persisted_at=ended_at,
+    )
+    monitor._gap_cache = None
+
+    with pytest.raises(
+        ValueError, match="predecessor disagrees with the verified observation chain"
+    ):
+        monitor._reconcile_archived_gaps(first.checkpoint, first.checkpoint, chain)
 
 
 @pytest.mark.anyio
@@ -1305,7 +1360,7 @@ async def test_archived_gap_ahead_of_durable_chain_is_rejected(tmp_path: Path) -
 
     checkpoint = monitor._initial_checkpoint()
     with pytest.raises(ValueError, match="future poll ordinal"):
-        monitor._reconcile_archived_gaps(checkpoint, checkpoint)
+        monitor._reconcile_archived_gaps(checkpoint, checkpoint, monitor._load_chain())
 
 
 def test_archived_gap_that_predates_checkpoint_is_rejected(tmp_path: Path) -> None:
@@ -1327,7 +1382,9 @@ def test_archived_gap_that_predates_checkpoint_is_rejected(tmp_path: Path) -> No
     )
 
     with pytest.raises(ValueError, match="regresses behind the checkpoint"):
-        monitor._reconcile_archived_gaps(advanced_checkpoint, advanced_checkpoint)
+        monitor._reconcile_archived_gaps(
+            advanced_checkpoint, advanced_checkpoint, monitor._load_chain()
+        )
 
 
 def test_gap_persistence_is_idempotent_and_invalidates_failed_archive_cache(

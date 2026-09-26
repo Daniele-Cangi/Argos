@@ -939,7 +939,7 @@ class LateLifecycleMonitor:
                     "updated_at": max(checkpoint.updated_at, receipt.persisted_at),
                 }
             )
-        reconciled = self._reconcile_archived_gaps(checkpoint, reconciled)
+        reconciled = self._reconcile_archived_gaps(checkpoint, reconciled, chain)
 
         if chain and chain[-1][0].finality is ResolutionStatus.FINAL:
             # The durable observation is authoritative if a crash happened
@@ -989,6 +989,7 @@ class LateLifecycleMonitor:
         self,
         checkpoint: ResumableMonitorCheckpointV1,
         reconciled: ResumableMonitorCheckpointV1,
+        chain: Sequence[tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1]],
     ) -> ResumableMonitorCheckpointV1:
         known = {
             (gap.attempted_ordinal, gap.started_at, gap.ended_at, gap.reason)
@@ -999,6 +1000,7 @@ class LateLifecycleMonitor:
         for evidence, _ in self._load_gap_evidence():
             if evidence.attempted_ordinal > reconciled.next_ordinal + 1:
                 raise ValueError("durable lifecycle gap refers to a future poll ordinal")
+            self._verify_gap_predecessor(evidence, chain)
             key = (
                 evidence.attempted_ordinal - 1,
                 evidence.started_at,
@@ -1022,6 +1024,34 @@ class LateLifecycleMonitor:
         if tuple(merged) == reconciled.gaps and updated_at == reconciled.updated_at:
             return reconciled
         return reconciled.model_copy(update={"gaps": tuple(merged), "updated_at": updated_at})
+
+    @staticmethod
+    def _verify_gap_predecessor(
+        evidence: LifecycleMonitorGapEvidenceV1,
+        chain: Sequence[tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1]],
+    ) -> None:
+        # A gap normally points at the last completed poll (attempted - 1).
+        # If persistence failed after the current poll's observation was
+        # already archived, it may instead point at that durable observation.
+        for ordinal in (evidence.attempted_ordinal - 1, evidence.attempted_ordinal):
+            if ordinal == 0:
+                matches = (
+                    evidence.predecessor_observation_id is None
+                    and evidence.predecessor_receipt_id is None
+                )
+            elif ordinal <= len(chain):
+                observation, receipt = chain[ordinal - 1]
+                matches = (
+                    evidence.predecessor_observation_id == observation.lifecycle_observation_id
+                    and evidence.predecessor_receipt_id == receipt.receipt_id
+                )
+            else:
+                matches = False
+            if matches:
+                return
+        raise ValueError(
+            "durable lifecycle gap predecessor disagrees with the verified observation chain"
+        )
 
     def _load_chain(
         self,
