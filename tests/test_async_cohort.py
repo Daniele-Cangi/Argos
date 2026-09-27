@@ -349,6 +349,11 @@ def test_offline_selector_is_deterministic_atomic_and_independent() -> None:
     ]
     with pytest.raises(ValidationError, match="distinct explicit event identities"):
         OfflineBlockSelectionV1.from_record(duplicate_event)
+    aliased_event = selected.to_record()
+    aliased_event["selected_markets"][0]["event_id"] = "411239"
+    aliased_event["selected_markets"][1]["event_id"] = "0411239"
+    with pytest.raises(ValidationError, match="distinct explicit event identities"):
+        OfflineBlockSelectionV1.from_record(aliased_event)
     foreign_source = selected.to_record()
     foreign_source["selected_markets"][0]["raw_payload_sha256"] = "b" * 64
     with pytest.raises(ValidationError, match="recorded discovery source digest"):
@@ -411,6 +416,15 @@ def test_duplicate_market_ids_fail_closed_independent_of_page_order() -> None:
             source_retrieved_at=WINDOW_START,
             prior_block_selections=(),
         )
+    with pytest.raises(ValueError, match="duplicate market IDs"):
+        select_block_candidates(
+            protocol,
+            block_ordinal=1,
+            selected_at=WINDOW_START + timedelta(seconds=1),
+            source_payload_bytes=orjson.dumps([_raw_market(markets[0]), {"id": 1}]),
+            source_retrieved_at=WINDOW_START,
+            prior_block_selections=(),
+        )
 
 
 def test_later_blocks_derive_independence_from_hash_linked_prior_records() -> None:
@@ -419,7 +433,9 @@ def test_later_blocks_derive_independence_from_hash_linked_prior_records() -> No
         protocol,
         block_ordinal=1,
         selected_at=protocol.blocks[0].start,
-        source_payload_bytes=_source(tuple(_market(index) for index in range(100, 104))),
+        source_payload_bytes=_source(
+            (_market(100, event_id="411239"), *(_market(index) for index in range(101, 104)))
+        ),
         source_retrieved_at=protocol.blocks[0].start,
         prior_block_selections=(),
     )
@@ -428,7 +444,7 @@ def test_later_blocks_derive_independence_from_hash_linked_prior_records() -> No
         block_ordinal=2,
         selected_at=protocol.blocks[1].start,
         source_payload_bytes=_source(
-            (_market(1, event_id="event-100"), *(_market(index) for index in range(2, 6)))
+            (_market(1, event_id="0411239"), *(_market(index) for index in range(2, 6)))
         ),
         source_retrieved_at=protocol.blocks[1].start,
         prior_block_selections=(first,),
@@ -457,6 +473,34 @@ def test_later_blocks_derive_independence_from_hash_linked_prior_records() -> No
         )
     with pytest.raises(ValueError, match="missing predecessors"):
         select_block_candidates(protocol, **{**third_args, "prior_block_selections": (first,)})
+    late_first = first.model_copy(
+        update={"selected_at": protocol.blocks[0].end - timedelta(seconds=1)}
+    )
+    with pytest.raises(ValueError, match="hash-linked chain"):
+        select_block_candidates(
+            protocol,
+            **{**third_args, "prior_block_selections": (late_first, second)},
+        )
+
+
+def test_numeric_event_aliases_share_one_identity_at_selection() -> None:
+    protocol = _candidate()
+    markets = (
+        _market(1, event_id="411239"),
+        _market(2, event_id="0411239"),
+        *(_market(index) for index in range(3, 6)),
+    )
+    result = select_block_candidates(
+        protocol,
+        block_ordinal=1,
+        selected_at=WINDOW_START,
+        source_payload_bytes=_source(markets),
+        source_retrieved_at=WINDOW_START,
+        prior_block_selections=(),
+    )
+    assert result.status is BlockSelectionStatus.ADMITTED
+    assert tuple(market.market_id for market in result.selected_markets) == ("1", "3", "4", "5")
+    assert CandidateExclusionReason.EVENT_ID_REUSED in {item.reason for item in result.exclusions}
 
 
 def test_quarantined_candidates_keep_structured_reasons() -> None:

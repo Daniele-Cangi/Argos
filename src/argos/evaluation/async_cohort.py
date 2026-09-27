@@ -282,7 +282,7 @@ class OfflineBlockSelectionV1(VersionedModel):
             ) != len(market_ids):
                 raise ValueError("admitted markets need distinct canonical numeric IDs")
             if any(not event_id or not event_id.strip() for event_id in event_ids) or len(
-                set(event_ids)
+                {_event_identity(event_id) for event_id in event_ids if event_id is not None}
             ) != len(event_ids):
                 raise ValueError("admitted markets need distinct explicit event identities")
         if self.status is BlockSelectionStatus.REJECTED_SHORT_BLOCK and self.selected_markets:
@@ -331,7 +331,8 @@ def validate_block_admission(
         raise ValueError("short cohort block must be rejected before forecast")
     if any(not event_id.strip() for event_id in event_ids):
         raise ValueError("cohort targets need explicit Gamma event identities")
-    if len(set(event_ids)) != len(event_ids) or set(event_ids) & earlier_event_ids:
+    current_identities = {_event_identity(event_id) for event_id in event_ids}
+    if len(current_identities) != len(event_ids) or current_identities & earlier_event_ids:
         raise ValueError("cohort target event identity was selected more than once")
 
 
@@ -360,13 +361,16 @@ def _validate_block_readiness(
             or prior.predecessor_selection_sha256 != predecessor_digest
             or not earlier_block.start <= prior.source_retrieved_at <= prior.selected_at
             or not prior.selected_at < earlier_block.end
+            or (earlier_block.end - prior.selected_at).total_seconds()
+            < earlier_block.intended_targets * protocol.capture_max_seconds_per_target
         ):
             raise ValueError("prior cohort blocks must form an admitted, hash-linked chain")
         for market in prior.selected_markets:
             assert market.event_id is not None
-            if market.event_id in earlier_event_ids:
+            identity = _event_identity(market.event_id)
+            if identity in earlier_event_ids:
                 raise ValueError("prior cohort target event identity was selected more than once")
-            earlier_event_ids.add(market.event_id)
+            earlier_event_ids.add(identity)
         predecessor_digest = sha256_hex(
             orjson.dumps(prior.to_record(), option=orjson.OPT_SORT_KEYS)
         )
@@ -412,6 +416,19 @@ def select_block_candidates(
         raise ValueError("discovery source is not valid JSON") from error
     if not isinstance(page, list):
         raise ValueError("discovery source must be a market page")
+    raw_ids = [
+        str(entry["id"])
+        for entry in page
+        if isinstance(entry, dict)
+        and isinstance(entry.get("id"), str | int)
+        and not isinstance(entry["id"], bool)
+    ]
+    numeric_ids = [
+        market_id.lstrip("0") or "0" for market_id in raw_ids if _bounded_digits(market_id)
+    ]
+    duplicates = sorted(market_id for market_id, count in Counter(numeric_ids).items() if count > 1)
+    if duplicates:
+        raise ValueError(f"duplicate market IDs in discovery page: {duplicates}")
     source_payload_sha256 = sha256_hex(source_payload_bytes)
     normalization = normalize_markets(
         page, raw_payload_sha256=source_payload_sha256, normalized_at=retrieved_at
@@ -423,20 +440,6 @@ def select_block_candidates(
             if isinstance(market_id, str | int) and not isinstance(market_id, bool):
                 raw_by_market_id[str(market_id)] = entry
     selection = protocol.selection
-    all_ids = [
-        market_id
-        for market_id in (
-            *(market.market_id for market in normalization.accepted),
-            *(item.market_id for item in normalization.quarantined),
-        )
-        if market_id is not None
-    ]
-    numeric_ids = [
-        market_id.lstrip("0") or "0" for market_id in all_ids if _bounded_digits(market_id)
-    ]
-    duplicates = sorted(market_id for market_id, count in Counter(numeric_ids).items() if count > 1)
-    if duplicates:
-        raise ValueError(f"duplicate market IDs in discovery page: {duplicates}")
     exclusions = [
         CandidateExclusionV1(
             market_id=item.market_id,
@@ -470,7 +473,8 @@ def select_block_candidates(
     required = block.intended_targets
     for market in eligible:
         assert market.event_id is not None
-        if market.event_id in seen:
+        identity = _event_identity(market.event_id)
+        if identity in seen:
             exclusions.append(
                 CandidateExclusionV1(
                     market_id=market.market_id, reason=CandidateExclusionReason.EVENT_ID_REUSED
@@ -485,7 +489,7 @@ def select_block_candidates(
             )
             continue
         chosen.append(market)
-        seen.add(market.event_id)
+        seen.add(identity)
     if len(chosen) < required:
         exclusions.extend(
             CandidateExclusionV1(
@@ -570,6 +574,12 @@ def _bounded_digits(market_id: str) -> bool:
 
 def _canonical_market_id(market_id: str) -> bool:
     return _bounded_digits(market_id) and (len(market_id) == 1 or market_id[0] != "0")
+
+
+def _event_identity(event_id: str) -> str:
+    if event_id.isascii() and event_id.isdecimal():
+        return f"numeric:{event_id.lstrip('0') or '0'}"
+    return f"text:{event_id}"
 
 
 def _outcome_prices(raw: Any) -> tuple[Decimal, ...] | None:

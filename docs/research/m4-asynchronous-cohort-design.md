@@ -80,11 +80,13 @@ claim edge or superiority from a partial cohort.
    Offline block selection now reserves enough remaining time for all four
    bounded captures, accepts only a discovery retrieval within that block,
    derives normalization and eligibility flags from the supplied raw page
-   bytes, rejects duplicate numeric market IDs (including textual aliases),
+   bytes, rejects duplicate numeric market IDs (including integer/text aliases
+   before normalization can quarantine an entry),
    and returns a versioned partition of selected and excluded candidates with
    reasons and source hash. Later blocks derive earlier event identities from
-   admitted, hash-linked prior block records; callers cannot supply an
-   independent ID set. The protocol keeps the earliest eligible target end
+   admitted, hash-linked prior block records, including their capture-time
+   reservation; callers cannot supply an independent ID set. Numeric event-ID
+   aliases count as the same event. The protocol keeps the earliest eligible target end
    after the final observation block; admitted records recheck distinct
    canonical market IDs, explicit event identities and source linkage on reload.
    A rejected short block admits no target or forecast.
