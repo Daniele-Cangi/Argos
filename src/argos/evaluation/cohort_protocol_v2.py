@@ -8,7 +8,7 @@ this contract before a V2 live launch is possible.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from itertools import combinations, pairwise
 from typing import Any, ClassVar, Literal
@@ -177,6 +177,22 @@ class AsynchronousCohortProtocolV2(VersionedModel):
             for stratum in self.strata
         ):
             raise ValueError("horizon must reserve capture, finalization and outcome-blind margin")
+        reserved_window = timedelta(seconds=reserved_seconds)
+        if any(
+            not any(
+                self.selection.target_end_max
+                >= block.start + timedelta(seconds=stratum.minimum_horizon_seconds)
+                and self.selection.target_end_min
+                < block.end
+                - reserved_window
+                + timedelta(seconds=stratum.maximum_horizon_seconds)
+                for stratum in self.strata
+            )
+            for block in self.blocks
+        ):
+            raise ValueError(
+                "Gamma target-end window cannot intersect a block's stratum horizon"
+            )
         if any(
             stratum.minimum_liquidity < self.selection.minimum_liquidity for stratum in self.strata
         ):
