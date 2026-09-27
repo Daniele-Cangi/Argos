@@ -770,6 +770,7 @@ async def test_resolved_status_without_normalizable_settlement_remains_unknown(
         ("gamma_base_url", "http://gamma-api.polymarket.com", "HTTPS origin"),
         ("gamma_base_url", "https://user:secret@gamma-api.polymarket.com", "HTTPS origin"),
         ("gamma_base_url", "https://gamma-api.polymarket.com/api", "HTTPS origin"),
+        ("gamma_base_url", "https://gamma-api.polymarket.com/;token=secret", "HTTPS origin"),
         ("gamma_base_url", "https://gamma-api.polymarket.com:invalid", "invalid port"),
         ("config_fingerprint", "z" * 64, "hexadecimal"),
         ("owner_code_revision", "g" * 40, "hexadecimal"),
@@ -1250,7 +1251,9 @@ async def test_append_failure_gap_uses_the_durable_observation_as_predecessor(
 
 
 @pytest.mark.anyio
-async def test_malformed_archived_lifecycle_record_fails_closed(tmp_path: Path) -> None:
+async def test_malformed_archive_record_fails_closed_during_reconstruction(
+    tmp_path: Path,
+) -> None:
     clock = _Clock(DEADLINE + timedelta(seconds=20))
     monitor = _monitor(tmp_path, clock, [])
     malformed = b"{not-json"
@@ -1266,9 +1269,8 @@ async def test_malformed_archived_lifecycle_record_fails_closed(tmp_path: Path) 
         ),
     )
 
-    restarted = _monitor(tmp_path, clock, [])
     with pytest.raises(ValueError, match="evidence archive contains malformed JSON"):
-        restarted._load_chain()
+        _monitor(tmp_path, clock, [])
 
 
 def test_lifecycle_evidence_decoder_rejects_nonobjects_and_unknown_schemas() -> None:
@@ -1496,6 +1498,10 @@ async def test_gamma_payload_must_match_the_frozen_market_tokens(
         ),
         (
             "https://gamma-api.polymarket.com/markets/market-1?token=secret",
+            "credential-free HTTPS",
+        ),
+        (
+            "https://gamma-api.polymarket.com/markets/market-1;token=secret",
             "credential-free HTTPS",
         ),
     ],

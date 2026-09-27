@@ -99,6 +99,7 @@ def _normalize_gamma_base_url(value: str) -> str:
         or parsed.username is not None
         or parsed.password is not None
         or parsed.path not in ("", "/")
+        or parsed.params
         or parsed.query
         or parsed.fragment
     ):
@@ -773,13 +774,8 @@ class LateLifecycleMonitor:
         found_current_schedule = False
         for path in sorted(evidence_root.glob("*.raw.json")):
             raw, provenance = read_raw_payload(self.evidence_archive, provenance_digest(path))
-            try:
-                decoded = orjson.loads(raw)
-            except orjson.JSONDecodeError:
-                continue
-            if not isinstance(decoded, dict) or decoded.get("schema_version") != (
-                LateMonitoringScheduleV1.schema_version
-            ):
+            decoded, model = self._decode_evidence_record(raw)
+            if model is not LateMonitoringScheduleV1:
                 continue
             archived_schedule = LateMonitoringScheduleV1.from_record(decoded)
             if (
@@ -1665,6 +1661,7 @@ class LateLifecycleMonitor:
             or not actual.hostname
             or actual.username is not None
             or actual.password is not None
+            or actual.params
             or actual.query
             or actual.fragment
         ):
