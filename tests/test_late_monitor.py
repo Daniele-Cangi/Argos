@@ -1039,6 +1039,24 @@ async def test_progress_and_score_records_reject_pending_finality_claims(tmp_pat
         )
 
 
+@pytest.mark.parametrize("epsilon", ["0", "-0.01", "NaN", "0.5", "0.9"])
+def test_pending_score_record_rejects_invalid_log_loss_epsilon(
+    tmp_path: Path, epsilon: str
+) -> None:
+    schedule_at = DEADLINE + timedelta(seconds=20)
+    monitor = _monitor(tmp_path, _Clock(schedule_at), [])
+    score = pending_late_resolution_score(
+        monitor.snapshot,
+        latest_observation=None,
+        created_at=schedule_at + timedelta(seconds=1),
+    )
+    record = score.to_record()
+    record["log_loss_epsilon"] = epsilon
+
+    with pytest.raises(ValueError):
+        LateScoringResultV1.from_record(record)
+
+
 @pytest.mark.anyio
 async def test_ineligible_final_resolution_is_rejected_before_observation_persistence(
     tmp_path: Path,
@@ -1243,6 +1261,10 @@ async def test_final_unscorable_target_counts_each_abstention(tmp_path: Path) ->
     assert score.disposition is LateScoreDisposition.FINAL_UNSCORABLE
     assert score.evaluations == ()
     assert len(score.abstained_forecast_ids) == 4
+    invalid_epsilon = score.to_record()
+    invalid_epsilon["log_loss_epsilon"] = "NaN"
+    with pytest.raises(ValueError):
+        LateScoringResultV1.from_record(invalid_epsilon)
 
 
 @pytest.mark.anyio

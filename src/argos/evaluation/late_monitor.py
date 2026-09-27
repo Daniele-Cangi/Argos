@@ -24,6 +24,7 @@ from pydantic import Field, field_validator, model_validator
 from argos.clock import Clock, ensure_utc
 from argos.domain.provenance import SourceProvenanceV1, sha256_hex
 from argos.domain.versioning import VersionedModel, ensure_supported_version, resolve_schema
+from argos.errors import ContractViolationError
 from argos.evaluation.bundle import record_sha256
 from argos.evaluation.late_resolution import (
     FrozenForecastSnapshotV1,
@@ -441,6 +442,14 @@ class LateScoringResultV1(VersionedModel):
     @classmethod
     def _utc_created_at(cls, value: datetime) -> datetime:
         return ensure_utc(value)
+
+    @field_validator("log_loss_epsilon")
+    @classmethod
+    def _valid_log_loss_epsilon(cls, value: Decimal) -> Decimal:
+        try:
+            return require_epsilon(value)
+        except ContractViolationError as error:
+            raise ValueError(error.message) from error
 
     @model_validator(mode="after")
     def _scoring_state_is_truthful(self) -> LateScoringResultV1:
