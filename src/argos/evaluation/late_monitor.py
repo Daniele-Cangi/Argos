@@ -1314,6 +1314,8 @@ class LateLifecycleMonitor:
             raise ValueError("archived evidence record or provenance is not first-hand canonical")
 
     def _verify_source_for_observation(self, observation: LifecycleObservationV1) -> None:
+        if observation.source != "gamma":
+            raise ValueError("lifecycle observation is not bound to first-hand Gamma source bytes")
         raw, provenance = read_raw_payload(self.source_archive, observation.raw_payload_sha256)
         self._verify_gamma_endpoint(observation.endpoint)
         if (

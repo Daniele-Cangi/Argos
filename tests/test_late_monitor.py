@@ -44,7 +44,11 @@ from argos.evaluation import (
     verify_late_outcome_archives,
 )
 from argos.evaluation.late_monitor import LateResolutionStatus, _gap_id
-from argos.evaluation.prospective import build_target_id, persist_evidence_record
+from argos.evaluation.prospective import (
+    build_lifecycle_observation_id,
+    build_target_id,
+    persist_evidence_record,
+)
 from argos.evaluation.scoring import score_forecast_v2
 from argos.monitoring.resumable import ResumableMonitorCheckpointV1
 from argos.resolution import ResolutionStatus, WinningOutcome
@@ -488,6 +492,45 @@ async def test_resume_reconciles_archived_observation_before_polling_again(tmp_p
         if record.get("schema_version") == LifecycleObservationV1.schema_version:
             lifecycle_records.append(record)
     assert len(lifecycle_records) == 2
+
+
+@pytest.mark.anyio
+async def test_recovery_rejects_lifecycle_observation_claiming_non_gamma_source(
+    tmp_path: Path,
+) -> None:
+    schedule_at = DEADLINE + timedelta(seconds=20)
+    retrieved_at = schedule_at + timedelta(seconds=1)
+    monitor = _monitor(
+        tmp_path,
+        _Clock(schedule_at),
+        [_response(_pending_payload(), retrieved_at)],
+    )
+    polled = await monitor.poll_once()
+    assert polled.observation is not None
+
+    fields = polled.observation.model_dump(mode="python")
+    fields["schema_version"] = LifecycleObservationV1.schema_version
+    fields["source"] = "forged"
+    fields["lifecycle_observation_id"] = build_lifecycle_observation_id(
+        **{
+            key: value
+            for key, value in fields.items()
+            if key not in {"schema_version", "lifecycle_observation_id"}
+        }
+    )
+    forged = LifecycleObservationV1.from_record(fields)
+    persist_evidence_record(
+        monitor.evidence_archive,
+        record=forged,
+        experiment_id=EXPERIMENT,
+        artifact_kind=EvidenceArtifactKind.LIFECYCLE_OBSERVATION,
+        artifact_id=forged.lifecycle_observation_id,
+        persisted_at=polled.receipt.persisted_at,
+    )
+    monitor._chain_cache = None
+
+    with pytest.raises(ValueError, match="first-hand Gamma source bytes"):
+        monitor._load_chain()
 
 
 @pytest.mark.anyio
