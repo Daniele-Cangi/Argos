@@ -21,6 +21,7 @@ from argos.evaluation.async_cohort import (
     OfflineBlockSelectionV1,
     select_block_candidates,
     validate_block_admission,
+    verify_block_selection,
 )
 from argos.evaluation.bundle import (
     EvaluationDecisionV1,
@@ -281,6 +282,7 @@ __all__ = [
     "select_block_candidates",
     "spread_bucket",
     "validate_block_admission",
+    "verify_block_selection",
     "verify_late_outcome_archives",
     "verify_published_claim_artifact",
 ]

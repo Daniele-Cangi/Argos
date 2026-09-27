@@ -103,6 +103,9 @@ claim edge or superiority from a partial cohort.
    no-replacement block is admitted. Explicit discovery IDs must be unique
    across both selected and excluded entries; ambiguous duplicate IDs fail
    closed before normalization.
+   Reloading a selection checks its structure only; consumers must call
+   `verify_block_selection` with the archived page and predecessor chain before
+   trusting any admitted record, including the final block.
    A rejected short block admits no target or forecast.
    A candidate record can be checked with
    `uv run python scripts/m4_async_cohort_preflight.py --spec <candidate.json>`

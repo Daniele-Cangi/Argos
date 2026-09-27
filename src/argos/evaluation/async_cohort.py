@@ -430,17 +430,13 @@ def _validate_block_readiness(
             < earlier_block.intended_targets * protocol.capture_max_seconds_per_target
         ):
             raise ValueError("prior cohort blocks must form an admitted, hash-linked chain")
-        replayed = select_block_candidates(
+        verify_block_selection(
             protocol,
-            block_ordinal=ordinal,
-            selected_at=prior.selected_at,
+            prior,
             source_payload_bytes=prior_source,
-            source_provenance=prior.source_provenance,
             prior_block_selections=prior_block_selections[: ordinal - 1],
             prior_block_sources=prior_block_sources[: ordinal - 1],
         )
-        if replayed != prior:
-            raise ValueError("prior cohort selection disagrees with its archived discovery page")
         for market in prior.selected_markets:
             assert market.event_id is not None
             market_identity = _market_identity(market.market_id)
@@ -671,6 +667,29 @@ def select_block_candidates(
         selected_markets=tuple(chosen),
         exclusions=tuple(exclusions),
     )
+
+
+def verify_block_selection(
+    protocol: AsynchronousCohortProtocolV1,
+    selection: OfflineBlockSelectionV1,
+    *,
+    source_payload_bytes: bytes,
+    prior_block_selections: tuple[OfflineBlockSelectionV1, ...],
+    prior_block_sources: tuple[bytes, ...],
+) -> OfflineBlockSelectionV1:
+    """Replay an archived selection, including a terminal block, before trusting it."""
+    replayed = select_block_candidates(
+        protocol,
+        block_ordinal=selection.block_ordinal,
+        selected_at=selection.selected_at,
+        source_payload_bytes=source_payload_bytes,
+        source_provenance=selection.source_provenance,
+        prior_block_selections=prior_block_selections,
+        prior_block_sources=prior_block_sources,
+    )
+    if replayed != selection:
+        raise ValueError("cohort selection disagrees with its archived discovery page")
+    return selection
 
 
 def _candidate_rejection(

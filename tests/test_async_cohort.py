@@ -25,6 +25,7 @@ from argos.evaluation.async_cohort import (
     GammaSelectionV1,
     OfflineBlockSelectionV1,
     validate_block_admission,
+    verify_block_selection,
 )
 from argos.evaluation.async_cohort import (
     select_block_candidates as _select_block_candidates,
@@ -701,6 +702,50 @@ def test_later_block_rejects_reused_market_id_despite_changed_other_identities()
     assert tuple(market.market_id for market in second.selected_markets) == ("5", "6", "7", "8")
     assert second.exclusions[0].market_id == "1"
     assert second.exclusions[0].reason is CandidateExclusionReason.MARKET_IDENTITY_REUSED
+
+
+def test_terminal_block_requires_archive_backed_replay() -> None:
+    protocol = _candidate()
+    prior_selections: tuple[OfflineBlockSelectionV1, ...] = ()
+    prior_sources: tuple[bytes, ...] = ()
+    for index, block in enumerate(protocol.blocks):
+        source = _source(
+            tuple(_market(market_id) for market_id in range(1 + 4 * index, 5 + 4 * index))
+        )
+        selection = select_block_candidates(
+            protocol,
+            block_ordinal=block.ordinal,
+            selected_at=block.start,
+            source_payload_bytes=source,
+            source_retrieved_at=block.start,
+            prior_block_selections=prior_selections,
+            prior_block_sources=prior_sources,
+        )
+        if block.ordinal < 4:
+            prior_selections += (selection,)
+            prior_sources += (source,)
+    assert selection.block_ordinal == 4
+    assert (
+        verify_block_selection(
+            protocol,
+            selection,
+            source_payload_bytes=source,
+            prior_block_selections=prior_selections,
+            prior_block_sources=prior_sources,
+        )
+        == selection
+    )
+    forged_record = selection.to_record()
+    forged_record["selected_markets"][0]["closed"] = True
+    forged = OfflineBlockSelectionV1.from_record(forged_record)
+    with pytest.raises(ValueError, match="disagrees with its archived discovery page"):
+        verify_block_selection(
+            protocol,
+            forged,
+            source_payload_bytes=source,
+            prior_block_selections=prior_selections,
+            prior_block_sources=prior_sources,
+        )
 
 
 def test_numeric_event_aliases_share_one_identity_at_selection() -> None:
