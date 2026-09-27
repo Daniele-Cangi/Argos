@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from runpy import run_path
+from typing import Any
+from urllib.parse import urlencode
 
 import orjson
 import pytest
@@ -13,7 +15,7 @@ from pydantic import ValidationError
 from test_prospective_evidence import DECLARED_AT, WINDOW_START, _protocol
 
 from argos.domain.market import MarketDefinitionV1
-from argos.domain.provenance import sha256_hex
+from argos.domain.provenance import SourceProvenanceV1, sha256_hex
 from argos.errors import SchemaVersionError
 from argos.evaluation.async_cohort import (
     AsynchronousCohortProtocolV1,
@@ -22,8 +24,10 @@ from argos.evaluation.async_cohort import (
     CohortBlockV1,
     GammaSelectionV1,
     OfflineBlockSelectionV1,
-    select_block_candidates,
     validate_block_admission,
+)
+from argos.evaluation.async_cohort import (
+    select_block_candidates as _select_block_candidates,
 )
 from argos.evaluation.prospective import (
     EvidenceArtifactKind,
@@ -175,19 +179,27 @@ def test_selection_is_exact_public_and_deterministic(
 
 def test_block_admission_is_atomic_and_never_reuses_event() -> None:
     protocol = _candidate()
-    valid = ("event-a", "event-b", "event-c", "event-d")
+    valid = tuple(
+        _market(index).model_copy(update={"event_id": event_id})
+        for index, event_id in enumerate(("event-a", "event-b", "event-c", "event-d"), start=1)
+    )
     at = protocol.blocks[1].start + timedelta(seconds=1)
     prior = _prior_selection(protocol)
     validate_block_admission(
         protocol,
         block_ordinal=2,
         selected_at=at,
-        event_ids=valid,
+        selected_markets=valid,
         prior_block_selections=(prior,),
     )
     cases = [
         (at, valid[:3], (prior,), "short"),
-        (at, ("event-a", "event-a", "event-c", "event-d"), (prior,), "more than once"),
+        (
+            at,
+            (valid[0], valid[1].model_copy(update={"event_id": "event-a"}), *valid[2:]),
+            (prior,),
+            "more than once",
+        ),
         (
             at,
             valid,
@@ -212,13 +224,13 @@ def test_block_admission_is_atomic_and_never_reuses_event() -> None:
             "insufficient time remains",
         ),
     ]
-    for selected_at, event_ids, predecessors, message in cases:
+    for selected_at, markets, predecessors, message in cases:
         with pytest.raises(ValueError, match=message):
             validate_block_admission(
                 protocol,
                 block_ordinal=2,
                 selected_at=selected_at,
-                event_ids=event_ids,
+                selected_markets=markets,
                 prior_block_selections=predecessors,
             )
 
@@ -259,6 +271,14 @@ def _prior_selection(protocol: AsynchronousCohortProtocolV1) -> OfflineBlockSele
         protocol_sha256=sha256_hex(orjson.dumps(protocol.to_record(), option=orjson.OPT_SORT_KEYS)),
         source_payload_sha256="a" * 64,
         source_retrieved_at=protocol.blocks[0].start,
+        source_provenance=SourceProvenanceV1(
+            source="gamma",
+            endpoint=_endpoint(protocol),
+            http_status=200,
+            retrieved_at=protocol.blocks[0].start,
+            raw_sha256="a" * 64,
+            byte_length=0,
+        ),
         source_candidate_count=4,
         selected_markets=markets,
         exclusions=(),
@@ -299,6 +319,34 @@ def _source(
     return orjson.dumps(
         [_raw_market(market, **(updates or {}).get(market.market_id, {})) for market in markets]
         + list(extra)
+    )
+
+
+def _endpoint(protocol: AsynchronousCohortProtocolV1) -> str:
+    return f"{protocol.selection.base_url}/markets?{urlencode(protocol.selection.query)}"
+
+
+def select_block_candidates(
+    protocol: AsynchronousCohortProtocolV1,
+    *,
+    source_payload_bytes: bytes,
+    source_retrieved_at: datetime,
+    source_endpoint: str | None = None,
+    **kwargs: Any,
+) -> OfflineBlockSelectionV1:
+    provenance = SourceProvenanceV1(
+        source="gamma",
+        endpoint=source_endpoint or _endpoint(protocol),
+        http_status=200,
+        retrieved_at=source_retrieved_at,
+        raw_sha256=sha256_hex(source_payload_bytes),
+        byte_length=len(source_payload_bytes),
+    )
+    return _select_block_candidates(
+        protocol,
+        source_payload_bytes=source_payload_bytes,
+        source_provenance=provenance,
+        **kwargs,
     )
 
 
@@ -354,6 +402,16 @@ def test_offline_selector_is_deterministic_atomic_and_independent() -> None:
     aliased_event["selected_markets"][1]["event_id"] = "0411239"
     with pytest.raises(ValidationError, match="distinct explicit event identities"):
         OfflineBlockSelectionV1.from_record(aliased_event)
+    duplicate_condition = selected.to_record()
+    duplicate_condition["selected_markets"][1]["condition_id"] = duplicate_condition[
+        "selected_markets"
+    ][0]["condition_id"]
+    with pytest.raises(ValidationError, match="distinct condition and CLOB token identities"):
+        OfflineBlockSelectionV1.from_record(duplicate_condition)
+    duplicate_token = selected.to_record()
+    duplicate_token["selected_markets"][1]["outcome_token_map"]["Yes"] = "02"
+    with pytest.raises(ValidationError, match="distinct condition and CLOB token identities"):
+        OfflineBlockSelectionV1.from_record(duplicate_token)
     foreign_source = selected.to_record()
     foreign_source["selected_markets"][0]["raw_payload_sha256"] = "b" * 64
     with pytest.raises(ValidationError, match="recorded discovery source digest"):
@@ -444,13 +502,20 @@ def test_later_blocks_derive_independence_from_hash_linked_prior_records() -> No
         block_ordinal=2,
         selected_at=protocol.blocks[1].start,
         source_payload_bytes=_source(
-            (_market(1, event_id="0411239"), *(_market(index) for index in range(2, 6)))
+            (_market(1, event_id="0411239"), *(_market(index) for index in range(2, 8))),
+            updates={
+                "2": {"conditionId": first.selected_markets[0].condition_id},
+                "3": {"clobTokenIds": ["0200", "7"]},
+            },
         ),
         source_retrieved_at=protocol.blocks[1].start,
         prior_block_selections=(first,),
     )
     assert second.status is BlockSelectionStatus.ADMITTED
     assert CandidateExclusionReason.EVENT_ID_REUSED in {item.reason for item in second.exclusions}
+    assert [item.reason for item in second.exclusions].count(
+        CandidateExclusionReason.MARKET_IDENTITY_REUSED
+    ) == 2
     assert second.predecessor_selection_sha256 == sha256_hex(
         orjson.dumps(first.to_record(), option=orjson.OPT_SORT_KEYS)
     )
@@ -503,6 +568,30 @@ def test_numeric_event_aliases_share_one_identity_at_selection() -> None:
     assert CandidateExclusionReason.EVENT_ID_REUSED in {item.reason for item in result.exclusions}
 
 
+def test_condition_and_token_aliases_are_excluded_before_admission() -> None:
+    protocol = _candidate()
+    markets = tuple(_market(index) for index in range(1, 7))
+    result = select_block_candidates(
+        protocol,
+        block_ordinal=1,
+        selected_at=WINDOW_START,
+        source_payload_bytes=_source(
+            markets,
+            updates={
+                "2": {"conditionId": markets[0].condition_id},
+                "3": {"clobTokenIds": ["02", "7"]},
+            },
+        ),
+        source_retrieved_at=WINDOW_START,
+        prior_block_selections=(),
+    )
+    assert result.status is BlockSelectionStatus.ADMITTED
+    assert tuple(market.market_id for market in result.selected_markets) == ("1", "4", "5", "6")
+    assert [item.reason for item in result.exclusions].count(
+        CandidateExclusionReason.MARKET_IDENTITY_REUSED
+    ) == 2
+
+
 def test_quarantined_candidates_keep_structured_reasons() -> None:
     protocol = _candidate()
     markets = tuple(_market(index) for index in range(1, 4))
@@ -544,6 +633,14 @@ def test_selection_rejects_stale_or_malformed_source_evidence() -> None:
         select_block_candidates(protocol, **{**args, "source_payload_bytes": b"not json"})
     with pytest.raises(ValueError, match="market page"):
         select_block_candidates(protocol, **{**args, "source_payload_bytes": b"{}"})
+    with pytest.raises(ValueError, match="frozen Gamma query"):
+        select_block_candidates(
+            protocol,
+            **{
+                **args,
+                "source_endpoint": f"{protocol.selection.base_url}/markets?limit=1",
+            },
+        )
     with pytest.raises(ValueError, match="insufficient time remains"):
         select_block_candidates(
             protocol,
@@ -593,6 +690,11 @@ def test_selection_rejects_stale_or_malformed_source_evidence() -> None:
             CandidateExclusionReason.MALFORMED_PRICES,
         ),
         ({}, {"outcomePrices": ["0.01", "0.99"]}, CandidateExclusionReason.PRICE_OUT_OF_RANGE),
+        (
+            {},
+            {"description": "", "resolutionSource": ""},
+            CandidateExclusionReason.CONTRACT_UNVERIFIABLE,
+        ),
     ],
 )
 def test_candidate_exclusion_is_recorded_for_each_guard(

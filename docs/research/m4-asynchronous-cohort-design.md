@@ -79,8 +79,10 @@ claim edge or superiority from a partial cohort.
    must not admit observations.
    Offline block selection now reserves enough remaining time for all four
    bounded captures, accepts only a discovery retrieval within that block,
-   derives normalization and eligibility flags from the supplied raw page
-   bytes, rejects duplicate numeric market IDs (including integer/text aliases
+   checks the versioned first-hand Gamma retrieval provenance against the
+   frozen endpoint/query and source bytes, then derives normalization and
+   eligibility flags from that page. It rejects duplicate numeric market IDs
+   (including integer/text aliases
    before normalization can quarantine an entry),
    and returns a versioned partition of selected and excluded candidates with
    reasons and source hash. Later blocks derive earlier event identities from
@@ -88,7 +90,10 @@ claim edge or superiority from a partial cohort.
    reservation; callers cannot supply an independent ID set. Numeric event-ID
    aliases count as the same event. The protocol keeps the earliest eligible target end
    after the final observation block; admitted records recheck distinct
-   canonical market IDs, explicit event identities and source linkage on reload.
+   canonical market IDs, explicit event identities, distinct condition and
+   CLOB token identities, and source linkage on reload. Candidates without
+   verifiable resolution material are excluded before a no-replacement block
+   is admitted.
    A rejected short block admits no target or forecast.
    A candidate record can be checked with
    `uv run python scripts/m4_async_cohort_preflight.py --spec <candidate.json>`

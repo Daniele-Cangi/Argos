@@ -12,7 +12,7 @@ from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from itertools import pairwise
 from typing import Any, ClassVar
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, urlsplit
 
 import orjson
 from pydantic import Field, field_validator, model_validator
@@ -20,7 +20,7 @@ from pydantic import Field, field_validator, model_validator
 from argos.clock import ensure_utc
 from argos.compiler import compile_market_contract
 from argos.domain.market import MarketDefinitionV1
-from argos.domain.provenance import SHA256_LENGTH, sha256_hex
+from argos.domain.provenance import SHA256_LENGTH, SourceProvenanceV1, sha256_hex
 from argos.domain.versioning import VersionedModel, ensure_supported_version
 from argos.evaluation.prospective import (
     CutoffBasis,
@@ -215,9 +215,11 @@ class CandidateExclusionReason(StrEnum):
     MALFORMED_PRICES = "malformed_prices"
     PRICE_OUT_OF_RANGE = "price_out_of_range"
     EVENT_ID_REUSED = "event_id_reused"
+    MARKET_IDENTITY_REUSED = "market_identity_reused"
     RANK_BELOW_CUTOFF = "rank_below_cutoff"
     BLOCK_SHORTFALL = "block_shortfall"
     CONTRACT_INVALID = "contract_invalid"
+    CONTRACT_UNVERIFIABLE = "contract_unverifiable"
 
 
 class CandidateExclusionV1(VersionedModel):
@@ -250,6 +252,7 @@ class OfflineBlockSelectionV1(VersionedModel):
     )
     source_payload_sha256: str = Field(min_length=SHA256_LENGTH, max_length=SHA256_LENGTH)
     source_retrieved_at: datetime
+    source_provenance: SourceProvenanceV1
     source_candidate_count: int = Field(ge=0)
     selected_markets: tuple[MarketDefinitionV1, ...]
     exclusions: tuple[CandidateExclusionV1, ...]
@@ -263,6 +266,14 @@ class OfflineBlockSelectionV1(VersionedModel):
     def _partition_is_complete(self) -> OfflineBlockSelectionV1:
         if self.source_retrieved_at > self.selected_at:
             raise ValueError("discovery source cannot be retrieved after block selection")
+        if (
+            self.source_provenance.source != "gamma"
+            or self.source_provenance.reconstructed
+            or self.source_provenance.http_status != 200
+            or self.source_provenance.raw_sha256 != self.source_payload_sha256
+            or self.source_provenance.retrieved_at != self.source_retrieved_at
+        ):
+            raise ValueError("offline selection must retain first-hand Gamma discovery provenance")
         if (self.block_ordinal == 1) != (self.predecessor_selection_sha256 is None):
             raise ValueError("offline selection predecessor digest must follow block ordinal")
         if len(self.selected_markets) + len(self.exclusions) != self.source_candidate_count:
@@ -285,6 +296,16 @@ class OfflineBlockSelectionV1(VersionedModel):
                 {_event_identity(event_id) for event_id in event_ids if event_id is not None}
             ) != len(event_ids):
                 raise ValueError("admitted markets need distinct explicit event identities")
+            conditions = [market.condition_id for market in self.selected_markets]
+            tokens = [
+                _token_identity(token)
+                for market in self.selected_markets
+                for token in market.outcome_token_map.values()
+            ]
+            if len(set(conditions)) != len(conditions) or len(set(tokens)) != len(tokens):
+                raise ValueError(
+                    "admitted markets need distinct condition and CLOB token identities"
+                )
         if self.status is BlockSelectionStatus.REJECTED_SHORT_BLOCK and self.selected_markets:
             raise ValueError("rejected block cannot contain admitted targets")
         return self
@@ -293,6 +314,7 @@ class OfflineBlockSelectionV1(VersionedModel):
         record = super().to_record()
         record["selected_markets"] = [market.to_record() for market in self.selected_markets]
         record["exclusions"] = [exclusion.to_record() for exclusion in self.exclusions]
+        record["source_provenance"] = self.source_provenance.to_record()
         return record
 
     @classmethod
@@ -305,6 +327,9 @@ class OfflineBlockSelectionV1(VersionedModel):
         payload["exclusions"] = tuple(
             CandidateExclusionV1.from_record(dict(item)) for item in payload["exclusions"]
         )
+        payload["source_provenance"] = SourceProvenanceV1.from_record(
+            dict(payload["source_provenance"])
+        )
         return cls.model_validate(payload)
 
 
@@ -313,7 +338,7 @@ def validate_block_admission(
     *,
     block_ordinal: int,
     selected_at: datetime,
-    event_ids: tuple[str, ...],
+    selected_markets: tuple[MarketDefinitionV1, ...],
     prior_block_selections: tuple[OfflineBlockSelectionV1, ...],
 ) -> None:
     """Reject a partial/replacement block before any forecast is made.
@@ -321,19 +346,33 @@ def validate_block_admission(
     The caller must persist the public source bytes, contract and target receipts
     separately. This pure guard cannot establish their availability by itself.
     """
-    block, earlier_event_ids, _ = _validate_block_readiness(
+    block, earlier_event_ids, earlier_conditions, earlier_tokens, _ = _validate_block_readiness(
         protocol,
         block_ordinal=block_ordinal,
         selected_at=selected_at,
         prior_block_selections=prior_block_selections,
     )
-    if len(event_ids) != block.intended_targets:
+    if len(selected_markets) != block.intended_targets:
         raise ValueError("short cohort block must be rejected before forecast")
+    event_ids = tuple(market.event_id or "" for market in selected_markets)
     if any(not event_id.strip() for event_id in event_ids):
         raise ValueError("cohort targets need explicit Gamma event identities")
     current_identities = {_event_identity(event_id) for event_id in event_ids}
     if len(current_identities) != len(event_ids) or current_identities & earlier_event_ids:
         raise ValueError("cohort target event identity was selected more than once")
+    conditions = [market.condition_id for market in selected_markets]
+    tokens = [
+        _token_identity(token)
+        for market in selected_markets
+        for token in market.outcome_token_map.values()
+    ]
+    if (
+        len(set(conditions)) != len(conditions)
+        or set(conditions) & earlier_conditions
+        or len(set(tokens)) != len(tokens)
+        or set(tokens) & earlier_tokens
+    ):
+        raise ValueError("cohort target condition or token identity was selected more than once")
 
 
 def _validate_block_readiness(
@@ -342,7 +381,7 @@ def _validate_block_readiness(
     block_ordinal: int,
     selected_at: datetime,
     prior_block_selections: tuple[OfflineBlockSelectionV1, ...],
-) -> tuple[CohortBlockV1, frozenset[str], str | None]:
+) -> tuple[CohortBlockV1, frozenset[str], frozenset[str], frozenset[str], str | None]:
     if not 1 <= block_ordinal <= len(protocol.blocks):
         raise ValueError("unknown cohort block")
     block = protocol.blocks[block_ordinal - 1]
@@ -350,6 +389,8 @@ def _validate_block_readiness(
         raise ValueError("cohort blocks must proceed in order without missing predecessors")
     protocol_digest = sha256_hex(orjson.dumps(protocol.to_record(), option=orjson.OPT_SORT_KEYS))
     earlier_event_ids: set[str] = set()
+    earlier_conditions: set[str] = set()
+    earlier_tokens: set[str] = set()
     predecessor_digest: str | None = None
     for ordinal, prior in enumerate(prior_block_selections, start=1):
         earlier_block = protocol.blocks[ordinal - 1]
@@ -359,6 +400,7 @@ def _validate_block_readiness(
             or prior.block_ordinal != ordinal
             or prior.status is not BlockSelectionStatus.ADMITTED
             or prior.predecessor_selection_sha256 != predecessor_digest
+            or not _source_query_matches(prior.source_provenance, protocol.selection)
             or not earlier_block.start <= prior.source_retrieved_at <= prior.selected_at
             or not prior.selected_at < earlier_block.end
             or (earlier_block.end - prior.selected_at).total_seconds()
@@ -371,6 +413,14 @@ def _validate_block_readiness(
             if identity in earlier_event_ids:
                 raise ValueError("prior cohort target event identity was selected more than once")
             earlier_event_ids.add(identity)
+            if market.condition_id in earlier_conditions:
+                raise ValueError("prior cohort condition identity was selected more than once")
+            earlier_conditions.add(market.condition_id)
+            for token in market.outcome_token_map.values():
+                token_identity = _token_identity(token)
+                if token_identity in earlier_tokens:
+                    raise ValueError("prior cohort token identity was selected more than once")
+                earlier_tokens.add(token_identity)
         predecessor_digest = sha256_hex(
             orjson.dumps(prior.to_record(), option=orjson.OPT_SORT_KEYS)
         )
@@ -381,7 +431,13 @@ def _validate_block_readiness(
     needed = timedelta(seconds=block.intended_targets * protocol.capture_max_seconds_per_target)
     if remaining < needed:
         raise ValueError("insufficient time remains for bounded captures in this block")
-    return block, frozenset(earlier_event_ids), predecessor_digest
+    return (
+        block,
+        frozenset(earlier_event_ids),
+        frozenset(earlier_conditions),
+        frozenset(earlier_tokens),
+        predecessor_digest,
+    )
 
 
 def select_block_candidates(
@@ -390,7 +446,7 @@ def select_block_candidates(
     block_ordinal: int,
     selected_at: datetime,
     source_payload_bytes: bytes,
-    source_retrieved_at: datetime,
+    source_provenance: SourceProvenanceV1,
     prior_block_selections: tuple[OfflineBlockSelectionV1, ...],
 ) -> OfflineBlockSelectionV1:
     """Rank an archived Gamma page; reject the whole block on shortfall.
@@ -399,14 +455,24 @@ def select_block_candidates(
     must archive the exact raw page and its retrieval before calling it.
     """
     at = ensure_utc(selected_at)
-    retrieved_at = ensure_utc(source_retrieved_at)
+    retrieved_at = source_provenance.retrieved_at
+    if (
+        source_provenance.source != "gamma"
+        or source_provenance.reconstructed
+        or source_provenance.http_status != 200
+        or not source_provenance.matches(source_payload_bytes)
+        or not _source_query_matches(source_provenance, protocol.selection)
+    ):
+        raise ValueError("discovery receipt disagrees with frozen Gamma query or raw bytes")
     if retrieved_at > at:
         raise ValueError("discovery source cannot be retrieved after block selection")
-    block, earlier_event_ids, predecessor_digest = _validate_block_readiness(
-        protocol,
-        block_ordinal=block_ordinal,
-        selected_at=at,
-        prior_block_selections=prior_block_selections,
+    block, earlier_event_ids, earlier_conditions, earlier_tokens, predecessor_digest = (
+        _validate_block_readiness(
+            protocol,
+            block_ordinal=block_ordinal,
+            selected_at=at,
+            prior_block_selections=prior_block_selections,
+        )
     )
     if retrieved_at < block.start:
         raise ValueError("discovery source must be retrieved inside the selected block")
@@ -456,7 +522,7 @@ def select_block_candidates(
             exclusions.append(CandidateExclusionV1(market_id=market.market_id, reason=reason))
             continue
         try:
-            compile_market_contract(market, compiled_at=at)
+            contract = compile_market_contract(market, compiled_at=at)
         except ValueError as error:
             exclusions.append(
                 CandidateExclusionV1(
@@ -466,10 +532,20 @@ def select_block_candidates(
                 )
             )
             continue
+        if not contract.resolution_source.strip() and not contract.source_rule_material.strip():
+            exclusions.append(
+                CandidateExclusionV1(
+                    market_id=market.market_id,
+                    reason=CandidateExclusionReason.CONTRACT_UNVERIFIABLE,
+                )
+            )
+            continue
         eligible.append(market)
     eligible.sort(key=lambda market: (-(market.liquidity or Decimal(0)), int(market.market_id)))
     chosen: list[MarketDefinitionV1] = []
     seen = set(earlier_event_ids)
+    seen_conditions = set(earlier_conditions)
+    seen_tokens = set(earlier_tokens)
     required = block.intended_targets
     for market in eligible:
         assert market.event_id is not None
@@ -478,6 +554,15 @@ def select_block_candidates(
             exclusions.append(
                 CandidateExclusionV1(
                     market_id=market.market_id, reason=CandidateExclusionReason.EVENT_ID_REUSED
+                )
+            )
+            continue
+        tokens = {_token_identity(token) for token in market.outcome_token_map.values()}
+        if market.condition_id in seen_conditions or tokens & seen_tokens:
+            exclusions.append(
+                CandidateExclusionV1(
+                    market_id=market.market_id,
+                    reason=CandidateExclusionReason.MARKET_IDENTITY_REUSED,
                 )
             )
             continue
@@ -490,6 +575,8 @@ def select_block_candidates(
             continue
         chosen.append(market)
         seen.add(identity)
+        seen_conditions.add(market.condition_id)
+        seen_tokens.update(tokens)
     if len(chosen) < required:
         exclusions.extend(
             CandidateExclusionV1(
@@ -505,7 +592,7 @@ def select_block_candidates(
             protocol,
             block_ordinal=block_ordinal,
             selected_at=at,
-            event_ids=tuple(market.event_id or "" for market in chosen),
+            selected_markets=tuple(chosen),
             prior_block_selections=prior_block_selections,
         )
         status = BlockSelectionStatus.ADMITTED
@@ -518,6 +605,7 @@ def select_block_candidates(
         predecessor_selection_sha256=predecessor_digest,
         source_payload_sha256=source_payload_sha256,
         source_retrieved_at=retrieved_at,
+        source_provenance=source_provenance,
         source_candidate_count=len(page),
         selected_markets=tuple(chosen),
         exclusions=tuple(exclusions),
@@ -580,6 +668,20 @@ def _event_identity(event_id: str) -> str:
     if event_id.isascii() and event_id.isdecimal():
         return f"numeric:{event_id.lstrip('0') or '0'}"
     return f"text:{event_id}"
+
+
+def _token_identity(token_id: str) -> str:
+    return token_id.lstrip("0") or "0"
+
+
+def _source_query_matches(provenance: SourceProvenanceV1, selection: GammaSelectionV1) -> bool:
+    endpoint = urlsplit(provenance.endpoint)
+    expected = f"{selection.base_url.rstrip('/')}/markets"
+    return (
+        endpoint._replace(query="", fragment="").geturl() == expected
+        and not endpoint.fragment
+        and tuple(sorted(parse_qsl(endpoint.query, keep_blank_values=True))) == selection.query
+    )
 
 
 def _outcome_prices(raw: Any) -> tuple[Decimal, ...] | None:
