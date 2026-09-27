@@ -87,8 +87,10 @@ claim edge or superiority from a partial cohort.
    and returns a versioned partition of selected and excluded candidates with
    reasons and source hash. Later blocks derive earlier event identities from
    admitted, hash-linked prior block records, including their capture-time
-   reservation; callers cannot supply an independent ID set. Numeric event-ID
-   aliases count as the same event. The protocol keeps the earliest eligible target end
+   reservation. Each predecessor is replayed from its archived discovery bytes
+   before admission of the next block; callers cannot supply an independent
+   ID set. Numeric event-ID aliases count as the same event. The protocol keeps
+   the earliest eligible target end
    after the final observation block; admitted records recheck distinct
    canonical market IDs, explicit event identities, distinct condition and
    CLOB token identities, and source linkage on reload. Candidates without

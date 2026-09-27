@@ -184,13 +184,14 @@ def test_block_admission_is_atomic_and_never_reuses_event() -> None:
         for index, event_id in enumerate(("event-a", "event-b", "event-c", "event-d"), start=1)
     )
     at = protocol.blocks[1].start + timedelta(seconds=1)
-    prior = _prior_selection(protocol)
+    prior, prior_source = _prior_selection(protocol)
     validate_block_admission(
         protocol,
         block_ordinal=2,
         selected_at=at,
         selected_markets=valid,
         prior_block_selections=(prior,),
+        prior_block_sources=(prior_source,),
     )
     cases = [
         (at, valid[:3], (prior,), "short"),
@@ -213,7 +214,7 @@ def test_block_admission_is_atomic_and_never_reuses_event() -> None:
                     }
                 ),
             ),
-            "more than once",
+            "disagrees with its archived discovery page",
         ),
         (protocol.blocks[1].end, valid, (prior,), "outside frozen block"),
         (at, valid, (), "missing predecessors"),
@@ -232,6 +233,7 @@ def test_block_admission_is_atomic_and_never_reuses_event() -> None:
                 selected_at=selected_at,
                 selected_markets=markets,
                 prior_block_selections=predecessors,
+                prior_block_sources=(prior_source,) if predecessors else (),
             )
 
 
@@ -258,31 +260,23 @@ def _market(market_id: int, *, event_id: str | None = None) -> MarketDefinitionV
     )
 
 
-def _prior_selection(protocol: AsynchronousCohortProtocolV1) -> OfflineBlockSelectionV1:
+def _prior_selection(
+    protocol: AsynchronousCohortProtocolV1,
+) -> tuple[OfflineBlockSelectionV1, bytes]:
     markets = tuple(
         _market(index).model_copy(update={"event_id": f"earlier-{index}"})
         for index in range(100, 104)
     )
-    return OfflineBlockSelectionV1(
-        experiment_id=protocol.experiment_id,
+    source = _source(markets)
+    selection = select_block_candidates(
+        protocol,
         block_ordinal=1,
         selected_at=protocol.blocks[0].start,
-        status=BlockSelectionStatus.ADMITTED,
-        protocol_sha256=sha256_hex(orjson.dumps(protocol.to_record(), option=orjson.OPT_SORT_KEYS)),
-        source_payload_sha256="a" * 64,
+        source_payload_bytes=source,
         source_retrieved_at=protocol.blocks[0].start,
-        source_provenance=SourceProvenanceV1(
-            source="gamma",
-            endpoint=_endpoint(protocol),
-            http_status=200,
-            retrieved_at=protocol.blocks[0].start,
-            raw_sha256="a" * 64,
-            byte_length=0,
-        ),
-        source_candidate_count=4,
-        selected_markets=markets,
-        exclusions=(),
+        prior_block_selections=(),
     )
+    return selection, source
 
 
 def _raw_market(market: MarketDefinitionV1, **updates: object) -> dict[str, object]:
@@ -334,6 +328,7 @@ def select_block_candidates(
     source_endpoint: str | None = None,
     **kwargs: Any,
 ) -> OfflineBlockSelectionV1:
+    kwargs.setdefault("prior_block_sources", ())
     provenance = SourceProvenanceV1(
         source="gamma",
         endpoint=source_endpoint or _endpoint(protocol),
@@ -381,6 +376,10 @@ def test_offline_selector_is_deterministic_atomic_and_independent() -> None:
     incomplete["source_candidate_count"] -= 1
     with pytest.raises(ValidationError, match="account for every discovery entry"):
         OfflineBlockSelectionV1.from_record(incomplete)
+    overlapping = selected.to_record()
+    overlapping["exclusions"][0]["market_id"] = selected.selected_markets[0].market_id
+    with pytest.raises(ValidationError, match="must be disjoint"):
+        OfflineBlockSelectionV1.from_record(overlapping)
     foreign_exclusion = selected.to_record()
     foreign_exclusion["exclusions"][0]["schema_version"] = "m4_candidate_exclusion.v0"
     with pytest.raises(SchemaVersionError, match="not supported"):
@@ -487,29 +486,32 @@ def test_duplicate_market_ids_fail_closed_independent_of_page_order() -> None:
 
 def test_later_blocks_derive_independence_from_hash_linked_prior_records() -> None:
     protocol = _candidate()
+    first_source = _source(
+        (_market(100, event_id="411239"), *(_market(index) for index in range(101, 104)))
+    )
     first = select_block_candidates(
         protocol,
         block_ordinal=1,
         selected_at=protocol.blocks[0].start,
-        source_payload_bytes=_source(
-            (_market(100, event_id="411239"), *(_market(index) for index in range(101, 104)))
-        ),
+        source_payload_bytes=first_source,
         source_retrieved_at=protocol.blocks[0].start,
         prior_block_selections=(),
+    )
+    second_source = _source(
+        (_market(1, event_id="0411239"), *(_market(index) for index in range(2, 8))),
+        updates={
+            "2": {"conditionId": first.selected_markets[0].condition_id},
+            "3": {"clobTokenIds": ["0200", "7"]},
+        },
     )
     second = select_block_candidates(
         protocol,
         block_ordinal=2,
         selected_at=protocol.blocks[1].start,
-        source_payload_bytes=_source(
-            (_market(1, event_id="0411239"), *(_market(index) for index in range(2, 8))),
-            updates={
-                "2": {"conditionId": first.selected_markets[0].condition_id},
-                "3": {"clobTokenIds": ["0200", "7"]},
-            },
-        ),
+        source_payload_bytes=second_source,
         source_retrieved_at=protocol.blocks[1].start,
         prior_block_selections=(first,),
+        prior_block_sources=(first_source,),
     )
     assert second.status is BlockSelectionStatus.ADMITTED
     assert CandidateExclusionReason.EVENT_ID_REUSED in {item.reason for item in second.exclusions}
@@ -525,6 +527,7 @@ def test_later_blocks_derive_independence_from_hash_linked_prior_records() -> No
         "source_payload_bytes": _source(tuple(_market(index) for index in range(10, 14))),
         "source_retrieved_at": protocol.blocks[2].start,
         "prior_block_selections": (first, second),
+        "prior_block_sources": (first_source, second_source),
     }
     third = select_block_candidates(protocol, **third_args)
     assert third.status is BlockSelectionStatus.ADMITTED
@@ -538,6 +541,19 @@ def test_later_blocks_derive_independence_from_hash_linked_prior_records() -> No
         )
     with pytest.raises(ValueError, match="missing predecessors"):
         select_block_candidates(protocol, **{**third_args, "prior_block_selections": (first,)})
+    closed_first = first.model_copy(
+        update={
+            "selected_markets": (
+                first.selected_markets[0].model_copy(update={"closed": True}),
+                *first.selected_markets[1:],
+            )
+        }
+    )
+    with pytest.raises(ValueError, match="disagrees with its archived discovery page"):
+        select_block_candidates(
+            protocol,
+            **{**third_args, "prior_block_selections": (closed_first, second)},
+        )
     late_first = first.model_copy(
         update={"selected_at": protocol.blocks[0].end - timedelta(seconds=1)}
     )

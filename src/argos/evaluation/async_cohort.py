@@ -278,6 +278,13 @@ class OfflineBlockSelectionV1(VersionedModel):
             raise ValueError("offline selection predecessor digest must follow block ordinal")
         if len(self.selected_markets) + len(self.exclusions) != self.source_candidate_count:
             raise ValueError("offline selection must account for every discovery entry")
+        selected_ids = {market.market_id for market in self.selected_markets}
+        if any(
+            exclusion.market_id in selected_ids
+            for exclusion in self.exclusions
+            if exclusion.market_id is not None
+        ):
+            raise ValueError("selected and excluded discovery identities must be disjoint")
         if self.status is BlockSelectionStatus.ADMITTED and len(self.selected_markets) != 4:
             raise ValueError("admitted block needs exactly four selected markets")
         if self.status is BlockSelectionStatus.ADMITTED:
@@ -340,6 +347,7 @@ def validate_block_admission(
     selected_at: datetime,
     selected_markets: tuple[MarketDefinitionV1, ...],
     prior_block_selections: tuple[OfflineBlockSelectionV1, ...],
+    prior_block_sources: tuple[bytes, ...],
 ) -> None:
     """Reject a partial/replacement block before any forecast is made.
 
@@ -351,6 +359,7 @@ def validate_block_admission(
         block_ordinal=block_ordinal,
         selected_at=selected_at,
         prior_block_selections=prior_block_selections,
+        prior_block_sources=prior_block_sources,
     )
     if len(selected_markets) != block.intended_targets:
         raise ValueError("short cohort block must be rejected before forecast")
@@ -381,18 +390,23 @@ def _validate_block_readiness(
     block_ordinal: int,
     selected_at: datetime,
     prior_block_selections: tuple[OfflineBlockSelectionV1, ...],
+    prior_block_sources: tuple[bytes, ...],
 ) -> tuple[CohortBlockV1, frozenset[str], frozenset[str], frozenset[str], str | None]:
     if not 1 <= block_ordinal <= len(protocol.blocks):
         raise ValueError("unknown cohort block")
     block = protocol.blocks[block_ordinal - 1]
-    if len(prior_block_selections) != block_ordinal - 1:
+    if len(prior_block_selections) != block_ordinal - 1 or len(prior_block_sources) != len(
+        prior_block_selections
+    ):
         raise ValueError("cohort blocks must proceed in order without missing predecessors")
     protocol_digest = sha256_hex(orjson.dumps(protocol.to_record(), option=orjson.OPT_SORT_KEYS))
     earlier_event_ids: set[str] = set()
     earlier_conditions: set[str] = set()
     earlier_tokens: set[str] = set()
     predecessor_digest: str | None = None
-    for ordinal, prior in enumerate(prior_block_selections, start=1):
+    for ordinal, (prior, prior_source) in enumerate(
+        zip(prior_block_selections, prior_block_sources, strict=True), start=1
+    ):
         earlier_block = protocol.blocks[ordinal - 1]
         if (
             prior.experiment_id != protocol.experiment_id
@@ -401,12 +415,24 @@ def _validate_block_readiness(
             or prior.status is not BlockSelectionStatus.ADMITTED
             or prior.predecessor_selection_sha256 != predecessor_digest
             or not _source_query_matches(prior.source_provenance, protocol.selection)
+            or not prior.source_provenance.matches(prior_source)
             or not earlier_block.start <= prior.source_retrieved_at <= prior.selected_at
             or not prior.selected_at < earlier_block.end
             or (earlier_block.end - prior.selected_at).total_seconds()
             < earlier_block.intended_targets * protocol.capture_max_seconds_per_target
         ):
             raise ValueError("prior cohort blocks must form an admitted, hash-linked chain")
+        replayed = select_block_candidates(
+            protocol,
+            block_ordinal=ordinal,
+            selected_at=prior.selected_at,
+            source_payload_bytes=prior_source,
+            source_provenance=prior.source_provenance,
+            prior_block_selections=prior_block_selections[: ordinal - 1],
+            prior_block_sources=prior_block_sources[: ordinal - 1],
+        )
+        if replayed != prior:
+            raise ValueError("prior cohort selection disagrees with its archived discovery page")
         for market in prior.selected_markets:
             assert market.event_id is not None
             identity = _event_identity(market.event_id)
@@ -448,6 +474,7 @@ def select_block_candidates(
     source_payload_bytes: bytes,
     source_provenance: SourceProvenanceV1,
     prior_block_selections: tuple[OfflineBlockSelectionV1, ...],
+    prior_block_sources: tuple[bytes, ...],
 ) -> OfflineBlockSelectionV1:
     """Rank an archived Gamma page; reject the whole block on shortfall.
 
@@ -472,6 +499,7 @@ def select_block_candidates(
             block_ordinal=block_ordinal,
             selected_at=at,
             prior_block_selections=prior_block_selections,
+            prior_block_sources=prior_block_sources,
         )
     )
     if retrieved_at < block.start:
@@ -594,6 +622,7 @@ def select_block_candidates(
             selected_at=at,
             selected_markets=tuple(chosen),
             prior_block_selections=prior_block_selections,
+            prior_block_sources=prior_block_sources,
         )
         status = BlockSelectionStatus.ADMITTED
     return OfflineBlockSelectionV1(
