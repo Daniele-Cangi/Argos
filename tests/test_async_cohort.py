@@ -380,6 +380,12 @@ def test_offline_selector_is_deterministic_atomic_and_independent() -> None:
     overlapping["exclusions"][0]["market_id"] = selected.selected_markets[0].market_id
     with pytest.raises(ValidationError, match="must be disjoint"):
         OfflineBlockSelectionV1.from_record(overlapping)
+    repeated_exclusion = selected.to_record()
+    repeated_exclusion["exclusions"][1]["market_id"] = (
+        "0" + repeated_exclusion["exclusions"][0]["market_id"]
+    )
+    with pytest.raises(ValidationError, match="must be disjoint"):
+        OfflineBlockSelectionV1.from_record(repeated_exclusion)
     foreign_exclusion = selected.to_record()
     foreign_exclusion["exclusions"][0]["schema_version"] = "m4_candidate_exclusion.v0"
     with pytest.raises(SchemaVersionError, match="not supported"):
@@ -470,6 +476,15 @@ def test_duplicate_market_ids_fail_closed_independent_of_page_order() -> None:
             block_ordinal=1,
             selected_at=WINDOW_START + timedelta(seconds=1),
             source_payload_bytes=_source((markets[0], alias)),
+            source_retrieved_at=WINDOW_START,
+            prior_block_selections=(),
+        )
+    with pytest.raises(ValueError, match="duplicate market IDs"):
+        select_block_candidates(
+            protocol,
+            block_ordinal=1,
+            selected_at=WINDOW_START + timedelta(seconds=1),
+            source_payload_bytes=orjson.dumps([{"id": "invalid"}, {"id": "invalid"}]),
             source_retrieved_at=WINDOW_START,
             prior_block_selections=(),
         )
@@ -625,6 +640,22 @@ def test_quarantined_candidates_keep_structured_reasons() -> None:
         CandidateExclusionReason.NORMALIZATION_REJECTED,
         CandidateExclusionReason.BLOCK_SHORTFALL,
     }
+
+
+def test_missing_liquidity_is_not_observed_zero() -> None:
+    selection = _candidate().selection.model_copy(update={"minimum_liquidity": Decimal(0)})
+    protocol = _candidate(selection=selection)
+    market = _market(1).model_copy(update={"liquidity": None})
+    result = select_block_candidates(
+        protocol,
+        block_ordinal=1,
+        selected_at=WINDOW_START,
+        source_payload_bytes=_source((market,)),
+        source_retrieved_at=WINDOW_START,
+        prior_block_selections=(),
+    )
+    assert result.status is BlockSelectionStatus.REJECTED_SHORT_BLOCK
+    assert result.exclusions[0].reason is CandidateExclusionReason.LIQUIDITY_MISSING
 
 
 def test_selection_rejects_stale_or_malformed_source_evidence() -> None:

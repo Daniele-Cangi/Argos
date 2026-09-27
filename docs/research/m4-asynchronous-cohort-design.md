@@ -94,8 +94,10 @@ claim edge or superiority from a partial cohort.
    after the final observation block; admitted records recheck distinct
    canonical market IDs, explicit event identities, distinct condition and
    CLOB token identities, and source linkage on reload. Candidates without
-   verifiable resolution material are excluded before a no-replacement block
-   is admitted.
+   verifiable resolution material or observed liquidity are excluded before a
+   no-replacement block is admitted. Explicit discovery IDs must be unique
+   across both selected and excluded entries; ambiguous duplicate IDs fail
+   closed before normalization.
    A rejected short block admits no target or forecast.
    A candidate record can be checked with
    `uv run python scripts/m4_async_cohort_preflight.py --spec <candidate.json>`

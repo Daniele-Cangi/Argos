@@ -210,6 +210,7 @@ class CandidateExclusionReason(StrEnum):
     ARCHIVED = "archived"
     NOT_BINARY_YES_NO = "not_binary_yes_no"
     END_TIME_OUT_OF_RANGE = "end_time_out_of_range"
+    LIQUIDITY_MISSING = "liquidity_missing"
     LIQUIDITY_BELOW_MINIMUM = "liquidity_below_minimum"
     ORDER_BOOK_UNAVAILABLE = "order_book_unavailable"
     MALFORMED_PRICES = "malformed_prices"
@@ -278,12 +279,15 @@ class OfflineBlockSelectionV1(VersionedModel):
             raise ValueError("offline selection predecessor digest must follow block ordinal")
         if len(self.selected_markets) + len(self.exclusions) != self.source_candidate_count:
             raise ValueError("offline selection must account for every discovery entry")
-        selected_ids = {market.market_id for market in self.selected_markets}
-        if any(
-            exclusion.market_id in selected_ids
+        selected_ids = {_market_identity(market.market_id) for market in self.selected_markets}
+        exclusion_ids = [
+            _market_identity(exclusion.market_id)
             for exclusion in self.exclusions
             if exclusion.market_id is not None
-        ):
+        ]
+        if any(exclusion_id in selected_ids for exclusion_id in exclusion_ids) or len(
+            set(exclusion_ids)
+        ) != len(exclusion_ids):
             raise ValueError("selected and excluded discovery identities must be disjoint")
         if self.status is BlockSelectionStatus.ADMITTED and len(self.selected_markets) != 4:
             raise ValueError("admitted block needs exactly four selected markets")
@@ -517,10 +521,10 @@ def select_block_candidates(
         and isinstance(entry.get("id"), str | int)
         and not isinstance(entry["id"], bool)
     ]
-    numeric_ids = [
-        market_id.lstrip("0") or "0" for market_id in raw_ids if _bounded_digits(market_id)
-    ]
-    duplicates = sorted(market_id for market_id, count in Counter(numeric_ids).items() if count > 1)
+    identities = [_market_identity(market_id) for market_id in raw_ids]
+    duplicates = sorted(
+        identity.partition(":")[2] for identity, count in Counter(identities).items() if count > 1
+    )
     if duplicates:
         raise ValueError(f"duplicate market IDs in discovery page: {duplicates}")
     source_payload_sha256 = sha256_hex(source_payload_bytes)
@@ -668,7 +672,9 @@ def _candidate_rejection(
         selection.target_end_min <= market.end_time <= selection.target_end_max
     ):
         return CandidateExclusionReason.END_TIME_OUT_OF_RANGE
-    if (market.liquidity or Decimal(0)) < selection.minimum_liquidity:
+    if market.liquidity is None:
+        return CandidateExclusionReason.LIQUIDITY_MISSING
+    if market.liquidity < selection.minimum_liquidity:
         return CandidateExclusionReason.LIQUIDITY_BELOW_MINIMUM
     if raw.get("enableOrderBook") is not True or raw.get("acceptingOrders") is not True:
         return CandidateExclusionReason.ORDER_BOOK_UNAVAILABLE
@@ -691,6 +697,12 @@ def _bounded_digits(market_id: str) -> bool:
 
 def _canonical_market_id(market_id: str) -> bool:
     return _bounded_digits(market_id) and (len(market_id) == 1 or market_id[0] != "0")
+
+
+def _market_identity(market_id: str) -> str:
+    if _bounded_digits(market_id):
+        return f"numeric:{market_id.lstrip('0') or '0'}"
+    return f"text:{market_id}"
 
 
 def _event_identity(event_id: str) -> str:
