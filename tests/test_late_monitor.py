@@ -182,7 +182,11 @@ def _final_payload(resolved_at: datetime) -> dict[str, Any]:
 
 
 def _monitor(
-    tmp_path: Path, clock: _Clock, responses: list[GammaResponse | Exception]
+    tmp_path: Path,
+    clock: _Clock,
+    responses: list[GammaResponse | Exception],
+    *,
+    first_poll_at: datetime | None = None,
 ) -> LateLifecycleMonitor:
     evidence = tmp_path / "evidence"
     protocol = _protocol()
@@ -292,7 +296,7 @@ def _monitor(
     )
     created_at = DEADLINE + timedelta(seconds=10)
     effective_at = created_at + timedelta(seconds=10)
-    first_poll_at = effective_at
+    first_poll_at = effective_at if first_poll_at is None else first_poll_at
     schedule = LateMonitoringScheduleV1(
         schedule_id=build_late_monitoring_schedule_id(
             experiment_id=EXPERIMENT,
@@ -588,6 +592,36 @@ async def test_poll_before_next_cadence_returns_last_pending_observation(tmp_pat
 
 
 @pytest.mark.anyio
+async def test_late_first_poll_records_initial_missed_cadence_gap(tmp_path: Path) -> None:
+    first_poll_at = DEADLINE + timedelta(seconds=20)
+    late_start = first_poll_at + timedelta(seconds=121)
+    clock = _Clock(first_poll_at)
+    monitor = _monitor(
+        tmp_path,
+        clock,
+        [_response(_pending_payload(), late_start)],
+        first_poll_at=first_poll_at,
+    )
+    clock.set(late_start)
+
+    result = await monitor.poll_once()
+
+    assert result.observation is not None
+    assert result.observation.ordinal == 1
+    assert len(result.checkpoint.gaps) == 1
+    initial_gap = result.checkpoint.gaps[0]
+    assert initial_gap.attempted_ordinal == 0
+    assert initial_gap.started_at == first_poll_at
+    assert initial_gap.ended_at == late_start
+    assert "not backfilled" in initial_gap.reason
+    archived_gaps = monitor._load_gap_evidence()
+    assert len(archived_gaps) == 1
+    assert archived_gaps[0][0].attempted_ordinal == 1
+    assert archived_gaps[0][0].started_at == first_poll_at
+    assert archived_gaps[0][0].ended_at == late_start
+
+
+@pytest.mark.anyio
 async def test_regular_polls_use_the_indexed_chain_without_rescanning_archive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -667,6 +701,49 @@ def test_foreign_experiment_receipt_cannot_bind_selected_evidence(
 
     setattr(monitor, receipt_name, foreign_receipt)
     with pytest.raises(ValueError, match="receipts do not match"):
+        monitor._validate_bindings()
+
+
+@pytest.mark.parametrize(
+    ("receipt_name", "kind_name", "record_name", "artifact_name"),
+    [
+        (
+            "target_receipt",
+            "TARGET_DECLARATION",
+            "target",
+            "target_id",
+        ),
+        (
+            "snapshot_receipt",
+            "FROZEN_FORECAST_SNAPSHOT",
+            "snapshot",
+            "snapshot_id",
+        ),
+        (
+            "schedule_receipt",
+            "LATE_MONITORING_SCHEDULE",
+            "schedule",
+            "schedule_id",
+        ),
+    ],
+)
+def test_receipt_must_match_archived_provenance_timestamp(
+    tmp_path: Path, receipt_name: str, kind_name: str, record_name: str, artifact_name: str
+) -> None:
+    monitor = _monitor(tmp_path, _Clock(DEADLINE + timedelta(seconds=20)), [])
+    original_receipt = getattr(monitor, receipt_name)
+    record = getattr(monitor, record_name)
+    alternate_receipt = persist_evidence_record(
+        tmp_path / "alternate-evidence",
+        record=record,
+        experiment_id=EXPERIMENT,
+        artifact_kind=getattr(EvidenceArtifactKind, kind_name),
+        artifact_id=getattr(record, artifact_name),
+        persisted_at=original_receipt.persisted_at + timedelta(seconds=1),
+    )
+
+    setattr(monitor, receipt_name, alternate_receipt)
+    with pytest.raises(ValueError, match="receipt disagrees with archived provenance"):
         monitor._validate_bindings()
 
 
@@ -1590,6 +1667,21 @@ async def test_gamma_response_requires_first_hand_monotone_cadence_evidence(
             monitor._persist_poll(monitor._initial_checkpoint(), (), response)
         else:
             await monitor.poll_once()
+
+
+def test_gamma_retrieval_cannot_precede_the_frozen_first_poll_time(tmp_path: Path) -> None:
+    effective_at = DEADLINE + timedelta(seconds=20)
+    first_poll_at = effective_at + timedelta(seconds=30)
+    monitor = _monitor(
+        tmp_path,
+        _Clock(first_poll_at),
+        [],
+        first_poll_at=first_poll_at,
+    )
+    response = _response(_pending_payload(), first_poll_at - timedelta(seconds=1))
+
+    with pytest.raises(ValueError, match="before its frozen cadence"):
+        monitor._persist_poll(monitor._initial_checkpoint(), (), response)
 
 
 @pytest.mark.anyio

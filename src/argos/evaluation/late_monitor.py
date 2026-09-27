@@ -753,6 +753,7 @@ class LateLifecycleMonitor:
         self._gap_cache: (
             list[tuple[LifecycleMonitorGapEvidenceV1, EvidencePersistenceReceiptV1]] | None
         ) = None
+        self._minimum_retrieved_at: datetime | None = None
         self._campaign_id = f"{protocol.experiment_id}:{target.target_id}"
         self._configuration_sha256 = record_sha256(
             {
@@ -788,9 +789,29 @@ class LateLifecycleMonitor:
             or self.schedule_receipt.experiment_id != self.protocol.experiment_id
         ):
             raise ValueError("late monitor receipts do not match their evidence records")
+        for record, receipt, artifact_kind in (
+            (
+                self.protocol,
+                self.protocol_receipt,
+                EvidenceArtifactKind.EXPERIMENT_PROTOCOL,
+            ),
+            (self.target, self.target_receipt, EvidenceArtifactKind.TARGET_DECLARATION),
+            (
+                self.snapshot,
+                self.snapshot_receipt,
+                EvidenceArtifactKind.FROZEN_FORECAST_SNAPSHOT,
+            ),
+            (
+                self.schedule,
+                self.schedule_receipt,
+                EvidenceArtifactKind.LATE_MONITORING_SCHEDULE,
+            ),
+        ):
+            self._verify_archived_receipt(record, receipt, artifact_kind)
         if (
             self.protocol.experiment_id != self.target.experiment_id
             or self.snapshot.target != self.target
+            or self.snapshot.target_receipt != self.target_receipt
             or self.schedule.experiment_id != self.protocol.experiment_id
             or self.schedule.target_id != self.target.target_id
             or self.schedule.protocol_receipt_id != self.protocol_receipt.receipt_id
@@ -991,6 +1012,7 @@ class LateLifecycleMonitor:
                 self.schedule.first_poll_at,
                 cadence_anchor + timedelta(seconds=self.schedule.poll_interval_seconds),
             )
+        self._minimum_retrieved_at = next_poll_at
         if now < next_poll_at:
             if reconciled != checkpoint:
                 self.monitor.save(reconciled)
@@ -998,7 +1020,9 @@ class LateLifecycleMonitor:
         maximum_gap = timedelta(
             seconds=self.schedule.poll_interval_seconds * self.schedule.maximum_gap_multiple
         )
-        if reconciled.next_ordinal > 0 and now - cadence_anchor > maximum_gap:
+        if reconciled.next_ordinal == 0 and not reconciled.gaps:
+            cadence_anchor = self.schedule.first_poll_at
+        if now - cadence_anchor > maximum_gap:
             reason = (
                 "owner resumed after the frozen maximum interval; the intervening source state "
                 "is unobserved and is not backfilled"
@@ -1017,6 +1041,7 @@ class LateLifecycleMonitor:
                 reason=reason,
             )
             reconciled = gap
+            self._minimum_retrieved_at = now
         return reconciled
 
     def _reconcile_archived_gaps(
@@ -1337,6 +1362,17 @@ class LateLifecycleMonitor:
             raise ValueError("Gamma retrieval time regresses behind durable monitor state")
         if provenance.retrieved_at < self.schedule.effective_at:
             raise ValueError("late lifecycle poll was retrieved before its frozen cadence")
+        minimum_retrieved_at = self._minimum_retrieved_at
+        if minimum_retrieved_at is None:
+            if checkpoint.next_ordinal == 0 and not checkpoint.gaps:
+                minimum_retrieved_at = self.schedule.first_poll_at
+            else:
+                minimum_retrieved_at = max(
+                    self.schedule.first_poll_at,
+                    checkpoint.updated_at + timedelta(seconds=self.schedule.poll_interval_seconds),
+                )
+        if provenance.retrieved_at < minimum_retrieved_at:
+            raise ValueError("Gamma retrieval time is before its frozen cadence")
         persisted_at = ensure_utc(self.clock.now())
         if provenance.retrieved_at > persisted_at:
             raise ValueError("Gamma retrieval time is ahead of the monitor clock")
@@ -1465,6 +1501,14 @@ class LateLifecycleMonitor:
             artifact_id = record.link_id
         elif isinstance(record, LifecycleMonitorGapEvidenceV1):
             artifact_id = record.gap_id
+        elif isinstance(record, ProspectiveExperimentProtocolV2):
+            artifact_id = record.experiment_id
+        elif isinstance(record, ProspectiveTargetV1):
+            artifact_id = record.target_id
+        elif isinstance(record, FrozenForecastSnapshotV1):
+            artifact_id = record.snapshot_id
+        elif isinstance(record, LateMonitoringScheduleV1):
+            artifact_id = record.schedule_id
         else:
             raise TypeError("unsupported lifecycle archive artifact")
         storage_identity = archive_relative_location(provenance)
@@ -1482,6 +1526,23 @@ class LateLifecycleMonitor:
         return EvidencePersistenceReceiptV1(
             receipt_id=build_persistence_receipt_id(**receipt_fields), **receipt_fields
         )
+
+    def _verify_archived_receipt(
+        self,
+        record: VersionedModel,
+        receipt: EvidencePersistenceReceiptV1,
+        artifact_kind: EvidenceArtifactKind,
+    ) -> None:
+        raw, provenance = read_raw_payload(self.evidence_archive, receipt.artifact_sha256)
+        self._verify_evidence_provenance(
+            record=record,
+            provenance=provenance,
+            raw=raw,
+            artifact_id=receipt.artifact_id,
+        )
+        expected = self._reconstruct_receipt(record, provenance, artifact_kind)
+        if receipt != expected:
+            raise ValueError("late monitor receipt disagrees with archived provenance")
 
     def _record_failed_poll(
         self,
