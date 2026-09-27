@@ -121,6 +121,17 @@ def test_protocol_receipt_reloads_the_same_versioned_blocks(tmp_path: Path) -> N
         ({"minimum_yes_outcomes_for_calibration": 1}, "cannot weaken calibration"),
         ({"operational_review_at": _candidate().observation_window_end}, "review"),
         ({"post_review_poll_interval_seconds": 60}, "post-review cadence"),
+        (
+            {
+                "selection": _candidate().selection.model_copy(
+                    update={
+                        "target_end_min": WINDOW_START - timedelta(days=3),
+                        "target_end_max": WINDOW_START - timedelta(days=1),
+                    }
+                )
+            },
+            "target end-time lower bound",
+        ),
     ],
 )
 def test_protocol_rejects_invalid_cohort_plan(update: dict[str, object], message: str) -> None:
@@ -271,6 +282,18 @@ def test_offline_selector_is_deterministic_atomic_and_independent() -> None:
     foreign_exclusion["exclusions"][0]["schema_version"] = "m4_candidate_exclusion.v0"
     with pytest.raises(SchemaVersionError, match="not supported"):
         OfflineBlockSelectionV1.from_record(foreign_exclusion)
+    duplicate_market = selected.to_record()
+    duplicate_market["selected_markets"][1]["market_id"] = duplicate_market["selected_markets"][0][
+        "market_id"
+    ]
+    with pytest.raises(ValidationError, match="distinct canonical numeric IDs"):
+        OfflineBlockSelectionV1.from_record(duplicate_market)
+    duplicate_event = selected.to_record()
+    duplicate_event["selected_markets"][1]["event_id"] = duplicate_event["selected_markets"][0][
+        "event_id"
+    ]
+    with pytest.raises(ValidationError, match="distinct explicit event identities"):
+        OfflineBlockSelectionV1.from_record(duplicate_event)
     reordered = select_block_candidates(
         protocol,
         block_ordinal=1,
@@ -330,6 +353,19 @@ def test_duplicate_market_ids_fail_closed_independent_of_page_order() -> None:
                 source_retrieved_at=WINDOW_START,
                 earlier_event_ids=frozenset(),
             )
+    alias = markets[1].model_copy(update={"market_id": "01"})
+    with pytest.raises(ValueError, match="duplicate market IDs"):
+        select_block_candidates(
+            protocol,
+            block_ordinal=1,
+            selected_at=WINDOW_START + timedelta(seconds=1),
+            normalization=NormalizationReport(accepted=(markets[0], alias)),
+            raw_by_market_id=raw,
+            source_payload_sha256="a" * 64,
+            source_entry_count=2,
+            source_retrieved_at=WINDOW_START,
+            earlier_event_ids=frozenset(),
+        )
 
 
 def test_quarantined_and_missing_raw_candidates_keep_structured_reasons() -> None:
@@ -395,6 +431,10 @@ def test_selection_rejects_future_or_mismatched_source_evidence() -> None:
         select_block_candidates(
             protocol, **{**args, "source_retrieved_at": WINDOW_START + timedelta(seconds=2)}
         )
+    with pytest.raises(ValueError, match="retrieved inside the selected block"):
+        select_block_candidates(
+            protocol, **{**args, "source_retrieved_at": WINDOW_START - timedelta(seconds=1)}
+        )
     with pytest.raises(ValueError, match="discovery page digest"):
         select_block_candidates(protocol, **{**args, "source_payload_sha256": "b" * 64})
     with pytest.raises(ValueError, match="every discovery page entry"):
@@ -423,6 +463,50 @@ def test_selection_rejects_future_or_mismatched_source_evidence() -> None:
     assert CandidateExclusionReason.NORMALIZED_AFTER_SELECTION in {
         item.reason for item in rejected.exclusions
     }
+
+
+@pytest.mark.parametrize(
+    ("market_update", "raw_update", "reason"),
+    [
+        ({"event_id": None}, {}, CandidateExclusionReason.EVENT_ID_MISSING),
+        ({"market_id": "01"}, {}, CandidateExclusionReason.MARKET_ID_INVALID),
+        ({"active": False}, {}, CandidateExclusionReason.NOT_ACTIVE),
+        ({"closed": True}, {}, CandidateExclusionReason.CLOSED),
+        ({"archived": True}, {}, CandidateExclusionReason.ARCHIVED),
+        ({"outcomes": ("No", "Yes")}, {}, CandidateExclusionReason.NOT_BINARY_YES_NO),
+        ({"end_time": None}, {}, CandidateExclusionReason.END_TIME_OUT_OF_RANGE),
+        ({"liquidity": Decimal(1)}, {}, CandidateExclusionReason.LIQUIDITY_BELOW_MINIMUM),
+        ({}, {"enableOrderBook": False}, CandidateExclusionReason.ORDER_BOOK_UNAVAILABLE),
+        ({}, {"outcomePrices": "not json"}, CandidateExclusionReason.MALFORMED_PRICES),
+        ({}, {"outcomePrices": ["0.01", "0.99"]}, CandidateExclusionReason.PRICE_OUT_OF_RANGE),
+    ],
+)
+def test_candidate_exclusion_is_recorded_for_each_guard(
+    market_update: dict[str, object],
+    raw_update: dict[str, object],
+    reason: CandidateExclusionReason,
+) -> None:
+    protocol = _candidate()
+    market = _market(1).model_copy(update=market_update)
+    raw = {
+        "enableOrderBook": True,
+        "acceptingOrders": True,
+        "outcomePrices": ["0.4", "0.6"],
+        **raw_update,
+    }
+    result = select_block_candidates(
+        protocol,
+        block_ordinal=1,
+        selected_at=WINDOW_START + timedelta(seconds=1),
+        normalization=NormalizationReport(accepted=(market,)),
+        raw_by_market_id={market.market_id: raw},
+        source_payload_sha256="a" * 64,
+        source_entry_count=1,
+        source_retrieved_at=WINDOW_START,
+        earlier_event_ids=frozenset(),
+    )
+    assert result.status is BlockSelectionStatus.REJECTED_SHORT_BLOCK
+    assert result.exclusions[0].reason is reason
 
 
 _SCRIPT = run_path(

@@ -78,8 +78,12 @@ claim edge or superiority from a partial cohort.
    persistence before any target selection. Candidate availability probes
    must not admit observations.
    Offline block selection now reserves enough remaining time for all four
-   bounded captures, rejects duplicate market IDs, and returns a versioned
-   partition of selected and excluded candidates with reasons and source hash.
+   bounded captures, accepts only a discovery retrieval within that block,
+   rejects duplicate numeric market IDs (including textual aliases), and
+   returns a versioned partition of selected and excluded candidates with
+   reasons and source hash. The protocol keeps the earliest eligible target
+   end after the final observation block; admitted records recheck distinct
+   canonical market IDs and explicit event identities on reload.
    A rejected short block admits no target or forecast.
    A candidate record can be checked with
    `uv run python scripts/m4_async_cohort_preflight.py --spec <candidate.json>`

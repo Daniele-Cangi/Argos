@@ -139,6 +139,10 @@ class AsynchronousCohortProtocolV1(ProspectiveExperimentProtocolV1):
             raise ValueError("cohort blocks must not overlap")
         if self.declared_at >= self.blocks[0].start:
             raise ValueError("cohort protocol must precede first selection block")
+        if self.selection.target_end_min <= self.observation_window_end:
+            raise ValueError(
+                "target end-time lower bound must follow the cohort observation window"
+            )
         if any(
             (block.end - block.start).total_seconds()
             < block.intended_targets * self.capture_max_seconds_per_target
@@ -258,6 +262,17 @@ class OfflineBlockSelectionV1(VersionedModel):
             raise ValueError("offline selection must account for every discovery entry")
         if self.status is BlockSelectionStatus.ADMITTED and len(self.selected_markets) != 4:
             raise ValueError("admitted block needs exactly four selected markets")
+        if self.status is BlockSelectionStatus.ADMITTED:
+            market_ids = [market.market_id for market in self.selected_markets]
+            event_ids = [market.event_id for market in self.selected_markets]
+            if any(not _canonical_market_id(market_id) for market_id in market_ids) or len(
+                set(market_ids)
+            ) != len(market_ids):
+                raise ValueError("admitted markets need distinct canonical numeric IDs")
+            if any(not event_id or not event_id.strip() for event_id in event_ids) or len(
+                set(event_ids)
+            ) != len(event_ids):
+                raise ValueError("admitted markets need distinct explicit event identities")
         if self.status is BlockSelectionStatus.REJECTED_SHORT_BLOCK and self.selected_markets:
             raise ValueError("rejected block cannot contain admitted targets")
         return self
@@ -368,6 +383,8 @@ def select_block_candidates(
         selected_at=at,
         earlier_event_ids=earlier_event_ids,
     )
+    if retrieved_at < block.start:
+        raise ValueError("discovery source must be retrieved inside the selected block")
     selection = protocol.selection
     all_ids = [
         market_id
@@ -377,7 +394,15 @@ def select_block_candidates(
         )
         if market_id is not None
     ]
-    duplicates = sorted(market_id for market_id, count in Counter(all_ids).items() if count > 1)
+    numeric_ids = [int(market_id) for market_id in all_ids if _canonical_digits(market_id)]
+    duplicates = sorted(
+        str(market_id) for market_id, count in Counter(numeric_ids).items() if count > 1
+    )
+    duplicates.extend(
+        market_id
+        for market_id, count in Counter(all_ids).items()
+        if not _canonical_digits(market_id) and count > 1
+    )
     if duplicates:
         raise ValueError(f"duplicate market IDs in discovery page: {duplicates}")
     exclusions = [
@@ -473,7 +498,7 @@ def _candidate_rejection(
         return CandidateExclusionReason.RAW_ENTRY_MISSING
     if not market.event_id or not market.event_id.strip():
         return CandidateExclusionReason.EVENT_ID_MISSING
-    if not market.market_id.isdecimal():
+    if not _canonical_market_id(market.market_id):
         return CandidateExclusionReason.MARKET_ID_INVALID
     if market.normalized_at > selected_at:
         return CandidateExclusionReason.NORMALIZED_AFTER_SELECTION
@@ -502,6 +527,14 @@ def _candidate_rejection(
     ):
         return CandidateExclusionReason.PRICE_OUT_OF_RANGE
     return None
+
+
+def _canonical_digits(market_id: str) -> bool:
+    return market_id.isascii() and market_id.isdecimal()
+
+
+def _canonical_market_id(market_id: str) -> bool:
+    return _canonical_digits(market_id) and str(int(market_id)) == market_id
 
 
 def _outcome_prices(raw: Any) -> tuple[Decimal, ...] | None:
