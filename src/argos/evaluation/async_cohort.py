@@ -147,14 +147,19 @@ class AsynchronousCohortProtocolV1(ProspectiveExperimentProtocolV1):
             raise ValueError("16 targets cannot lower the calibration sufficiency floor")
         if self.cutoff_basis is not CutoffBasis.FIRST_OBSERVED_FINAL_SETTLEMENT:
             raise ValueError("asynchronous finality requires first-observed-final cutoff")
-        if not all((
-            self.capture_separate_database_per_target,
-            self.capture_subscribe_both_tokens,
-            self.capture_raw_archive,
-            self.distinct_event_identity,
-            self.reject_short_block_before_forecast,
-            self.pending_retained_in_denominator,
-        )) or self.replacement_allowed:
+        if (
+            not all(
+                (
+                    self.capture_separate_database_per_target,
+                    self.capture_subscribe_both_tokens,
+                    self.capture_raw_archive,
+                    self.distinct_event_identity,
+                    self.reject_short_block_before_forecast,
+                    self.pending_retained_in_denominator,
+                )
+            )
+            or self.replacement_allowed
+        ):
             raise ValueError("cohort capture, independence and no-replacement guards are required")
         if self.minimum_category_count_for_calibration < 2 or (
             self.minimum_yes_outcomes_for_calibration < 5
@@ -255,9 +260,13 @@ def select_block_candidates(
         ):
             continue
         prices = _outcome_prices(raw.get("outcomePrices"))
-        if prices is None or len(prices) != 2 or not all(
-            selection.minimum_outcome_price <= price <= selection.maximum_outcome_price
-            for price in prices
+        if (
+            prices is None
+            or len(prices) != 2
+            or not all(
+                selection.minimum_outcome_price <= price <= selection.maximum_outcome_price
+                for price in prices
+            )
         ):
             continue
         compile_market_contract(market, compiled_at=at)

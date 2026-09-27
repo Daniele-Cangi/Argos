@@ -163,7 +163,10 @@ def test_block_admission_is_atomic_and_never_reuses_event() -> None:
     at = protocol.blocks[1].start + timedelta(seconds=1)
     earlier_events = frozenset({"earlier-1", "earlier-2", "earlier-3", "earlier-4"})
     validate_block_admission(
-        protocol, block_ordinal=2, selected_at=at, event_ids=valid,
+        protocol,
+        block_ordinal=2,
+        selected_at=at,
+        event_ids=valid,
         earlier_event_ids=earlier_events,
     )
     cases = [
@@ -181,8 +184,11 @@ def test_block_admission_is_atomic_and_never_reuses_event() -> None:
     for selected_at, event_ids, earlier, message in cases:
         with pytest.raises(ValueError, match=message):
             validate_block_admission(
-                protocol, block_ordinal=2, selected_at=selected_at,
-                event_ids=event_ids, earlier_event_ids=earlier,
+                protocol,
+                block_ordinal=2,
+                selected_at=selected_at,
+                event_ids=event_ids,
+                earlier_event_ids=earlier,
             )
 
 
@@ -212,8 +218,12 @@ def _market(market_id: int, *, event_id: str | None = None) -> MarketDefinitionV
 def test_offline_selector_is_deterministic_atomic_and_independent() -> None:
     protocol = _candidate()
     markets = (
-        _market(7), _market(4), _market(2, event_id="event-1"),
-        _market(3), _market(1), _market(5),
+        _market(7),
+        _market(4),
+        _market(2, event_id="event-1"),
+        _market(3),
+        _market(1),
+        _market(5),
     )
     raw = {
         market.market_id: {
@@ -224,16 +234,21 @@ def test_offline_selector_is_deterministic_atomic_and_independent() -> None:
         for market in markets
     }
     selected = select_block_candidates(
-        protocol, block_ordinal=1,
+        protocol,
+        block_ordinal=1,
         selected_at=protocol.blocks[0].start + timedelta(seconds=1),
-        markets=markets, raw_by_market_id=raw, earlier_event_ids=frozenset(),
+        markets=markets,
+        raw_by_market_id=raw,
+        earlier_event_ids=frozenset(),
     )
     assert tuple(market.market_id for market in selected) == ("1", "3", "4", "5")
     assert len({market.event_id for market in selected}) == 4
     reordered = select_block_candidates(
-        protocol, block_ordinal=1,
+        protocol,
+        block_ordinal=1,
         selected_at=protocol.blocks[0].start + timedelta(seconds=1),
-        markets=tuple(reversed(markets)), raw_by_market_id=raw,
+        markets=tuple(reversed(markets)),
+        raw_by_market_id=raw,
         earlier_event_ids=frozenset(),
     )
     assert reordered == selected
@@ -241,9 +256,12 @@ def test_offline_selector_is_deterministic_atomic_and_independent() -> None:
     raw["4"]["outcomePrices"] = '["NaN", "0.6"]'
     with pytest.raises(ValueError, match="short cohort block"):
         select_block_candidates(
-            protocol, block_ordinal=1,
+            protocol,
+            block_ordinal=1,
             selected_at=protocol.blocks[0].start + timedelta(seconds=1),
-            markets=markets, raw_by_market_id=raw, earlier_event_ids=frozenset(),
+            markets=markets,
+            raw_by_market_id=raw,
+            earlier_event_ids=frozenset(),
         )
 
 
@@ -256,7 +274,8 @@ preflight_protocol = _SCRIPT["preflight_protocol"]
 def test_preflight_cannot_masquerade_as_freeze() -> None:
     protocol = _candidate()
     report = preflight_protocol(
-        protocol.to_record(), revision=protocol.code_revision,
+        protocol.to_record(),
+        revision=protocol.code_revision,
         checked_at=protocol.declared_at + timedelta(minutes=1),
     )
     assert report["status"] == "PREFLIGHT_ONLY_NOT_FROZEN"
@@ -267,6 +286,7 @@ def test_preflight_cannot_masquerade_as_freeze() -> None:
         )
     with pytest.raises(ValueError, match="already begun"):
         preflight_protocol(
-            protocol.to_record(), revision=protocol.code_revision,
+            protocol.to_record(),
+            revision=protocol.code_revision,
             checked_at=protocol.blocks[0].start,
         )
