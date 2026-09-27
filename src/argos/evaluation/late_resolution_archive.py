@@ -13,6 +13,10 @@ from typing import Any
 import orjson
 
 from argos.evaluation.late_resolution import FrozenForecastSnapshotV1, LateFinalOutcomeV1
+from argos.evaluation.late_retrieval import (
+    load_lifecycle_poll_retrievals,
+    verify_lifecycle_poll_retrieval,
+)
 from argos.evaluation.prospective import (
     LifecycleObservationV1,
     ProspectiveExperimentProtocolV2,
@@ -32,6 +36,11 @@ def verify_late_outcome_archives(
     load_persisted_record(evidence_dir, outcome.protocol_receipt, ProspectiveExperimentProtocolV2)
     load_persisted_record(evidence_dir, outcome.snapshot.target_receipt, ProspectiveTargetV1)
     load_persisted_record(evidence_dir, outcome.snapshot_receipt, FrozenForecastSnapshotV1)
+    retrievals = load_lifecycle_poll_retrievals(
+        evidence_dir,
+        experiment_id=outcome.protocol.experiment_id,
+        target_id=outcome.snapshot.target.target_id,
+    )
 
     for observation, receipt in zip(
         outcome.lifecycle_observations, outcome.lifecycle_receipts, strict=True
@@ -47,6 +56,13 @@ def verify_late_outcome_archives(
             or archive_relative_location(provenance) != observation.raw_payload_location
         ):
             raise ValueError("archived lifecycle source disagrees with the claimed observation")
+        verify_lifecycle_poll_retrieval(
+            observation,
+            receipt,
+            raw,
+            retrievals,
+            required=provenance.retrieved_at != observation.retrieved_at,
+        )
         if observation.source != "gamma":
             raise ValueError("late outcome verifier only supports Gamma lifecycle sources")
         try:

@@ -95,6 +95,7 @@ class EvidenceArtifactKind(StrEnum):
     COMPILED_CONTRACT = "compiled_contract"
     TARGET_DECLARATION = "target_declaration"
     LIFECYCLE_OBSERVATION = "lifecycle_observation"
+    LIFECYCLE_POLL_RETRIEVAL = "lifecycle_poll_retrieval"
     RESOLUTION_CUTOFF = "resolution_cutoff"
     CAPTURE_REJECTION = "capture_rejection_evidence"
     TARGET_TERMINAL = "target_terminal_evidence"

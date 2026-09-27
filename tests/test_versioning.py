@@ -164,6 +164,7 @@ def test_every_shipped_contract_is_resolvable_from_its_version() -> None:
         "last_trade_price.v1": "LastTradePriceV1",
         "late_final_outcome.v1": "LateFinalOutcomeV1",
         "lifecycle_observation.v1": "LifecycleObservationV1",
+        "lifecycle_poll_retrieval.v1": "LifecyclePollRetrievalV1",
         "lifecycle_monitor_gap.v1": "LifecycleMonitorGapEvidenceV1",
         "lifecycle_receipt_chain_link.v1": "LifecycleReceiptChainLinkV1",
         "market_quote.v1": "MarketQuoteV1",

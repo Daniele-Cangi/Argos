@@ -31,6 +31,12 @@ from argos.evaluation.late_resolution import (
     LateFinalOutcomeV1,
     build_late_final_outcome_id,
 )
+from argos.evaluation.late_retrieval import (
+    LifecyclePollRetrievalV1,
+    build_lifecycle_poll_retrieval_id,
+    load_lifecycle_poll_retrievals,
+    verify_lifecycle_poll_retrieval,
+)
 from argos.evaluation.numeric import require_epsilon
 from argos.evaluation.prospective import (
     EvidenceArtifactKind,
@@ -902,8 +908,11 @@ class LateLifecycleMonitor:
             chain = self._load_chain()
             if chain and chain[-1][0].finality is ResolutionStatus.FINAL:
                 raise _AlreadyFinal("target already has a persisted final observation")
+            attempted_at = ensure_utc(self.clock.now())
             response = await self.source.get_market(self.target.market_id)
-            observation, receipt, resolution = self._persist_poll(checkpoint, chain, response)
+            observation, receipt, resolution = self._persist_poll(
+                checkpoint, chain, response, attempted_at=attempted_at
+            )
             committed.append((observation, receipt))
             if resolution is not None and resolution.resolution_status is ResolutionStatus.FINAL:
                 outcome = self._build_late_outcome((*chain, (observation, receipt)), resolution)
@@ -1172,6 +1181,11 @@ class LateLifecycleMonitor:
         observation_records: dict[
             int, tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1]
         ] = {}
+        retrievals = load_lifecycle_poll_retrievals(
+            self.evidence_archive,
+            experiment_id=self.protocol.experiment_id,
+            target_id=self.target.target_id,
+        )
         for path in sorted((self.evidence_archive / "argos_evidence").glob("*.raw.json")):
             raw, provenance = read_raw_payload(self.evidence_archive, provenance_digest(path))
             decoded, model = self._decode_evidence_record(raw)
@@ -1195,7 +1209,13 @@ class LateLifecycleMonitor:
                 EvidenceArtifactKind.LIFECYCLE_OBSERVATION,
             )
             verify_receipt_for_record(receipt, observation)
-            self._verify_source_for_observation(observation)
+            raw_source = self._verify_source_for_observation(observation)
+            retrieval = retrievals.get(observation.lifecycle_observation_id)
+            if retrieval is not None and retrieval[0].schedule_id != self.schedule.schedule_id:
+                raise ValueError("per-poll retrieval evidence belongs to another frozen schedule")
+            verify_lifecycle_poll_retrieval(
+                observation, receipt, raw_source, retrievals, required=True
+            )
             if observation.ordinal in observation_records:
                 raise ValueError("duplicate durable lifecycle ordinal for selected target")
             observation_records[observation.ordinal] = (observation, receipt)
@@ -1363,7 +1383,7 @@ class LateLifecycleMonitor:
         ):
             raise ValueError("archived evidence record or provenance is not first-hand canonical")
 
-    def _verify_source_for_observation(self, observation: LifecycleObservationV1) -> None:
+    def _verify_source_for_observation(self, observation: LifecycleObservationV1) -> bytes:
         if observation.source != "gamma":
             raise ValueError("lifecycle observation is not bound to first-hand Gamma source bytes")
         raw, provenance = read_raw_payload(self.source_archive, observation.raw_payload_sha256)
@@ -1399,14 +1419,18 @@ class LateLifecycleMonitor:
             or observation.source_time != _source_time(payload)
         ):
             raise ValueError("lifecycle observation disagrees with archived Gamma bytes")
+        return raw
 
     def _persist_poll(
         self,
         checkpoint: ResumableMonitorCheckpointV1,
         chain: Sequence[tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1]],
         response: GammaResponse,
+        *,
+        attempted_at: datetime,
     ) -> tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1, ResolutionV1 | None]:
         provenance = response.provenance
+        attempted_at = ensure_utc(attempted_at)
         if provenance.source != "gamma" or provenance.reconstructed:
             raise ValueError("late lifecycle polls require first-hand Gamma source bytes")
         self._verify_gamma_endpoint(provenance.endpoint)
@@ -1425,6 +1449,8 @@ class LateLifecycleMonitor:
                 )
         if provenance.retrieved_at < minimum_retrieved_at:
             raise ValueError("Gamma retrieval time is before its frozen cadence")
+        if provenance.retrieved_at < attempted_at:
+            raise ValueError("Gamma retrieval time is before the poll attempt")
         persisted_at = ensure_utc(self.clock.now())
         if provenance.retrieved_at > persisted_at:
             raise ValueError("Gamma retrieval time is ahead of the monitor clock")
@@ -1501,6 +1527,29 @@ class LateLifecycleMonitor:
                 EvidenceArtifactKind.LIFECYCLE_OBSERVATION,
             )
             self._build_late_outcome((*chain, (observation, planned_receipt)), resolution)
+        retrieval_fields: dict[str, Any] = {
+            "schedule_id": self.schedule.schedule_id,
+            "experiment_id": self.protocol.experiment_id,
+            "target_id": self.target.target_id,
+            "ordinal": observation.ordinal,
+            "observation_id": observation.lifecycle_observation_id,
+            "attempted_at": attempted_at,
+            "provenance": provenance,
+        }
+        retrieval = LifecyclePollRetrievalV1(
+            retrieval_id=build_lifecycle_poll_retrieval_id(**retrieval_fields),
+            **retrieval_fields,
+        )
+        retrieval_receipt = persist_evidence_record(
+            self.evidence_archive,
+            record=retrieval,
+            experiment_id=self.protocol.experiment_id,
+            artifact_kind=EvidenceArtifactKind.LIFECYCLE_POLL_RETRIEVAL,
+            artifact_id=retrieval.retrieval_id,
+            persisted_at=persisted_at,
+        )
+        if retrieval_receipt.persisted_at < provenance.retrieved_at:
+            raise ValueError("late retrieval evidence predates its source response")
         receipt = persist_evidence_record(
             self.evidence_archive,
             record=observation,

@@ -8,6 +8,7 @@ from typing import Any, cast
 import orjson
 import pytest
 
+import argos.evaluation.late_monitor as late_monitor_module
 from argos.baselines import (
     AbstentionReason,
     BaselineMethod,
@@ -44,6 +45,7 @@ from argos.evaluation import (
     verify_late_outcome_archives,
 )
 from argos.evaluation.late_monitor import LateResolutionStatus, _gap_id
+from argos.evaluation.late_retrieval import load_lifecycle_poll_retrievals
 from argos.evaluation.prospective import (
     build_lifecycle_observation_id,
     build_target_id,
@@ -1607,6 +1609,136 @@ async def test_repeated_identical_gamma_bytes_keep_the_first_archived_timestamp(
 
     assert result.observation is not None
     assert result.observation.retrieved_at == later_retrieval
+    retrievals = [
+        (path, orjson.loads(path.read_bytes()))
+        for path in (tmp_path / "evidence" / "argos_evidence").glob("*.raw.json")
+        if orjson.loads(path.read_bytes()).get("schema_version") == "lifecycle_poll_retrieval.v1"
+    ]
+    assert len(retrievals) == 1
+    assert datetime.fromisoformat(retrievals[0][1]["provenance"]["retrieved_at"]) == later_retrieval
+
+    # The old content-addressed sidecar is not proof of this later request.
+    retrievals[0][0].unlink()
+    retrievals[0][0].with_name(
+        f"{retrievals[0][0].name.removesuffix('.raw.json')}.meta.json"
+    ).unlink()
+    restarted = _monitor(tmp_path, _Clock(later_retrieval), [])
+    with pytest.raises(ValueError, match="retrieval evidence"):
+        restarted._load_chain()
+
+
+@pytest.mark.anyio
+async def test_duplicate_payload_polls_have_distinct_retrieval_proofs_and_archive_verification(
+    tmp_path: Path,
+) -> None:
+    schedule_at = DEADLINE + timedelta(seconds=20)
+    first_at = schedule_at + timedelta(seconds=1)
+    second_at = first_at + timedelta(seconds=61)
+    final_at = second_at + timedelta(seconds=61)
+    clock = _Clock(schedule_at)
+    monitor = _monitor(
+        tmp_path,
+        clock,
+        [
+            _response(_pending_payload(), first_at),
+            _response(_pending_payload(), second_at),
+            _response(_final_payload(DEADLINE + timedelta(seconds=30)), final_at),
+        ],
+    )
+
+    first = await monitor.poll_once()
+    assert first.observation is not None and first.next_poll_at is not None
+    clock.set(first.next_poll_at)
+    second = await monitor.poll_once()
+    assert second.observation is not None and second.next_poll_at is not None
+    assert first.observation.raw_payload_sha256 == second.observation.raw_payload_sha256
+    clock.set(second.next_poll_at)
+    final = await monitor.poll_once()
+    assert final.outcome is not None
+
+    retrievals = load_lifecycle_poll_retrievals(
+        monitor.evidence_archive, experiment_id=EXPERIMENT, target_id=monitor.target.target_id
+    )
+    assert len(retrievals) == 3
+    assert (
+        retrievals[first.observation.lifecycle_observation_id][0].provenance.retrieved_at
+        == first_at
+    )
+    assert (
+        retrievals[second.observation.lifecycle_observation_id][0].provenance.retrieved_at
+        == second_at
+    )
+    verify_late_outcome_archives(
+        final.outcome, evidence_dir=monitor.evidence_archive, source_dir=monitor.source_archive
+    )
+
+    # Removing the second request proof must not let the first sidecar attest
+    # both poll times, including in a standalone archive verification.
+    retrieval = retrievals[second.observation.lifecycle_observation_id][1]
+    raw_path = monitor.evidence_archive / retrieval.storage_identity
+    raw_path.unlink()
+    raw_path.with_name(f"{retrieval.artifact_sha256}.meta.json").unlink()
+    with pytest.raises(ValueError, match="retrieval evidence"):
+        verify_late_outcome_archives(
+            final.outcome, evidence_dir=monitor.evidence_archive, source_dir=monitor.source_archive
+        )
+
+
+@pytest.mark.anyio
+async def test_orphaned_retrieval_after_crash_does_not_replace_the_next_poll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    schedule_at = DEADLINE + timedelta(seconds=20)
+    first_at = schedule_at + timedelta(seconds=1)
+    clock = _Clock(schedule_at)
+    monitor = _monitor(tmp_path, clock, [_response(_pending_payload(), first_at)])
+    persist = late_monitor_module.persist_evidence_record
+
+    def fail_observation(*args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("artifact_kind") is EvidenceArtifactKind.LIFECYCLE_OBSERVATION:
+            raise RuntimeError("simulated observation write failure")
+        return persist(*args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(late_monitor_module, "persist_evidence_record", fail_observation)
+        with pytest.raises(RuntimeError, match="simulated observation write failure"):
+            await monitor.poll_once()
+
+    checkpoint = monitor.monitor.load()
+    assert checkpoint.next_ordinal == 0
+    assert len(checkpoint.gaps) == 1
+    second_at = checkpoint.updated_at + timedelta(seconds=61)
+    clock.set(second_at - timedelta(seconds=1))
+    restarted = _monitor(tmp_path, clock, [_response(_pending_payload(), second_at)])
+    resumed = await restarted.poll_once()
+    assert resumed.observation is not None and resumed.observation.ordinal == 1
+    retrievals = load_lifecycle_poll_retrievals(
+        restarted.evidence_archive, experiment_id=EXPERIMENT, target_id=restarted.target.target_id
+    )
+    assert len(retrievals) == 2
+    assert resumed.observation.lifecycle_observation_id in retrievals
+
+
+@pytest.mark.anyio
+async def test_late_poll_rejects_response_timestamp_before_attempt_start(tmp_path: Path) -> None:
+    schedule_at = DEADLINE + timedelta(seconds=20)
+    attempt_at = schedule_at + timedelta(seconds=10)
+    response_at = attempt_at - timedelta(seconds=1)
+    monitor = _monitor(
+        tmp_path,
+        _Clock(attempt_at),
+        [_response(_pending_payload(), response_at)],
+    )
+
+    with pytest.raises(ValueError, match="before the poll attempt"):
+        await monitor.poll_once()
+    gap = monitor.monitor.load().gaps[0]
+    assert gap.started_at == gap.ended_at == attempt_at
+    assert not any(
+        orjson.loads(path.read_bytes()).get("schema_version")
+        == LifecycleObservationV1.schema_version
+        for path in (tmp_path / "evidence" / "argos_evidence").glob("*.raw.json")
+    )
 
 
 @pytest.mark.anyio
@@ -1920,7 +2052,9 @@ async def test_gamma_response_requires_first_hand_monotone_cadence_evidence(
         response = cast(_Source, monitor.source).responses[0]
         if source == "gamma" and not reconstructed and retrieved_offset < 0:
             assert isinstance(response, GammaResponse)
-            monitor._persist_poll(monitor._initial_checkpoint(), (), response)
+            monitor._persist_poll(
+                monitor._initial_checkpoint(), (), response, attempted_at=schedule_at
+            )
         else:
             await monitor.poll_once()
 
@@ -1937,7 +2071,9 @@ def test_gamma_retrieval_cannot_precede_the_frozen_first_poll_time(tmp_path: Pat
     response = _response(_pending_payload(), first_poll_at - timedelta(seconds=1))
 
     with pytest.raises(ValueError, match="before its frozen cadence"):
-        monitor._persist_poll(monitor._initial_checkpoint(), (), response)
+        monitor._persist_poll(
+            monitor._initial_checkpoint(), (), response, attempted_at=first_poll_at
+        )
 
 
 @pytest.mark.anyio

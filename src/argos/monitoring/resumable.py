@@ -307,7 +307,7 @@ class ResumableMonitor:
             try:
                 commit = poll(checkpoint)
             except Exception as error:
-                ended_at = ensure_utc(failure_time())
+                ended_at = max(started_at, ensure_utc(failure_time()))
                 self._record_failure(record_failure, checkpoint, started_at, ended_at, error)
                 failed = checkpoint_after_failure(
                     checkpoint,
@@ -347,7 +347,7 @@ class ResumableMonitor:
             try:
                 commit = await poll(checkpoint)
             except asyncio.CancelledError as error:
-                ended_at = ensure_utc(failure_time())
+                ended_at = max(started_at, ensure_utc(failure_time()))
                 self._record_failure(record_failure, checkpoint, started_at, ended_at, error)
                 failed = checkpoint_after_failure(
                     checkpoint,
@@ -367,7 +367,7 @@ class ResumableMonitor:
                     )
                 raise
             except Exception as error:
-                ended_at = ensure_utc(failure_time())
+                ended_at = max(started_at, ensure_utc(failure_time()))
                 self._record_failure(record_failure, checkpoint, started_at, ended_at, error)
                 failed = checkpoint_after_failure(
                     checkpoint,

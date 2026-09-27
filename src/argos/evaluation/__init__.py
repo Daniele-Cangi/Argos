@@ -52,6 +52,7 @@ from argos.evaluation.late_resolution import (
     build_late_final_outcome_id,
 )
 from argos.evaluation.late_resolution_archive import verify_late_outcome_archives
+from argos.evaluation.late_retrieval import LifecyclePollRetrievalV1
 from argos.evaluation.numeric import (
     EVALUATION_DECIMAL_CONTEXT,
     EVALUATION_PRECISION,
@@ -197,6 +198,7 @@ __all__ = [
     "LifecycleObservationV1",
     "LifecyclePollEvidenceV1",
     "LifecyclePollResult",
+    "LifecyclePollRetrievalV1",
     "LifecycleReceiptChainLinkV1",
     "MeasurementLayerVerdict",
     "ProspectiveClaimArtifactIndexV1",
