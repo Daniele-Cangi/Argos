@@ -428,6 +428,7 @@ class LateScoringResultV1(VersionedModel):
     snapshot_id: str = Field(min_length=1)
     snapshot: FrozenForecastSnapshotV1
     late_outcome_id: str | None = Field(default=None, min_length=1)
+    late_outcome: LateFinalOutcomeV1 | None = None
     disposition: LateScoreDisposition
     latest_finality: ResolutionStatus
     planned_forecast_count: int = Field(gt=0)
@@ -455,14 +456,28 @@ class LateScoringResultV1(VersionedModel):
         if self.disposition is LateScoreDisposition.PENDING_RESOLUTION:
             if (
                 self.late_outcome_id is not None
+                or self.late_outcome is not None
                 or self.latest_finality is ResolutionStatus.FINAL
                 or self.evaluations
                 or self.abstained_forecast_ids
             ):
                 raise ValueError("pending target cannot be scored or labeled as final")
         else:
-            if self.late_outcome_id is None or self.latest_finality is not ResolutionStatus.FINAL:
+            outcome = self.late_outcome
+            if (
+                self.late_outcome_id is None
+                or outcome is None
+                or self.latest_finality is not ResolutionStatus.FINAL
+            ):
                 raise ValueError("final scoring requires a bound final outcome")
+            if (
+                outcome.late_outcome_id != self.late_outcome_id
+                or outcome.snapshot != self.snapshot
+                or outcome.protocol.experiment_id != self.experiment_id
+            ):
+                raise ValueError("late score is not bound to its durable late outcome")
+            if self.created_at < outcome.selected_cutoff:
+                raise ValueError("late score cannot predate its bound final outcome cutoff")
             if len(self.evaluations) + len(self.abstained_forecast_ids) != (
                 self.planned_forecast_count
             ):
@@ -505,8 +520,15 @@ class LateScoringResultV1(VersionedModel):
             }
             if set(self.abstained_forecast_ids) != abstained_forecasts:
                 raise ValueError("late score abstentions disagree with the frozen snapshot")
-            if len({item.resolution_id for item in self.evaluations}) > 1:
-                raise ValueError("late evaluations disagree on their final resolution")
+            expected_outcome_yes = int(
+                outcome.resolution.winning_token_id == self.snapshot.target.yes_token_id
+            )
+            if any(
+                item.resolution_id != outcome.resolution.resolution_id
+                or item.outcome_yes != expected_outcome_yes
+                for item in self.evaluations
+            ):
+                raise ValueError("late evaluations disagree with their bound late outcome")
         if len(set(self.abstained_forecast_ids)) != len(self.abstained_forecast_ids):
             raise ValueError("abstained forecast ids must be unique")
         expected_id = _late_score_identity(
@@ -515,6 +537,7 @@ class LateScoringResultV1(VersionedModel):
                 "target_id": self.target_id,
                 "snapshot_id": self.snapshot_id,
                 "late_outcome_id": self.late_outcome_id,
+                "late_outcome": self.late_outcome,
                 "disposition": self.disposition,
                 "latest_finality": self.latest_finality,
                 "planned_forecast_count": self.planned_forecast_count,
@@ -531,6 +554,9 @@ class LateScoringResultV1(VersionedModel):
     def to_record(self) -> dict[str, Any]:
         record = super().to_record()
         record["snapshot"] = self.snapshot.to_record()
+        record["late_outcome"] = (
+            self.late_outcome.to_record() if self.late_outcome is not None else None
+        )
         record["evaluations"] = [item.to_record() for item in self.evaluations]
         return record
 
@@ -539,6 +565,8 @@ class LateScoringResultV1(VersionedModel):
         payload = dict(record)
         ensure_supported_version(payload.pop("schema_version", None), (cls.schema_version,))
         payload["snapshot"] = FrozenForecastSnapshotV1.from_record(dict(payload["snapshot"]))
+        if payload.get("late_outcome") is not None:
+            payload["late_outcome"] = LateFinalOutcomeV1.from_record(dict(payload["late_outcome"]))
         payload["evaluations"] = tuple(
             ForecastEvaluationV2.from_record(dict(item)) for item in payload.get("evaluations", ())
         )
@@ -569,6 +597,7 @@ def pending_late_resolution_score(
         "snapshot_id": snapshot.snapshot_id,
         "snapshot": snapshot,
         "late_outcome_id": None,
+        "late_outcome": None,
         "disposition": LateScoreDisposition.PENDING_RESOLUTION,
         "latest_finality": finality,
         "planned_forecast_count": len(snapshot.forecasts),
@@ -627,6 +656,7 @@ def score_late_final_outcome(
         "snapshot_id": outcome.snapshot.snapshot_id,
         "snapshot": outcome.snapshot,
         "late_outcome_id": outcome.late_outcome_id,
+        "late_outcome": outcome,
         "disposition": disposition,
         "latest_finality": ResolutionStatus.FINAL,
         "planned_forecast_count": len(outcome.snapshot.forecasts),
@@ -646,6 +676,11 @@ def _late_score_identity(fields: Mapping[str, Any]) -> str:
             "target_id": fields["target_id"],
             "snapshot_id": fields["snapshot_id"],
             "late_outcome_id": fields["late_outcome_id"],
+            "late_outcome": (
+                fields["late_outcome"].to_record()
+                if fields.get("late_outcome") is not None
+                else None
+            ),
             "disposition": LateScoreDisposition(fields["disposition"]).value,
             "latest_finality": ResolutionStatus(fields["latest_finality"]).value,
             "planned_forecast_count": fields["planned_forecast_count"],
@@ -1453,7 +1488,7 @@ class LateLifecycleMonitor:
         checkpoint: ResumableMonitorCheckpointV1,
         started_at: datetime,
         ended_at: datetime,
-        error: Exception,
+        error: BaseException,
     ) -> None:
         # The failed poll may already have persisted its observation before a
         # later receipt/outcome write failed; rebuild before choosing a gap head.

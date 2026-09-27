@@ -45,8 +45,9 @@ from argos.evaluation import (
 )
 from argos.evaluation.late_monitor import LateResolutionStatus, _gap_id
 from argos.evaluation.prospective import build_target_id, persist_evidence_record
+from argos.evaluation.scoring import score_forecast_v2
 from argos.monitoring.resumable import ResumableMonitorCheckpointV1
-from argos.resolution import ResolutionStatus
+from argos.resolution import ResolutionStatus, WinningOutcome
 from argos.sources.gamma import GammaResponse
 from argos.store.raw_archive import write_raw_payload
 
@@ -972,6 +973,8 @@ async def test_late_final_score_cannot_predate_the_observed_cutoff(tmp_path: Pat
         ("epsilon_mismatch", "declared clipping epsilon"),
         ("forecast_not_in_snapshot", "accounting does not match the frozen forecasts"),
         ("score_disagrees_with_snapshot", "late evaluation disagrees with its frozen forecast"),
+        ("wrong_resolution", "disagree with their bound late outcome"),
+        ("wrong_winning_side", "disagree with their bound late outcome"),
         ("wrong_identity", "identity disagrees"),
     ],
 )
@@ -1013,6 +1016,29 @@ async def test_late_score_record_rejects_inconsistent_final_claims(
         record["evaluations"][0]["forecast_id"] = "not-in-the-frozen-snapshot"
     elif mutation == "score_disagrees_with_snapshot":
         record["evaluations"][0]["evaluation_run_id"] = "not-the-frozen-run"
+    elif mutation == "wrong_resolution":
+        for evaluation in record["evaluations"]:
+            evaluation["resolution_id"] = "different-final-resolution"
+    elif mutation == "wrong_winning_side":
+        record["evaluations"] = [
+            score_forecast_v2(
+                forecast_id=evaluation.forecast_id,
+                evaluation_run_id=evaluation.evaluation_run_id,
+                contract_id=evaluation.contract_id,
+                forecast_method=evaluation.forecast_method,
+                condition_id=evaluation.condition_id,
+                token_id=evaluation.token_id,
+                score=evaluation.score,
+                resolution_id=evaluation.resolution_id,
+                winning_outcome=(
+                    WinningOutcome.NO if evaluation.outcome_yes else WinningOutcome.YES
+                ),
+                calibration_status=evaluation.calibration_status,
+                created_at=evaluation.created_at,
+                epsilon=evaluation.log_loss_epsilon,
+            ).to_record()
+            for evaluation in score.evaluations
+        ]
     else:
         record["result_id"] = "wrong-result-id"
 

@@ -1,3 +1,4 @@
+import asyncio
 import multiprocessing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -181,6 +182,50 @@ def test_monitor_persists_gap_before_propagating_poll_failure(tmp_path: Path) ->
     persisted = monitor.load()
     assert persisted.next_ordinal == 0
     assert persisted.gaps[0].reason == "TimeoutError: injected"
+
+
+@pytest.mark.asyncio
+async def test_async_monitor_persists_gap_before_reraising_poll_cancellation(
+    tmp_path: Path,
+) -> None:
+    monitor = ResumableMonitor(tmp_path / "checkpoint.json", tmp_path / "monitor.lock")
+    monitor.save(_checkpoint())
+    poll_started = asyncio.Event()
+    times = iter((NOW, NOW + timedelta(seconds=5)))
+    recorded: list[tuple[datetime, datetime, BaseException]] = []
+
+    async def wait_for_poll(_: ResumableMonitorCheckpointV1) -> PollCommit:
+        poll_started.set()
+        await asyncio.Future()
+
+    def record_failure(
+        _: ResumableMonitorCheckpointV1,
+        started_at: datetime,
+        ended_at: datetime,
+        error: BaseException,
+    ) -> None:
+        recorded.append((started_at, ended_at, error))
+
+    task = asyncio.create_task(
+        monitor.run_once_async(
+            poll=wait_for_poll,
+            failure_time=lambda: next(times),
+            record_failure=record_failure,
+        )
+    )
+    await poll_started.wait()
+    task.cancel("injected cancellation")
+
+    with pytest.raises(asyncio.CancelledError, match="injected cancellation"):
+        await task
+
+    persisted = monitor.load()
+    assert persisted.next_ordinal == 0
+    assert len(persisted.gaps) == 1
+    assert persisted.gaps[0].reason == "CancelledError: injected cancellation"
+    assert len(recorded) == 1
+    assert recorded[0][:2] == (NOW, NOW + timedelta(seconds=5))
+    assert isinstance(recorded[0][2], asyncio.CancelledError)
 
 
 def test_existing_partial_checkpoint_blocks_overwrite(tmp_path: Path) -> None:

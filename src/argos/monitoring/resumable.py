@@ -7,6 +7,7 @@ network or wall-clock access.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -295,7 +296,7 @@ class ResumableMonitor:
         reconcile: Callable[[ResumableMonitorCheckpointV1], ResumableMonitorCheckpointV1]
         | None = None,
         record_failure: Callable[
-            [ResumableMonitorCheckpointV1, datetime, datetime, Exception], None
+            [ResumableMonitorCheckpointV1, datetime, datetime, BaseException], None
         ]
         | None = None,
     ) -> ResumableMonitorCheckpointV1:
@@ -329,7 +330,7 @@ class ResumableMonitor:
         reconcile: Callable[[ResumableMonitorCheckpointV1], ResumableMonitorCheckpointV1]
         | None = None,
         record_failure: Callable[
-            [ResumableMonitorCheckpointV1, datetime, datetime, Exception], None
+            [ResumableMonitorCheckpointV1, datetime, datetime, BaseException], None
         ]
         | None = None,
     ) -> ResumableMonitorCheckpointV1:
@@ -345,6 +346,26 @@ class ResumableMonitor:
             started_at = ensure_utc(failure_time())
             try:
                 commit = await poll(checkpoint)
+            except asyncio.CancelledError as error:
+                ended_at = ensure_utc(failure_time())
+                self._record_failure(record_failure, checkpoint, started_at, ended_at, error)
+                failed = checkpoint_after_failure(
+                    checkpoint,
+                    started_at=started_at,
+                    ended_at=ended_at,
+                    reason=f"{type(error).__name__}: {error}",
+                )
+                try:
+                    # The callback and checkpoint write are synchronous, so the
+                    # cancellation is not re-injected between the gap artifact
+                    # and its checkpoint. Preserve cancellation if storage fails.
+                    self.save(failed)
+                except Exception as persistence_error:
+                    error.add_note(
+                        "Could not persist the cancellation checkpoint: "
+                        f"{type(persistence_error).__name__}: {persistence_error}"
+                    )
+                raise
             except Exception as error:
                 ended_at = ensure_utc(failure_time())
                 self._record_failure(record_failure, checkpoint, started_at, ended_at, error)
@@ -389,12 +410,12 @@ class ResumableMonitor:
 
     @staticmethod
     def _record_failure(
-        recorder: Callable[[ResumableMonitorCheckpointV1, datetime, datetime, Exception], None]
+        recorder: Callable[[ResumableMonitorCheckpointV1, datetime, datetime, BaseException], None]
         | None,
         checkpoint: ResumableMonitorCheckpointV1,
         started_at: datetime,
         ended_at: datetime,
-        error: Exception,
+        error: BaseException,
     ) -> None:
         if recorder is None:
             return
