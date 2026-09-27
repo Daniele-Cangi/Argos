@@ -26,6 +26,10 @@ from argos.evaluation.late_resolution import (
     build_late_final_outcome_id,
 )
 from argos.evaluation.late_resolution_archive import verify_late_outcome_archives
+from argos.evaluation.late_retrieval import (
+    LifecyclePollRetrievalV1,
+    build_lifecycle_poll_retrieval_id,
+)
 from argos.evaluation.prospective import (
     AcrossTargetWeighting,
     CutoffBasis,
@@ -177,6 +181,38 @@ def _receipt_with(
     return EvidencePersistenceReceiptV1.model_validate(fields)
 
 
+def _persist_retrieval_for_observation(tmp_path: Path, observation: LifecycleObservationV1) -> None:
+    """Keep synthetic archive fixtures under the per-poll evidence contract."""
+    provenance = SourceProvenanceV1(
+        source="gamma",
+        endpoint=observation.endpoint,
+        http_status=200,
+        retrieved_at=observation.retrieved_at,
+        raw_sha256=observation.raw_payload_sha256,
+        byte_length=observation.byte_length,
+    )
+    fields = {
+        "schedule_id": "synthetic-lifecycle-schedule",
+        "experiment_id": observation.experiment_id,
+        "target_id": observation.target_id,
+        "ordinal": observation.ordinal,
+        "observation_id": observation.lifecycle_observation_id,
+        "attempted_at": observation.retrieved_at - timedelta(seconds=1),
+        "provenance": provenance,
+    }
+    retrieval = LifecyclePollRetrievalV1(
+        retrieval_id=build_lifecycle_poll_retrieval_id(**fields), **fields
+    )
+    persist_evidence_record(
+        tmp_path / "evidence",
+        record=retrieval,
+        experiment_id=observation.experiment_id,
+        artifact_kind=EvidenceArtifactKind.LIFECYCLE_POLL_RETRIEVAL,
+        artifact_id=retrieval.retrieval_id,
+        persisted_at=observation.retrieved_at + timedelta(milliseconds=500),
+    )
+
+
 def _observation_with(
     tmp_path: Path, observation: LifecycleObservationV1, **changes: object
 ) -> tuple[LifecycleObservationV1, EvidencePersistenceReceiptV1]:
@@ -210,6 +246,8 @@ def _late_outcome_with_final_source(
         raw_payload_location=location,
         resolution_record_sha256=record_sha256(resolution.to_record()),
     )
+    if source == "gamma":
+        _persist_retrieval_for_observation(tmp_path, altered)
     receipts = (outcome.lifecycle_receipts[0], receipt)
     return outcome.model_copy(
         update={
@@ -386,6 +424,8 @@ def _late_record(tmp_path: Path) -> LateFinalOutcomeV1:
         )
         for observation in observations
     )
+    for observation in observations:
+        _persist_retrieval_for_observation(tmp_path, observation)
     fields = {
         "protocol": protocol,
         "protocol_receipt": protocol_receipt,
@@ -885,6 +925,8 @@ def test_archived_earlier_final_cannot_be_hidden_as_proposed(tmp_path: Path) -> 
         artifact_id=final.lifecycle_observation_id,
         persisted_at=FINAL_AT + timedelta(seconds=1),
     )
+    _persist_retrieval_for_observation(tmp_path, prior)
+    _persist_retrieval_for_observation(tmp_path, final)
     receipts = (prior_receipt, final_receipt)
     forged = outcome.model_copy(
         update={

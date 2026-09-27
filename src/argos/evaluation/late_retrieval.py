@@ -162,15 +162,11 @@ def verify_lifecycle_poll_retrieval(
     observation_receipt: EvidencePersistenceReceiptV1,
     raw: bytes,
     retrievals: dict[str, tuple[LifecyclePollRetrievalV1, EvidencePersistenceReceiptV1]],
-    *,
-    required: bool,
 ) -> None:
     """Bind a lifecycle claim to its distinct, earlier durable request record."""
     pair = retrievals.get(observation.lifecycle_observation_id)
     if pair is None:
-        if required:
-            raise ValueError("missing per-poll retrieval evidence for lifecycle observation")
-        return
+        raise ValueError("missing per-poll retrieval evidence for lifecycle observation")
     retrieval, receipt = pair
     source = retrieval.provenance
     if (

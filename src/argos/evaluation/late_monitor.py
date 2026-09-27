@@ -1213,9 +1213,7 @@ class LateLifecycleMonitor:
             retrieval = retrievals.get(observation.lifecycle_observation_id)
             if retrieval is not None and retrieval[0].schedule_id != self.schedule.schedule_id:
                 raise ValueError("per-poll retrieval evidence belongs to another frozen schedule")
-            verify_lifecycle_poll_retrieval(
-                observation, receipt, raw_source, retrievals, required=True
-            )
+            verify_lifecycle_poll_retrieval(observation, receipt, raw_source, retrievals)
             if observation.ordinal in observation_records:
                 raise ValueError("duplicate durable lifecycle ordinal for selected target")
             observation_records[observation.ordinal] = (observation, receipt)

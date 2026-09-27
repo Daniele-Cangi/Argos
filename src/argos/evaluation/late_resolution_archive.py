@@ -56,15 +56,14 @@ def verify_late_outcome_archives(
             or archive_relative_location(provenance) != observation.raw_payload_location
         ):
             raise ValueError("archived lifecycle source disagrees with the claimed observation")
+        if observation.source != "gamma":
+            raise ValueError("late outcome verifier only supports Gamma lifecycle sources")
         verify_lifecycle_poll_retrieval(
             observation,
             receipt,
             raw,
             retrievals,
-            required=provenance.retrieved_at != observation.retrieved_at,
         )
-        if observation.source != "gamma":
-            raise ValueError("late outcome verifier only supports Gamma lifecycle sources")
         try:
             payload: Any = orjson.loads(raw)
         except orjson.JSONDecodeError as error:

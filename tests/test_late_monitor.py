@@ -1685,6 +1685,36 @@ async def test_duplicate_payload_polls_have_distinct_retrieval_proofs_and_archiv
 
 
 @pytest.mark.anyio
+async def test_archive_verifier_requires_unique_final_poll_retrieval(tmp_path: Path) -> None:
+    schedule_at = DEADLINE + timedelta(seconds=20)
+    final_at = schedule_at + timedelta(seconds=1)
+    monitor = _monitor(
+        tmp_path,
+        _Clock(schedule_at),
+        [_response(_final_payload(DEADLINE), final_at)],
+    )
+    result = await monitor.poll_once()
+    assert result.outcome is not None and result.observation is not None
+    verify_late_outcome_archives(
+        result.outcome, evidence_dir=monitor.evidence_archive, source_dir=monitor.source_archive
+    )
+
+    retrievals = load_lifecycle_poll_retrievals(
+        monitor.evidence_archive, experiment_id=EXPERIMENT, target_id=monitor.target.target_id
+    )
+    assert len(retrievals) == 1
+    retrieval_receipt = retrievals[result.observation.lifecycle_observation_id][1]
+    retrieval_path = monitor.evidence_archive / retrieval_receipt.storage_identity
+    retrieval_path.unlink()
+    retrieval_path.with_name(f"{retrieval_receipt.artifact_sha256}.meta.json").unlink()
+
+    with pytest.raises(ValueError, match="missing per-poll retrieval evidence"):
+        verify_late_outcome_archives(
+            result.outcome, evidence_dir=monitor.evidence_archive, source_dir=monitor.source_archive
+        )
+
+
+@pytest.mark.anyio
 async def test_orphaned_retrieval_after_crash_does_not_replace_the_next_poll(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
