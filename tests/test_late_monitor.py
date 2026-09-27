@@ -385,7 +385,10 @@ async def test_late_monitor_keeps_pending_unscored_then_scores_actual_final_cuto
     )
     assert pending_score.disposition is LateScoreDisposition.PENDING_RESOLUTION
     assert pending_score.evaluations == ()
-    assert LateScoringResultV1.from_record(pending_score.to_record()) == pending_score
+    assert pending_score.log_loss_epsilon is None
+    pending_record = pending_score.to_record()
+    assert "log_loss_epsilon" not in pending_record
+    assert LateScoringResultV1.from_record(pending_record) == pending_score
 
     clock.set(first.next_poll_at)
     second = await monitor.poll_once()
@@ -1050,8 +1053,8 @@ async def test_progress_and_score_records_reject_pending_finality_claims(tmp_pat
         )
 
 
-@pytest.mark.parametrize("epsilon", ["0", "-0.01", "NaN", "0.5", "0.9"])
-def test_pending_score_record_rejects_invalid_log_loss_epsilon(
+@pytest.mark.parametrize("epsilon", ["0", "-0.01", "NaN", "0.5", "0.9", "0.000001", "0.00001"])
+def test_pending_score_record_rejects_declared_log_loss_epsilon(
     tmp_path: Path, epsilon: str
 ) -> None:
     schedule_at = DEADLINE + timedelta(seconds=20)

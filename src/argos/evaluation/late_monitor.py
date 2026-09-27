@@ -44,7 +44,6 @@ from argos.evaluation.prospective import (
     verify_receipt_for_record,
 )
 from argos.evaluation.scoring import (
-    DEFAULT_LOG_LOSS_EPSILON,
     ForecastEvaluationV2,
     score_forecast_v2,
 )
@@ -436,7 +435,7 @@ class LateScoringResultV1(VersionedModel):
     evaluations: tuple[ForecastEvaluationV2, ...] = ()
     abstained_forecast_ids: tuple[str, ...] = ()
     created_at: datetime
-    log_loss_epsilon: Decimal
+    log_loss_epsilon: Decimal | None = None
 
     @field_validator("created_at")
     @classmethod
@@ -445,7 +444,9 @@ class LateScoringResultV1(VersionedModel):
 
     @field_validator("log_loss_epsilon")
     @classmethod
-    def _valid_log_loss_epsilon(cls, value: Decimal) -> Decimal:
+    def _valid_log_loss_epsilon(cls, value: Decimal | None) -> Decimal | None:
+        if value is None:
+            return None
         try:
             return require_epsilon(value)
         except ContractViolationError as error:
@@ -471,6 +472,8 @@ class LateScoringResultV1(VersionedModel):
                 or self.abstained_forecast_ids
             ):
                 raise ValueError("pending target cannot be scored or labeled as final")
+            if self.log_loss_epsilon is not None:
+                raise ValueError("pending target cannot declare a log-loss epsilon before finality")
         else:
             outcome = self.late_outcome
             if (
@@ -485,6 +488,8 @@ class LateScoringResultV1(VersionedModel):
                 or outcome.protocol.experiment_id != self.experiment_id
             ):
                 raise ValueError("late score is not bound to its durable late outcome")
+            if self.log_loss_epsilon is None:
+                raise ValueError("final scoring requires the frozen protocol log-loss epsilon")
             if self.log_loss_epsilon != outcome.protocol.log_loss_epsilon:
                 raise ValueError("late score epsilon disagrees with the frozen protocol")
             if self.created_at < outcome.selected_cutoff:
@@ -564,6 +569,8 @@ class LateScoringResultV1(VersionedModel):
 
     def to_record(self) -> dict[str, Any]:
         record = super().to_record()
+        if self.log_loss_epsilon is None:
+            record.pop("log_loss_epsilon", None)
         record["snapshot"] = self.snapshot.to_record()
         record["late_outcome"] = (
             self.late_outcome.to_record() if self.late_outcome is not None else None
@@ -590,10 +597,8 @@ def pending_late_resolution_score(
     *,
     latest_observation: LifecycleObservationV1 | None,
     created_at: datetime,
-    epsilon: Decimal = DEFAULT_LOG_LOSS_EPSILON,
 ) -> LateScoringResultV1:
     """Represent a target in the denominator without turning pending into NO."""
-    require_epsilon(epsilon)
     finality = latest_observation.finality if latest_observation else ResolutionStatus.UNKNOWN
     if latest_observation is not None and (
         latest_observation.experiment_id != snapshot.target.experiment_id
@@ -615,7 +620,7 @@ def pending_late_resolution_score(
         "evaluations": (),
         "abstained_forecast_ids": (),
         "created_at": ensure_utc(created_at),
-        "log_loss_epsilon": epsilon,
+        "log_loss_epsilon": None,
     }
     return LateScoringResultV1(result_id=_late_score_identity(fields), **fields)
 
@@ -702,7 +707,9 @@ def _late_score_identity(fields: Mapping[str, Any]) -> str:
             "evaluations": [item.to_record() for item in fields["evaluations"]],
             "abstained_forecast_ids": fields["abstained_forecast_ids"],
             "created_at": ensure_utc(fields["created_at"]).isoformat(),
-            "log_loss_epsilon": str(fields["log_loss_epsilon"]),
+            "log_loss_epsilon": (
+                str(fields["log_loss_epsilon"]) if fields["log_loss_epsilon"] is not None else None
+            ),
         },
     )
 
