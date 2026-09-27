@@ -13,8 +13,12 @@ the type rather than by a check somebody has to remember.
 
 from argos.evaluation.async_cohort import (
     AsynchronousCohortProtocolV1,
+    BlockSelectionStatus,
+    CandidateExclusionReason,
+    CandidateExclusionV1,
     CohortBlockV1,
     GammaSelectionV1,
+    OfflineBlockSelectionV1,
     select_block_candidates,
     validate_block_admission,
 )
@@ -167,9 +171,12 @@ __all__ = [
     "MAX_LOG_LOSS_EPSILON",
     "AcrossTargetWeighting",
     "AsynchronousCohortProtocolV1",
+    "BlockSelectionStatus",
     "CalibrationBin",
     "CalibrationReport",
     "CalibrationVerdict",
+    "CandidateExclusionReason",
+    "CandidateExclusionV1",
     "CaptureRejectionEvidenceV1",
     "CaptureRunSummaryV1",
     "CohortBlockV1",
@@ -211,6 +218,7 @@ __all__ = [
     "LifecyclePollRetrievalV1",
     "LifecycleReceiptChainLinkV1",
     "MeasurementLayerVerdict",
+    "OfflineBlockSelectionV1",
     "ProspectiveClaimArtifactIndexV1",
     "ProspectiveEvaluationResult",
     "ProspectiveExperimentBundleV1",

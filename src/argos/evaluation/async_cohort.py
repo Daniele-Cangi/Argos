@@ -6,8 +6,10 @@ the protocol and its receipt before selecting the first target.
 
 from __future__ import annotations
 
-from datetime import datetime
+from collections import Counter
+from datetime import datetime, timedelta
 from decimal import Decimal
+from enum import StrEnum
 from itertools import pairwise
 from typing import Any, ClassVar
 from urllib.parse import urlsplit
@@ -18,11 +20,13 @@ from pydantic import Field, field_validator, model_validator
 from argos.clock import ensure_utc
 from argos.compiler import compile_market_contract
 from argos.domain.market import MarketDefinitionV1
+from argos.domain.provenance import SHA256_LENGTH, sha256_hex
 from argos.domain.versioning import VersionedModel, ensure_supported_version
 from argos.evaluation.prospective import (
     CutoffBasis,
     ProspectiveExperimentProtocolV1,
 )
+from argos.ingestion.gamma_markets import NormalizationReport
 
 
 class CohortBlockV1(VersionedModel):
@@ -189,6 +193,94 @@ class AsynchronousCohortProtocolV1(ProspectiveExperimentProtocolV1):
         return cls.model_validate(payload)
 
 
+class CandidateExclusionReason(StrEnum):
+    NORMALIZATION_REJECTED = "normalization_rejected"
+    RAW_ENTRY_MISSING = "raw_entry_missing"
+    EVENT_ID_MISSING = "event_id_missing"
+    MARKET_ID_INVALID = "market_id_invalid"
+    NORMALIZED_AFTER_SELECTION = "normalized_after_selection"
+    NOT_ACTIVE = "not_active"
+    CLOSED = "closed"
+    ARCHIVED = "archived"
+    NOT_BINARY_YES_NO = "not_binary_yes_no"
+    END_TIME_OUT_OF_RANGE = "end_time_out_of_range"
+    LIQUIDITY_BELOW_MINIMUM = "liquidity_below_minimum"
+    ORDER_BOOK_UNAVAILABLE = "order_book_unavailable"
+    MALFORMED_PRICES = "malformed_prices"
+    PRICE_OUT_OF_RANGE = "price_out_of_range"
+    EVENT_ID_REUSED = "event_id_reused"
+    RANK_BELOW_CUTOFF = "rank_below_cutoff"
+    BLOCK_SHORTFALL = "block_shortfall"
+    CONTRACT_INVALID = "contract_invalid"
+
+
+class CandidateExclusionV1(VersionedModel):
+    """One accounted discovery entry; detail is source data, never an instruction."""
+
+    schema_version: ClassVar[str] = "m4_candidate_exclusion.v1"
+
+    market_id: str | None
+    reason: CandidateExclusionReason
+    detail: str | None = None
+
+
+class BlockSelectionStatus(StrEnum):
+    ADMITTED = "admitted"
+    REJECTED_SHORT_BLOCK = "rejected_short_block"
+
+
+class OfflineBlockSelectionV1(VersionedModel):
+    """Complete partition of a normalized discovery page, not target evidence."""
+
+    schema_version: ClassVar[str] = "m4_offline_block_selection.v1"
+
+    experiment_id: str = Field(min_length=1)
+    block_ordinal: int = Field(ge=1)
+    selected_at: datetime
+    status: BlockSelectionStatus
+    protocol_sha256: str = Field(min_length=SHA256_LENGTH, max_length=SHA256_LENGTH)
+    source_payload_sha256: str = Field(min_length=SHA256_LENGTH, max_length=SHA256_LENGTH)
+    source_retrieved_at: datetime
+    source_candidate_count: int = Field(ge=0)
+    selected_markets: tuple[MarketDefinitionV1, ...]
+    exclusions: tuple[CandidateExclusionV1, ...]
+
+    @field_validator("selected_at", "source_retrieved_at")
+    @classmethod
+    def _utc_selection(cls, value: datetime) -> datetime:
+        return ensure_utc(value)
+
+    @model_validator(mode="after")
+    def _partition_is_complete(self) -> OfflineBlockSelectionV1:
+        if self.source_retrieved_at > self.selected_at:
+            raise ValueError("discovery source cannot be retrieved after block selection")
+        if len(self.selected_markets) + len(self.exclusions) != self.source_candidate_count:
+            raise ValueError("offline selection must account for every discovery entry")
+        if self.status is BlockSelectionStatus.ADMITTED and len(self.selected_markets) != 4:
+            raise ValueError("admitted block needs exactly four selected markets")
+        if self.status is BlockSelectionStatus.REJECTED_SHORT_BLOCK and self.selected_markets:
+            raise ValueError("rejected block cannot contain admitted targets")
+        return self
+
+    def to_record(self) -> dict[str, Any]:
+        record = super().to_record()
+        record["selected_markets"] = [market.to_record() for market in self.selected_markets]
+        record["exclusions"] = [exclusion.to_record() for exclusion in self.exclusions]
+        return record
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> OfflineBlockSelectionV1:
+        payload = dict(record)
+        ensure_supported_version(payload.pop("schema_version", None), (cls.schema_version,))
+        payload["selected_markets"] = tuple(
+            MarketDefinitionV1.from_record(dict(item)) for item in payload["selected_markets"]
+        )
+        payload["exclusions"] = tuple(
+            CandidateExclusionV1.from_record(dict(item)) for item in payload["exclusions"]
+        )
+        return cls.model_validate(payload)
+
+
 def validate_block_admission(
     protocol: AsynchronousCohortProtocolV1,
     *,
@@ -202,6 +294,27 @@ def validate_block_admission(
     The caller must persist the public source bytes, contract and target receipts
     separately. This pure guard cannot establish their availability by itself.
     """
+    block = _validate_block_readiness(
+        protocol,
+        block_ordinal=block_ordinal,
+        selected_at=selected_at,
+        earlier_event_ids=earlier_event_ids,
+    )
+    if len(event_ids) != block.intended_targets:
+        raise ValueError("short cohort block must be rejected before forecast")
+    if any(not event_id.strip() for event_id in event_ids):
+        raise ValueError("cohort targets need explicit Gamma event identities")
+    if len(set(event_ids)) != len(event_ids) or set(event_ids) & earlier_event_ids:
+        raise ValueError("cohort target event identity was selected more than once")
+
+
+def _validate_block_readiness(
+    protocol: AsynchronousCohortProtocolV1,
+    *,
+    block_ordinal: int,
+    selected_at: datetime,
+    earlier_event_ids: frozenset[str],
+) -> CohortBlockV1:
     if not 1 <= block_ordinal <= len(protocol.blocks):
         raise ValueError("unknown cohort block")
     block = protocol.blocks[block_ordinal - 1]
@@ -211,12 +324,11 @@ def validate_block_admission(
     at = ensure_utc(selected_at)
     if not block.start <= at < block.end:
         raise ValueError("target selection falls outside frozen block")
-    if len(event_ids) != block.intended_targets:
-        raise ValueError("short cohort block must be rejected before forecast")
-    if any(not event_id.strip() for event_id in event_ids):
-        raise ValueError("cohort targets need explicit Gamma event identities")
-    if len(set(event_ids)) != len(event_ids) or set(event_ids) & earlier_event_ids:
-        raise ValueError("cohort target event identity was selected more than once")
+    remaining = block.end - at
+    needed = timedelta(seconds=block.intended_targets * protocol.capture_max_seconds_per_target)
+    if remaining < needed:
+        raise ValueError("insufficient time remains for bounded captures in this block")
+    return block
 
 
 def select_block_candidates(
@@ -224,75 +336,172 @@ def select_block_candidates(
     *,
     block_ordinal: int,
     selected_at: datetime,
-    markets: tuple[MarketDefinitionV1, ...],
+    normalization: NormalizationReport,
     raw_by_market_id: dict[str, dict[str, Any]],
+    source_payload_sha256: str,
+    source_entry_count: int,
+    source_retrieved_at: datetime,
     earlier_event_ids: frozenset[str],
-) -> tuple[MarketDefinitionV1, ...]:
+) -> OfflineBlockSelectionV1:
     """Rank an archived Gamma page; reject the whole block on shortfall.
 
     This does not fetch, persist, capture or forecast. The future live adapter
     must bind the exact raw page and source retrieval before calling it.
     """
     at = ensure_utc(selected_at)
-    if not 1 <= block_ordinal <= len(protocol.blocks):
-        raise ValueError("unknown cohort block")
+    retrieved_at = ensure_utc(source_retrieved_at)
+    if retrieved_at > at:
+        raise ValueError("discovery source cannot be retrieved after block selection")
+    if len(source_payload_sha256) != SHA256_LENGTH:
+        raise ValueError("discovery source needs its archived SHA-256 identity")
+    if source_entry_count != normalization.total:
+        raise ValueError("normalization does not account for every discovery page entry")
+    if any(
+        item.raw_payload_sha256 != source_payload_sha256 for item in normalization.accepted
+    ) or any(
+        item.raw_payload_sha256 != source_payload_sha256 for item in normalization.quarantined
+    ):
+        raise ValueError("normalized candidates disagree with the discovery page digest")
+    block = _validate_block_readiness(
+        protocol,
+        block_ordinal=block_ordinal,
+        selected_at=at,
+        earlier_event_ids=earlier_event_ids,
+    )
     selection = protocol.selection
+    all_ids = [
+        market_id
+        for market_id in (
+            *(market.market_id for market in normalization.accepted),
+            *(item.market_id for item in normalization.quarantined),
+        )
+        if market_id is not None
+    ]
+    duplicates = sorted(market_id for market_id, count in Counter(all_ids).items() if count > 1)
+    if duplicates:
+        raise ValueError(f"duplicate market IDs in discovery page: {duplicates}")
+    exclusions = [
+        CandidateExclusionV1(
+            market_id=item.market_id,
+            reason=CandidateExclusionReason.NORMALIZATION_REJECTED,
+            detail=f"{item.reason.value}: {item.detail}",
+        )
+        for item in normalization.quarantined
+    ]
     eligible: list[MarketDefinitionV1] = []
-    for market in markets:
+    for market in normalization.accepted:
         raw = raw_by_market_id.get(market.market_id)
-        if (
-            raw is None
-            or not market.event_id
-            or not market.market_id.isdecimal()
-            or market.normalized_at > at
-        ):
+        reason = _candidate_rejection(market, raw, selection, selected_at=at)
+        if reason is not None:
+            exclusions.append(CandidateExclusionV1(market_id=market.market_id, reason=reason))
             continue
-        if not (
-            market.active
-            and not market.closed
-            and not market.archived
-            and market.outcomes == ("Yes", "No")
-            and market.end_time is not None
-            and selection.target_end_min <= market.end_time <= selection.target_end_max
-            and (market.liquidity or Decimal(0)) >= selection.minimum_liquidity
-            and raw.get("enableOrderBook") is True
-            and raw.get("acceptingOrders") is True
-        ):
-            continue
-        prices = _outcome_prices(raw.get("outcomePrices"))
-        if (
-            prices is None
-            or len(prices) != 2
-            or not all(
-                selection.minimum_outcome_price <= price <= selection.maximum_outcome_price
-                for price in prices
+        try:
+            compile_market_contract(market, compiled_at=at)
+        except ValueError as error:
+            exclusions.append(
+                CandidateExclusionV1(
+                    market_id=market.market_id,
+                    reason=CandidateExclusionReason.CONTRACT_INVALID,
+                    detail=str(error),
+                )
             )
-        ):
             continue
-        compile_market_contract(market, compiled_at=at)
         eligible.append(market)
     eligible.sort(key=lambda market: (-(market.liquidity or Decimal(0)), int(market.market_id)))
     chosen: list[MarketDefinitionV1] = []
     seen = set(earlier_event_ids)
-    seen_markets: set[str] = set()
-    required = protocol.blocks[block_ordinal - 1].intended_targets
+    required = block.intended_targets
     for market in eligible:
         assert market.event_id is not None
-        if market.event_id in seen or market.market_id in seen_markets:
+        if market.event_id in seen:
+            exclusions.append(
+                CandidateExclusionV1(
+                    market_id=market.market_id, reason=CandidateExclusionReason.EVENT_ID_REUSED
+                )
+            )
+            continue
+        if len(chosen) == required:
+            exclusions.append(
+                CandidateExclusionV1(
+                    market_id=market.market_id, reason=CandidateExclusionReason.RANK_BELOW_CUTOFF
+                )
+            )
             continue
         chosen.append(market)
         seen.add(market.event_id)
-        seen_markets.add(market.market_id)
-        if len(chosen) == required:
-            break
-    validate_block_admission(
-        protocol,
+    if len(chosen) < required:
+        exclusions.extend(
+            CandidateExclusionV1(
+                market_id=market.market_id,
+                reason=CandidateExclusionReason.BLOCK_SHORTFALL,
+            )
+            for market in chosen
+        )
+        chosen = []
+        status = BlockSelectionStatus.REJECTED_SHORT_BLOCK
+    else:
+        validate_block_admission(
+            protocol,
+            block_ordinal=block_ordinal,
+            selected_at=at,
+            event_ids=tuple(market.event_id or "" for market in chosen),
+            earlier_event_ids=earlier_event_ids,
+        )
+        status = BlockSelectionStatus.ADMITTED
+    return OfflineBlockSelectionV1(
+        experiment_id=protocol.experiment_id,
         block_ordinal=block_ordinal,
         selected_at=at,
-        event_ids=tuple(market.event_id or "" for market in chosen),
-        earlier_event_ids=earlier_event_ids,
+        status=status,
+        protocol_sha256=sha256_hex(orjson.dumps(protocol.to_record(), option=orjson.OPT_SORT_KEYS)),
+        source_payload_sha256=source_payload_sha256,
+        source_retrieved_at=retrieved_at,
+        source_candidate_count=source_entry_count,
+        selected_markets=tuple(chosen),
+        exclusions=tuple(exclusions),
     )
-    return tuple(chosen)
+
+
+def _candidate_rejection(
+    market: MarketDefinitionV1,
+    raw: dict[str, Any] | None,
+    selection: GammaSelectionV1,
+    *,
+    selected_at: datetime,
+) -> CandidateExclusionReason | None:
+    if raw is None:
+        return CandidateExclusionReason.RAW_ENTRY_MISSING
+    if not market.event_id or not market.event_id.strip():
+        return CandidateExclusionReason.EVENT_ID_MISSING
+    if not market.market_id.isdecimal():
+        return CandidateExclusionReason.MARKET_ID_INVALID
+    if market.normalized_at > selected_at:
+        return CandidateExclusionReason.NORMALIZED_AFTER_SELECTION
+    if not market.active:
+        return CandidateExclusionReason.NOT_ACTIVE
+    if market.closed:
+        return CandidateExclusionReason.CLOSED
+    if market.archived:
+        return CandidateExclusionReason.ARCHIVED
+    if market.outcomes != ("Yes", "No"):
+        return CandidateExclusionReason.NOT_BINARY_YES_NO
+    if market.end_time is None or not (
+        selection.target_end_min <= market.end_time <= selection.target_end_max
+    ):
+        return CandidateExclusionReason.END_TIME_OUT_OF_RANGE
+    if (market.liquidity or Decimal(0)) < selection.minimum_liquidity:
+        return CandidateExclusionReason.LIQUIDITY_BELOW_MINIMUM
+    if raw.get("enableOrderBook") is not True or raw.get("acceptingOrders") is not True:
+        return CandidateExclusionReason.ORDER_BOOK_UNAVAILABLE
+    prices = _outcome_prices(raw.get("outcomePrices"))
+    if prices is None or len(prices) != 2:
+        return CandidateExclusionReason.MALFORMED_PRICES
+    if not all(
+        selection.minimum_outcome_price <= price <= selection.maximum_outcome_price
+        for price in prices
+    ):
+        return CandidateExclusionReason.PRICE_OUT_OF_RANGE
+    return None
 
 
 def _outcome_prices(raw: Any) -> tuple[Decimal, ...] | None:

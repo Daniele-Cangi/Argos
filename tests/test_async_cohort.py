@@ -11,12 +11,15 @@ import pytest
 from pydantic import ValidationError
 from test_prospective_evidence import DECLARED_AT, WINDOW_START, _protocol
 
-from argos.domain.market import MarketDefinitionV1
-from argos.errors import SchemaVersionError
+from argos.domain.market import MarketDefinitionV1, QuarantinedMarketV1
+from argos.errors import RejectionReason, SchemaVersionError
 from argos.evaluation.async_cohort import (
     AsynchronousCohortProtocolV1,
+    BlockSelectionStatus,
+    CandidateExclusionReason,
     CohortBlockV1,
     GammaSelectionV1,
+    OfflineBlockSelectionV1,
     select_block_candidates,
     validate_block_admission,
 )
@@ -25,6 +28,7 @@ from argos.evaluation.prospective import (
     load_persisted_record,
     persist_evidence_record,
 )
+from argos.ingestion.gamma_markets import NormalizationReport
 
 
 def _candidate(**updates: object) -> AsynchronousCohortProtocolV1:
@@ -180,6 +184,12 @@ def test_block_admission_is_atomic_and_never_reuses_event() -> None:
         ),
         (protocol.blocks[1].end, valid, earlier_events, "outside frozen block"),
         (at, valid, frozenset(), "missing predecessors"),
+        (
+            protocol.blocks[1].end - timedelta(seconds=479),
+            valid,
+            earlier_events,
+            "insufficient time remains",
+        ),
     ]
     for selected_at, event_ids, earlier, message in cases:
         with pytest.raises(ValueError, match=message):
@@ -237,32 +247,182 @@ def test_offline_selector_is_deterministic_atomic_and_independent() -> None:
         protocol,
         block_ordinal=1,
         selected_at=protocol.blocks[0].start + timedelta(seconds=1),
-        markets=markets,
+        normalization=NormalizationReport(accepted=markets),
         raw_by_market_id=raw,
+        source_payload_sha256="a" * 64,
+        source_entry_count=6,
+        source_retrieved_at=WINDOW_START,
         earlier_event_ids=frozenset(),
     )
-    assert tuple(market.market_id for market in selected) == ("1", "3", "4", "5")
-    assert len({market.event_id for market in selected}) == 4
+    assert selected.status is BlockSelectionStatus.ADMITTED
+    assert tuple(market.market_id for market in selected.selected_markets) == ("1", "3", "4", "5")
+    assert len({market.event_id for market in selected.selected_markets}) == 4
+    assert selected.source_candidate_count == 6
+    assert {item.reason for item in selected.exclusions} == {
+        CandidateExclusionReason.EVENT_ID_REUSED,
+        CandidateExclusionReason.RANK_BELOW_CUTOFF,
+    }
+    assert OfflineBlockSelectionV1.from_record(selected.to_record()) == selected
+    incomplete = selected.to_record()
+    incomplete["source_candidate_count"] -= 1
+    with pytest.raises(ValidationError, match="account for every discovery entry"):
+        OfflineBlockSelectionV1.from_record(incomplete)
+    foreign_exclusion = selected.to_record()
+    foreign_exclusion["exclusions"][0]["schema_version"] = "m4_candidate_exclusion.v0"
+    with pytest.raises(SchemaVersionError, match="not supported"):
+        OfflineBlockSelectionV1.from_record(foreign_exclusion)
     reordered = select_block_candidates(
         protocol,
         block_ordinal=1,
         selected_at=protocol.blocks[0].start + timedelta(seconds=1),
-        markets=tuple(reversed(markets)),
+        normalization=NormalizationReport(accepted=tuple(reversed(markets))),
         raw_by_market_id=raw,
+        source_payload_sha256="a" * 64,
+        source_entry_count=6,
+        source_retrieved_at=WINDOW_START,
         earlier_event_ids=frozenset(),
     )
-    assert reordered == selected
+    assert reordered.selected_markets == selected.selected_markets
     raw["3"]["acceptingOrders"] = False
     raw["4"]["outcomePrices"] = '["NaN", "0.6"]'
-    with pytest.raises(ValueError, match="short cohort block"):
+    rejected = select_block_candidates(
+        protocol,
+        block_ordinal=1,
+        selected_at=protocol.blocks[0].start + timedelta(seconds=1),
+        normalization=NormalizationReport(accepted=markets),
+        raw_by_market_id=raw,
+        source_payload_sha256="a" * 64,
+        source_entry_count=6,
+        source_retrieved_at=WINDOW_START,
+        earlier_event_ids=frozenset(),
+    )
+    assert rejected.status is BlockSelectionStatus.REJECTED_SHORT_BLOCK
+    assert not rejected.selected_markets
+    assert len(rejected.exclusions) == rejected.source_candidate_count
+    assert {item.reason for item in rejected.exclusions} >= {
+        CandidateExclusionReason.ORDER_BOOK_UNAVAILABLE,
+        CandidateExclusionReason.MALFORMED_PRICES,
+        CandidateExclusionReason.BLOCK_SHORTFALL,
+    }
+
+
+def test_duplicate_market_ids_fail_closed_independent_of_page_order() -> None:
+    protocol = _candidate()
+    markets = (_market(1), _market(1, event_id="different-event"), _market(2))
+    raw = {
+        market.market_id: {
+            "enableOrderBook": True,
+            "acceptingOrders": True,
+            "outcomePrices": ["0.4", "0.6"],
+        }
+        for market in markets
+    }
+    for page in (markets, tuple(reversed(markets))):
+        with pytest.raises(ValueError, match=r"duplicate market IDs.*'1'"):
+            select_block_candidates(
+                protocol,
+                block_ordinal=1,
+                selected_at=protocol.blocks[0].start + timedelta(seconds=1),
+                normalization=NormalizationReport(accepted=page),
+                raw_by_market_id=raw,
+                source_payload_sha256="a" * 64,
+                source_entry_count=3,
+                source_retrieved_at=WINDOW_START,
+                earlier_event_ids=frozenset(),
+            )
+
+
+def test_quarantined_and_missing_raw_candidates_keep_structured_reasons() -> None:
+    protocol = _candidate()
+    markets = tuple(_market(index) for index in range(1, 5))
+    raw = {
+        market.market_id: {
+            "enableOrderBook": True,
+            "acceptingOrders": True,
+            "outcomePrices": ["0.4", "0.6"],
+        }
+        for market in markets[1:]
+    }
+    quarantined = QuarantinedMarketV1(
+        market_id="invalid",
+        reason=RejectionReason.MALFORMED_PAYLOAD,
+        detail="synthetic unsupported input",
+        raw_payload_sha256="a" * 64,
+        quarantined_at=WINDOW_START,
+        normalizer_version="synthetic-test/1",
+    )
+    result = select_block_candidates(
+        protocol,
+        block_ordinal=1,
+        selected_at=protocol.blocks[0].start + timedelta(seconds=1),
+        normalization=NormalizationReport(accepted=markets, quarantined=(quarantined,)),
+        raw_by_market_id=raw,
+        source_payload_sha256="a" * 64,
+        source_entry_count=5,
+        source_retrieved_at=WINDOW_START,
+        earlier_event_ids=frozenset(),
+    )
+    assert result.status is BlockSelectionStatus.REJECTED_SHORT_BLOCK
+    assert len(result.exclusions) == result.source_candidate_count == 5
+    assert {item.reason for item in result.exclusions} >= {
+        CandidateExclusionReason.NORMALIZATION_REJECTED,
+        CandidateExclusionReason.RAW_ENTRY_MISSING,
+    }
+
+
+def test_selection_rejects_future_or_mismatched_source_evidence() -> None:
+    protocol = _candidate()
+    markets = tuple(_market(index) for index in range(1, 5))
+    raw = {
+        market.market_id: {
+            "enableOrderBook": True,
+            "acceptingOrders": True,
+            "outcomePrices": ["0.4", "0.6"],
+        }
+        for market in markets
+    }
+    args = {
+        "block_ordinal": 1,
+        "selected_at": WINDOW_START + timedelta(seconds=1),
+        "normalization": NormalizationReport(accepted=markets),
+        "raw_by_market_id": raw,
+        "source_payload_sha256": "a" * 64,
+        "source_entry_count": 4,
+        "source_retrieved_at": WINDOW_START,
+        "earlier_event_ids": frozenset(),
+    }
+    with pytest.raises(ValueError, match="retrieved after"):
+        select_block_candidates(
+            protocol, **{**args, "source_retrieved_at": WINDOW_START + timedelta(seconds=2)}
+        )
+    with pytest.raises(ValueError, match="discovery page digest"):
+        select_block_candidates(protocol, **{**args, "source_payload_sha256": "b" * 64})
+    with pytest.raises(ValueError, match="every discovery page entry"):
+        select_block_candidates(protocol, **{**args, "source_entry_count": 5})
+    with pytest.raises(ValueError, match="insufficient time remains"):
         select_block_candidates(
             protocol,
-            block_ordinal=1,
-            selected_at=protocol.blocks[0].start + timedelta(seconds=1),
-            markets=markets,
-            raw_by_market_id=raw,
-            earlier_event_ids=frozenset(),
+            **{
+                **args,
+                "selected_at": protocol.blocks[0].end - timedelta(seconds=479),
+            },
         )
+    with pytest.raises(ValueError, match="outside frozen block"):
+        select_block_candidates(
+            protocol,
+            **{**args, "selected_at": protocol.blocks[0].end},
+        )
+    future_market = markets[0].model_copy(
+        update={"normalized_at": WINDOW_START + timedelta(seconds=2)}
+    )
+    rejected = select_block_candidates(
+        protocol,
+        **{**args, "normalization": NormalizationReport(accepted=(future_market, *markets[1:]))},
+    )
+    assert rejected.status is BlockSelectionStatus.REJECTED_SHORT_BLOCK
+    assert CandidateExclusionReason.NORMALIZED_AFTER_SELECTION in {
+        item.reason for item in rejected.exclusions
+    }
 
 
 _SCRIPT = run_path(
