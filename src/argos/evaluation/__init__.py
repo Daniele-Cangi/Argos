@@ -32,6 +32,19 @@ from argos.evaluation.claim_artifact import (
     ProspectiveClaimArtifactIndexV1,
     verify_published_claim_artifact,
 )
+from argos.evaluation.late_monitor import (
+    LateLifecycleMonitor,
+    LateMonitoringScheduleV1,
+    LateResolutionProgressV1,
+    LateScoreDisposition,
+    LateScoringResultV1,
+    LifecycleMonitorGapEvidenceV1,
+    LifecyclePollResult,
+    LifecycleReceiptChainLinkV1,
+    build_late_monitoring_schedule_id,
+    pending_late_resolution_score,
+    score_late_final_outcome,
+)
 from argos.evaluation.late_resolution import (
     FrozenForecastSnapshotV1,
     LateFinalOutcomeV1,
@@ -39,6 +52,7 @@ from argos.evaluation.late_resolution import (
     build_late_final_outcome_id,
 )
 from argos.evaluation.late_resolution_archive import verify_late_outcome_archives
+from argos.evaluation.late_retrieval import LifecyclePollRetrievalV1
 from argos.evaluation.numeric import (
     EVALUATION_DECIMAL_CONTEXT,
     EVALUATION_PRECISION,
@@ -174,9 +188,18 @@ __all__ = [
     "FunctionalScenarioEvidenceV1",
     "HeadlineStatus",
     "LateFinalOutcomeV1",
+    "LateLifecycleMonitor",
+    "LateMonitoringScheduleV1",
+    "LateResolutionProgressV1",
+    "LateScoreDisposition",
+    "LateScoringResultV1",
     "LifecycleContinuityStatus",
+    "LifecycleMonitorGapEvidenceV1",
     "LifecycleObservationV1",
     "LifecyclePollEvidenceV1",
+    "LifecyclePollResult",
+    "LifecyclePollRetrievalV1",
+    "LifecycleReceiptChainLinkV1",
     "MeasurementLayerVerdict",
     "ProspectiveClaimArtifactIndexV1",
     "ProspectiveEvaluationResult",
@@ -219,6 +242,7 @@ __all__ = [
     "build_capture_run_summary",
     "build_frozen_forecast_snapshot_id",
     "build_late_final_outcome_id",
+    "build_late_monitoring_schedule_id",
     "build_lifecycle_poll_evidence",
     "build_target_exclusion",
     "build_target_exclusion_v2",
@@ -229,11 +253,13 @@ __all__ = [
     "evaluate_prospective_capture",
     "evaluation_context",
     "log_loss",
+    "pending_late_resolution_score",
     "prospective_experiment_digest_v2",
     "prospective_terminal_digest_v1",
     "require_bin_count",
     "require_epsilon",
     "score_forecast",
+    "score_late_final_outcome",
     "spread_bucket",
     "verify_late_outcome_archives",
     "verify_published_claim_artifact",

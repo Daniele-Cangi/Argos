@@ -63,8 +63,11 @@ claim edge or superiority from a partial cohort.
    snapshot, contiguous lifecycle/receipt chain and actual first-observed
    final retrieval time. Archive verification reloads every referenced record
    and source payload, re-normalizes Gamma finality and refuses an earlier raw
-   final hidden as nonfinal. This schema/verification slice is not yet a live
-   owner, gap ledger or scorer, so it does not satisfy the full gate.
+   final hidden as nonfinal. The late owner and scorer in PR #20 remain a
+   synthetic-tested implementation, not an integrated live cohort operator.
+   Each poll writes a separate append-only `LifecyclePollRetrievalV1` so
+   identical Gamma bytes cannot reuse the first retrieval timestamp as proof
+   of a later poll; a response timestamp before its request is rejected.
 3. Freeze the exact UTC blocks, query, bounds, cutoff rule, stopping rule,
    missingness, metrics, input identities and code revision in a new protocol.
    Test candidate availability without admitting probe observations.
