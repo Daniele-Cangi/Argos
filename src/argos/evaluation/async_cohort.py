@@ -354,15 +354,20 @@ def validate_block_admission(
     The caller must persist the public source bytes, contract and target receipts
     separately. This pure guard cannot establish their availability by itself.
     """
-    block, earlier_event_ids, earlier_conditions, earlier_tokens, _ = _validate_block_readiness(
-        protocol,
-        block_ordinal=block_ordinal,
-        selected_at=selected_at,
-        prior_block_selections=prior_block_selections,
-        prior_block_sources=prior_block_sources,
+    block, earlier_market_ids, earlier_event_ids, earlier_conditions, earlier_tokens, _ = (
+        _validate_block_readiness(
+            protocol,
+            block_ordinal=block_ordinal,
+            selected_at=selected_at,
+            prior_block_selections=prior_block_selections,
+            prior_block_sources=prior_block_sources,
+        )
     )
     if len(selected_markets) != block.intended_targets:
         raise ValueError("short cohort block must be rejected before forecast")
+    market_ids = {_market_identity(market.market_id) for market in selected_markets}
+    if len(market_ids) != len(selected_markets) or market_ids & earlier_market_ids:
+        raise ValueError("cohort target market identity was selected more than once")
     event_ids = tuple(market.event_id or "" for market in selected_markets)
     if any(not event_id.strip() for event_id in event_ids):
         raise ValueError("cohort targets need explicit Gamma event identities")
@@ -391,7 +396,9 @@ def _validate_block_readiness(
     selected_at: datetime,
     prior_block_selections: tuple[OfflineBlockSelectionV1, ...],
     prior_block_sources: tuple[bytes, ...],
-) -> tuple[CohortBlockV1, frozenset[str], frozenset[str], frozenset[str], str | None]:
+) -> tuple[
+    CohortBlockV1, frozenset[str], frozenset[str], frozenset[str], frozenset[str], str | None
+]:
     if not 1 <= block_ordinal <= len(protocol.blocks):
         raise ValueError("unknown cohort block")
     block = protocol.blocks[block_ordinal - 1]
@@ -400,6 +407,7 @@ def _validate_block_readiness(
     ):
         raise ValueError("cohort blocks must proceed in order without missing predecessors")
     protocol_digest = sha256_hex(orjson.dumps(protocol.to_record(), option=orjson.OPT_SORT_KEYS))
+    earlier_market_ids: set[str] = set()
     earlier_event_ids: set[str] = set()
     earlier_conditions: set[str] = set()
     earlier_tokens: set[str] = set()
@@ -435,6 +443,10 @@ def _validate_block_readiness(
             raise ValueError("prior cohort selection disagrees with its archived discovery page")
         for market in prior.selected_markets:
             assert market.event_id is not None
+            market_identity = _market_identity(market.market_id)
+            if market_identity in earlier_market_ids:
+                raise ValueError("prior cohort target market identity was selected more than once")
+            earlier_market_ids.add(market_identity)
             identity = _event_identity(market.event_id)
             if identity in earlier_event_ids:
                 raise ValueError("prior cohort target event identity was selected more than once")
@@ -459,6 +471,7 @@ def _validate_block_readiness(
         raise ValueError("insufficient time remains for bounded captures in this block")
     return (
         block,
+        frozenset(earlier_market_ids),
         frozenset(earlier_event_ids),
         frozenset(earlier_conditions),
         frozenset(earlier_tokens),
@@ -493,14 +506,19 @@ def select_block_candidates(
         raise ValueError("discovery receipt disagrees with frozen Gamma query or raw bytes")
     if retrieved_at > at:
         raise ValueError("discovery source cannot be retrieved after block selection")
-    block, earlier_event_ids, earlier_conditions, earlier_tokens, predecessor_digest = (
-        _validate_block_readiness(
-            protocol,
-            block_ordinal=block_ordinal,
-            selected_at=at,
-            prior_block_selections=prior_block_selections,
-            prior_block_sources=prior_block_sources,
-        )
+    (
+        block,
+        earlier_market_ids,
+        earlier_event_ids,
+        earlier_conditions,
+        earlier_tokens,
+        predecessor_digest,
+    ) = _validate_block_readiness(
+        protocol,
+        block_ordinal=block_ordinal,
+        selected_at=at,
+        prior_block_selections=prior_block_selections,
+        prior_block_sources=prior_block_sources,
     )
     if retrieved_at < block.start:
         raise ValueError("discovery source must be retrieved inside the selected block")
@@ -583,6 +601,14 @@ def select_block_candidates(
     required = block.intended_targets
     for market in eligible:
         assert market.event_id is not None
+        if _market_identity(market.market_id) in earlier_market_ids:
+            exclusions.append(
+                CandidateExclusionV1(
+                    market_id=market.market_id,
+                    reason=CandidateExclusionReason.MARKET_IDENTITY_REUSED,
+                )
+            )
+            continue
         identity = _event_identity(market.event_id)
         if identity in seen:
             exclusions.append(

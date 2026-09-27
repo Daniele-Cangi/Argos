@@ -668,6 +668,41 @@ def test_later_blocks_derive_independence_from_hash_linked_prior_records() -> No
         )
 
 
+def test_later_block_rejects_reused_market_id_despite_changed_other_identities() -> None:
+    protocol = _candidate()
+    first_source = _source(tuple(_market(index) for index in range(1, 5)))
+    first = select_block_candidates(
+        protocol,
+        block_ordinal=1,
+        selected_at=protocol.blocks[0].start,
+        source_payload_bytes=first_source,
+        source_retrieved_at=protocol.blocks[0].start,
+        prior_block_selections=(),
+    )
+    second_source = _source(
+        (_market(1, event_id="new-event"), *(_market(index) for index in range(5, 9))),
+        updates={
+            "1": {
+                "conditionId": _market(100).condition_id,
+                "clobTokenIds": ["900", "901"],
+            }
+        },
+    )
+    second = select_block_candidates(
+        protocol,
+        block_ordinal=2,
+        selected_at=protocol.blocks[1].start,
+        source_payload_bytes=second_source,
+        source_retrieved_at=protocol.blocks[1].start,
+        prior_block_selections=(first,),
+        prior_block_sources=(first_source,),
+    )
+    assert second.status is BlockSelectionStatus.ADMITTED
+    assert tuple(market.market_id for market in second.selected_markets) == ("5", "6", "7", "8")
+    assert second.exclusions[0].market_id == "1"
+    assert second.exclusions[0].reason is CandidateExclusionReason.MARKET_IDENTITY_REUSED
+
+
 def test_numeric_event_aliases_share_one_identity_at_selection() -> None:
     protocol = _candidate()
     markets = (

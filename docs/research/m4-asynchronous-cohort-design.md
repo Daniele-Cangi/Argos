@@ -92,8 +92,9 @@ claim edge or superiority from a partial cohort.
    event identities from admitted, hash-linked prior block records, including
    their capture-time reservation. Each predecessor is replayed from its
    archived discovery bytes before admission of the next block; callers cannot
-   supply an independent ID set. Numeric event-ID aliases count as the same
-   event. The protocol keeps
+   supply an independent ID set. Prior market, event, condition, and token
+   identities cannot be selected again, even if a later page changes other
+   fields. Numeric event-ID aliases count as the same event. The protocol keeps
    the earliest eligible target end
    after the final observation block; admitted records recheck distinct
    canonical market IDs, explicit event identities, distinct condition and
