@@ -26,7 +26,7 @@ from argos.evaluation.prospective import (
     CutoffBasis,
     ProspectiveExperimentProtocolV1,
 )
-from argos.ingestion.gamma_markets import NormalizationReport
+from argos.ingestion.gamma_markets import normalize_markets
 
 MAX_MARKET_ID_DIGITS = 128
 
@@ -245,6 +245,9 @@ class OfflineBlockSelectionV1(VersionedModel):
     selected_at: datetime
     status: BlockSelectionStatus
     protocol_sha256: str = Field(min_length=SHA256_LENGTH, max_length=SHA256_LENGTH)
+    predecessor_selection_sha256: str | None = Field(
+        default=None, min_length=SHA256_LENGTH, max_length=SHA256_LENGTH
+    )
     source_payload_sha256: str = Field(min_length=SHA256_LENGTH, max_length=SHA256_LENGTH)
     source_retrieved_at: datetime
     source_candidate_count: int = Field(ge=0)
@@ -260,6 +263,8 @@ class OfflineBlockSelectionV1(VersionedModel):
     def _partition_is_complete(self) -> OfflineBlockSelectionV1:
         if self.source_retrieved_at > self.selected_at:
             raise ValueError("discovery source cannot be retrieved after block selection")
+        if (self.block_ordinal == 1) != (self.predecessor_selection_sha256 is None):
+            raise ValueError("offline selection predecessor digest must follow block ordinal")
         if len(self.selected_markets) + len(self.exclusions) != self.source_candidate_count:
             raise ValueError("offline selection must account for every discovery entry")
         if self.status is BlockSelectionStatus.ADMITTED and len(self.selected_markets) != 4:
@@ -309,18 +314,18 @@ def validate_block_admission(
     block_ordinal: int,
     selected_at: datetime,
     event_ids: tuple[str, ...],
-    earlier_event_ids: frozenset[str],
+    prior_block_selections: tuple[OfflineBlockSelectionV1, ...],
 ) -> None:
     """Reject a partial/replacement block before any forecast is made.
 
     The caller must persist the public source bytes, contract and target receipts
     separately. This pure guard cannot establish their availability by itself.
     """
-    block = _validate_block_readiness(
+    block, earlier_event_ids, _ = _validate_block_readiness(
         protocol,
         block_ordinal=block_ordinal,
         selected_at=selected_at,
-        earlier_event_ids=earlier_event_ids,
+        prior_block_selections=prior_block_selections,
     )
     if len(event_ids) != block.intended_targets:
         raise ValueError("short cohort block must be rejected before forecast")
@@ -335,14 +340,36 @@ def _validate_block_readiness(
     *,
     block_ordinal: int,
     selected_at: datetime,
-    earlier_event_ids: frozenset[str],
-) -> CohortBlockV1:
+    prior_block_selections: tuple[OfflineBlockSelectionV1, ...],
+) -> tuple[CohortBlockV1, frozenset[str], str | None]:
     if not 1 <= block_ordinal <= len(protocol.blocks):
         raise ValueError("unknown cohort block")
     block = protocol.blocks[block_ordinal - 1]
-    expected_earlier = sum(item.intended_targets for item in protocol.blocks[: block_ordinal - 1])
-    if len(earlier_event_ids) != expected_earlier:
+    if len(prior_block_selections) != block_ordinal - 1:
         raise ValueError("cohort blocks must proceed in order without missing predecessors")
+    protocol_digest = sha256_hex(orjson.dumps(protocol.to_record(), option=orjson.OPT_SORT_KEYS))
+    earlier_event_ids: set[str] = set()
+    predecessor_digest: str | None = None
+    for ordinal, prior in enumerate(prior_block_selections, start=1):
+        earlier_block = protocol.blocks[ordinal - 1]
+        if (
+            prior.experiment_id != protocol.experiment_id
+            or prior.protocol_sha256 != protocol_digest
+            or prior.block_ordinal != ordinal
+            or prior.status is not BlockSelectionStatus.ADMITTED
+            or prior.predecessor_selection_sha256 != predecessor_digest
+            or not earlier_block.start <= prior.source_retrieved_at <= prior.selected_at
+            or not prior.selected_at < earlier_block.end
+        ):
+            raise ValueError("prior cohort blocks must form an admitted, hash-linked chain")
+        for market in prior.selected_markets:
+            assert market.event_id is not None
+            if market.event_id in earlier_event_ids:
+                raise ValueError("prior cohort target event identity was selected more than once")
+            earlier_event_ids.add(market.event_id)
+        predecessor_digest = sha256_hex(
+            orjson.dumps(prior.to_record(), option=orjson.OPT_SORT_KEYS)
+        )
     at = ensure_utc(selected_at)
     if not block.start <= at < block.end:
         raise ValueError("target selection falls outside frozen block")
@@ -350,7 +377,7 @@ def _validate_block_readiness(
     needed = timedelta(seconds=block.intended_targets * protocol.capture_max_seconds_per_target)
     if remaining < needed:
         raise ValueError("insufficient time remains for bounded captures in this block")
-    return block
+    return block, frozenset(earlier_event_ids), predecessor_digest
 
 
 def select_block_candidates(
@@ -358,40 +385,43 @@ def select_block_candidates(
     *,
     block_ordinal: int,
     selected_at: datetime,
-    normalization: NormalizationReport,
-    raw_by_market_id: dict[str, dict[str, Any]],
-    source_payload_sha256: str,
-    source_entry_count: int,
+    source_payload_bytes: bytes,
     source_retrieved_at: datetime,
-    earlier_event_ids: frozenset[str],
+    prior_block_selections: tuple[OfflineBlockSelectionV1, ...],
 ) -> OfflineBlockSelectionV1:
     """Rank an archived Gamma page; reject the whole block on shortfall.
 
     This does not fetch, persist, capture or forecast. The future live adapter
-    must bind the exact raw page and source retrieval before calling it.
+    must archive the exact raw page and its retrieval before calling it.
     """
     at = ensure_utc(selected_at)
     retrieved_at = ensure_utc(source_retrieved_at)
     if retrieved_at > at:
         raise ValueError("discovery source cannot be retrieved after block selection")
-    if len(source_payload_sha256) != SHA256_LENGTH:
-        raise ValueError("discovery source needs its archived SHA-256 identity")
-    if source_entry_count != normalization.total:
-        raise ValueError("normalization does not account for every discovery page entry")
-    if any(
-        item.raw_payload_sha256 != source_payload_sha256 for item in normalization.accepted
-    ) or any(
-        item.raw_payload_sha256 != source_payload_sha256 for item in normalization.quarantined
-    ):
-        raise ValueError("normalized candidates disagree with the discovery page digest")
-    block = _validate_block_readiness(
+    block, earlier_event_ids, predecessor_digest = _validate_block_readiness(
         protocol,
         block_ordinal=block_ordinal,
         selected_at=at,
-        earlier_event_ids=earlier_event_ids,
+        prior_block_selections=prior_block_selections,
     )
     if retrieved_at < block.start:
         raise ValueError("discovery source must be retrieved inside the selected block")
+    try:
+        page = orjson.loads(source_payload_bytes)
+    except orjson.JSONDecodeError as error:
+        raise ValueError("discovery source is not valid JSON") from error
+    if not isinstance(page, list):
+        raise ValueError("discovery source must be a market page")
+    source_payload_sha256 = sha256_hex(source_payload_bytes)
+    normalization = normalize_markets(
+        page, raw_payload_sha256=source_payload_sha256, normalized_at=retrieved_at
+    )
+    raw_by_market_id: dict[str, dict[str, Any]] = {}
+    for entry in page:
+        if isinstance(entry, dict):
+            market_id = entry.get("id")
+            if isinstance(market_id, str | int) and not isinstance(market_id, bool):
+                raw_by_market_id[str(market_id)] = entry
     selection = protocol.selection
     all_ids = [
         market_id
@@ -472,7 +502,7 @@ def select_block_candidates(
             block_ordinal=block_ordinal,
             selected_at=at,
             event_ids=tuple(market.event_id or "" for market in chosen),
-            earlier_event_ids=earlier_event_ids,
+            prior_block_selections=prior_block_selections,
         )
         status = BlockSelectionStatus.ADMITTED
     return OfflineBlockSelectionV1(
@@ -481,9 +511,10 @@ def select_block_candidates(
         selected_at=at,
         status=status,
         protocol_sha256=sha256_hex(orjson.dumps(protocol.to_record(), option=orjson.OPT_SORT_KEYS)),
+        predecessor_selection_sha256=predecessor_digest,
         source_payload_sha256=source_payload_sha256,
         source_retrieved_at=retrieved_at,
-        source_candidate_count=source_entry_count,
+        source_candidate_count=len(page),
         selected_markets=tuple(chosen),
         exclusions=tuple(exclusions),
     )

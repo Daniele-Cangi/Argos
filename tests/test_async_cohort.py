@@ -7,12 +7,14 @@ from decimal import Decimal
 from pathlib import Path
 from runpy import run_path
 
+import orjson
 import pytest
 from pydantic import ValidationError
 from test_prospective_evidence import DECLARED_AT, WINDOW_START, _protocol
 
-from argos.domain.market import MarketDefinitionV1, QuarantinedMarketV1
-from argos.errors import RejectionReason, SchemaVersionError
+from argos.domain.market import MarketDefinitionV1
+from argos.domain.provenance import sha256_hex
+from argos.errors import SchemaVersionError
 from argos.evaluation.async_cohort import (
     AsynchronousCohortProtocolV1,
     BlockSelectionStatus,
@@ -28,7 +30,6 @@ from argos.evaluation.prospective import (
     load_persisted_record,
     persist_evidence_record,
 )
-from argos.ingestion.gamma_markets import NormalizationReport
 
 
 def _candidate(**updates: object) -> AsynchronousCohortProtocolV1:
@@ -176,40 +177,49 @@ def test_block_admission_is_atomic_and_never_reuses_event() -> None:
     protocol = _candidate()
     valid = ("event-a", "event-b", "event-c", "event-d")
     at = protocol.blocks[1].start + timedelta(seconds=1)
-    earlier_events = frozenset({"earlier-1", "earlier-2", "earlier-3", "earlier-4"})
+    prior = _prior_selection(protocol)
     validate_block_admission(
         protocol,
         block_ordinal=2,
         selected_at=at,
         event_ids=valid,
-        earlier_event_ids=earlier_events,
+        prior_block_selections=(prior,),
     )
     cases = [
-        (at, valid[:3], earlier_events, "short"),
-        (at, ("event-a", "event-a", "event-c", "event-d"), earlier_events, "more than once"),
+        (at, valid[:3], (prior,), "short"),
+        (at, ("event-a", "event-a", "event-c", "event-d"), (prior,), "more than once"),
         (
             at,
             valid,
-            frozenset({"event-c", "earlier-2", "earlier-3", "earlier-4"}),
+            (
+                prior.model_copy(
+                    update={
+                        "selected_markets": (
+                            prior.selected_markets[0].model_copy(update={"event_id": "event-c"}),
+                            *prior.selected_markets[1:],
+                        )
+                    }
+                ),
+            ),
             "more than once",
         ),
-        (protocol.blocks[1].end, valid, earlier_events, "outside frozen block"),
-        (at, valid, frozenset(), "missing predecessors"),
+        (protocol.blocks[1].end, valid, (prior,), "outside frozen block"),
+        (at, valid, (), "missing predecessors"),
         (
             protocol.blocks[1].end - timedelta(seconds=479),
             valid,
-            earlier_events,
+            (prior,),
             "insufficient time remains",
         ),
     ]
-    for selected_at, event_ids, earlier, message in cases:
+    for selected_at, event_ids, predecessors, message in cases:
         with pytest.raises(ValueError, match=message):
             validate_block_admission(
                 protocol,
                 block_ordinal=2,
                 selected_at=selected_at,
                 event_ids=event_ids,
-                earlier_event_ids=earlier,
+                prior_block_selections=predecessors,
             )
 
 
@@ -236,6 +246,62 @@ def _market(market_id: int, *, event_id: str | None = None) -> MarketDefinitionV
     )
 
 
+def _prior_selection(protocol: AsynchronousCohortProtocolV1) -> OfflineBlockSelectionV1:
+    markets = tuple(
+        _market(index).model_copy(update={"event_id": f"earlier-{index}"})
+        for index in range(100, 104)
+    )
+    return OfflineBlockSelectionV1(
+        experiment_id=protocol.experiment_id,
+        block_ordinal=1,
+        selected_at=protocol.blocks[0].start,
+        status=BlockSelectionStatus.ADMITTED,
+        protocol_sha256=sha256_hex(orjson.dumps(protocol.to_record(), option=orjson.OPT_SORT_KEYS)),
+        source_payload_sha256="a" * 64,
+        source_retrieved_at=protocol.blocks[0].start,
+        source_candidate_count=4,
+        selected_markets=markets,
+        exclusions=(),
+    )
+
+
+def _raw_market(market: MarketDefinitionV1, **updates: object) -> dict[str, object]:
+    entry: dict[str, object] = {
+        "id": market.market_id,
+        "conditionId": market.condition_id,
+        "slug": market.slug,
+        "events": [{"id": market.event_id}] if market.event_id is not None else [],
+        "question": market.question,
+        "description": market.description,
+        "resolutionSource": market.resolution_source,
+        "startDate": market.start_time.isoformat() if market.start_time is not None else None,
+        "endDate": market.end_time.isoformat() if market.end_time is not None else None,
+        "active": market.active,
+        "closed": market.closed,
+        "archived": market.archived,
+        "liquidity": str(market.liquidity) if market.liquidity is not None else None,
+        "outcomes": list(market.outcomes),
+        "clobTokenIds": [market.outcome_token_map[outcome] for outcome in market.outcomes],
+        "enableOrderBook": True,
+        "acceptingOrders": True,
+        "outcomePrices": '["0.4", "0.6"]',
+    }
+    entry.update(updates)
+    return entry
+
+
+def _source(
+    markets: tuple[MarketDefinitionV1, ...],
+    *,
+    updates: dict[str, dict[str, object]] | None = None,
+    extra: tuple[object, ...] = (),
+) -> bytes:
+    return orjson.dumps(
+        [_raw_market(market, **(updates or {}).get(market.market_id, {})) for market in markets]
+        + list(extra)
+    )
+
+
 def test_offline_selector_is_deterministic_atomic_and_independent() -> None:
     protocol = _candidate()
     markets = (
@@ -246,24 +312,13 @@ def test_offline_selector_is_deterministic_atomic_and_independent() -> None:
         _market(1),
         _market(5),
     )
-    raw = {
-        market.market_id: {
-            "enableOrderBook": True,
-            "acceptingOrders": True,
-            "outcomePrices": '["0.4", "0.6"]',
-        }
-        for market in markets
-    }
     selected = select_block_candidates(
         protocol,
         block_ordinal=1,
         selected_at=protocol.blocks[0].start + timedelta(seconds=1),
-        normalization=NormalizationReport(accepted=markets),
-        raw_by_market_id=raw,
-        source_payload_sha256="a" * 64,
-        source_entry_count=6,
+        source_payload_bytes=_source(markets),
         source_retrieved_at=WINDOW_START,
-        earlier_event_ids=frozenset(),
+        prior_block_selections=(),
     )
     assert selected.status is BlockSelectionStatus.ADMITTED
     assert tuple(market.market_id for market in selected.selected_markets) == ("1", "3", "4", "5")
@@ -302,26 +357,26 @@ def test_offline_selector_is_deterministic_atomic_and_independent() -> None:
         protocol,
         block_ordinal=1,
         selected_at=protocol.blocks[0].start + timedelta(seconds=1),
-        normalization=NormalizationReport(accepted=tuple(reversed(markets))),
-        raw_by_market_id=raw,
-        source_payload_sha256="a" * 64,
-        source_entry_count=6,
+        source_payload_bytes=_source(tuple(reversed(markets))),
         source_retrieved_at=WINDOW_START,
-        earlier_event_ids=frozenset(),
+        prior_block_selections=(),
     )
-    assert reordered.selected_markets == selected.selected_markets
-    raw["3"]["acceptingOrders"] = False
-    raw["4"]["outcomePrices"] = '["NaN", "0.6"]'
+    assert tuple(market.market_id for market in reordered.selected_markets) == tuple(
+        market.market_id for market in selected.selected_markets
+    )
     rejected = select_block_candidates(
         protocol,
         block_ordinal=1,
         selected_at=protocol.blocks[0].start + timedelta(seconds=1),
-        normalization=NormalizationReport(accepted=markets),
-        raw_by_market_id=raw,
-        source_payload_sha256="a" * 64,
-        source_entry_count=6,
+        source_payload_bytes=_source(
+            markets,
+            updates={
+                "3": {"acceptingOrders": False},
+                "4": {"outcomePrices": '["NaN", "0.6"]'},
+            },
+        ),
         source_retrieved_at=WINDOW_START,
-        earlier_event_ids=frozenset(),
+        prior_block_selections=(),
     )
     assert rejected.status is BlockSelectionStatus.REJECTED_SHORT_BLOCK
     assert not rejected.selected_markets
@@ -336,26 +391,15 @@ def test_offline_selector_is_deterministic_atomic_and_independent() -> None:
 def test_duplicate_market_ids_fail_closed_independent_of_page_order() -> None:
     protocol = _candidate()
     markets = (_market(1), _market(1, event_id="different-event"), _market(2))
-    raw = {
-        market.market_id: {
-            "enableOrderBook": True,
-            "acceptingOrders": True,
-            "outcomePrices": ["0.4", "0.6"],
-        }
-        for market in markets
-    }
     for page in (markets, tuple(reversed(markets))):
         with pytest.raises(ValueError, match=r"duplicate market IDs.*'1'"):
             select_block_candidates(
                 protocol,
                 block_ordinal=1,
                 selected_at=protocol.blocks[0].start + timedelta(seconds=1),
-                normalization=NormalizationReport(accepted=page),
-                raw_by_market_id=raw,
-                source_payload_sha256="a" * 64,
-                source_entry_count=3,
+                source_payload_bytes=_source(page),
                 source_retrieved_at=WINDOW_START,
-                earlier_event_ids=frozenset(),
+                prior_block_selections=(),
             )
     alias = markets[1].model_copy(update={"market_id": "01"})
     with pytest.raises(ValueError, match="duplicate market IDs"):
@@ -363,73 +407,86 @@ def test_duplicate_market_ids_fail_closed_independent_of_page_order() -> None:
             protocol,
             block_ordinal=1,
             selected_at=WINDOW_START + timedelta(seconds=1),
-            normalization=NormalizationReport(accepted=(markets[0], alias)),
-            raw_by_market_id=raw,
-            source_payload_sha256="a" * 64,
-            source_entry_count=2,
+            source_payload_bytes=_source((markets[0], alias)),
             source_retrieved_at=WINDOW_START,
-            earlier_event_ids=frozenset(),
+            prior_block_selections=(),
         )
 
 
-def test_quarantined_and_missing_raw_candidates_keep_structured_reasons() -> None:
+def test_later_blocks_derive_independence_from_hash_linked_prior_records() -> None:
     protocol = _candidate()
-    markets = tuple(_market(index) for index in range(1, 5))
-    raw = {
-        market.market_id: {
-            "enableOrderBook": True,
-            "acceptingOrders": True,
-            "outcomePrices": ["0.4", "0.6"],
-        }
-        for market in markets[1:]
-    }
-    quarantined = QuarantinedMarketV1(
-        market_id="invalid",
-        reason=RejectionReason.MALFORMED_PAYLOAD,
-        detail="synthetic unsupported input",
-        raw_payload_sha256="a" * 64,
-        quarantined_at=WINDOW_START,
-        normalizer_version="synthetic-test/1",
+    first = select_block_candidates(
+        protocol,
+        block_ordinal=1,
+        selected_at=protocol.blocks[0].start,
+        source_payload_bytes=_source(tuple(_market(index) for index in range(100, 104))),
+        source_retrieved_at=protocol.blocks[0].start,
+        prior_block_selections=(),
     )
+    second = select_block_candidates(
+        protocol,
+        block_ordinal=2,
+        selected_at=protocol.blocks[1].start,
+        source_payload_bytes=_source(
+            (_market(1, event_id="event-100"), *(_market(index) for index in range(2, 6)))
+        ),
+        source_retrieved_at=protocol.blocks[1].start,
+        prior_block_selections=(first,),
+    )
+    assert second.status is BlockSelectionStatus.ADMITTED
+    assert CandidateExclusionReason.EVENT_ID_REUSED in {item.reason for item in second.exclusions}
+    assert second.predecessor_selection_sha256 == sha256_hex(
+        orjson.dumps(first.to_record(), option=orjson.OPT_SORT_KEYS)
+    )
+    third_args = {
+        "block_ordinal": 3,
+        "selected_at": protocol.blocks[2].start,
+        "source_payload_bytes": _source(tuple(_market(index) for index in range(10, 14))),
+        "source_retrieved_at": protocol.blocks[2].start,
+        "prior_block_selections": (first, second),
+    }
+    third = select_block_candidates(protocol, **third_args)
+    assert third.status is BlockSelectionStatus.ADMITTED
+    assert third.predecessor_selection_sha256 == sha256_hex(
+        orjson.dumps(second.to_record(), option=orjson.OPT_SORT_KEYS)
+    )
+    forged = second.model_copy(update={"predecessor_selection_sha256": "b" * 64})
+    with pytest.raises(ValueError, match="hash-linked chain"):
+        select_block_candidates(
+            protocol, **{**third_args, "prior_block_selections": (first, forged)}
+        )
+    with pytest.raises(ValueError, match="missing predecessors"):
+        select_block_candidates(protocol, **{**third_args, "prior_block_selections": (first,)})
+
+
+def test_quarantined_candidates_keep_structured_reasons() -> None:
+    protocol = _candidate()
+    markets = tuple(_market(index) for index in range(1, 4))
     result = select_block_candidates(
         protocol,
         block_ordinal=1,
         selected_at=protocol.blocks[0].start + timedelta(seconds=1),
-        normalization=NormalizationReport(accepted=markets, quarantined=(quarantined,)),
-        raw_by_market_id=raw,
-        source_payload_sha256="a" * 64,
-        source_entry_count=5,
+        source_payload_bytes=_source(markets, extra=({"id": "invalid"},)),
         source_retrieved_at=WINDOW_START,
-        earlier_event_ids=frozenset(),
+        prior_block_selections=(),
     )
     assert result.status is BlockSelectionStatus.REJECTED_SHORT_BLOCK
-    assert len(result.exclusions) == result.source_candidate_count == 5
+    assert len(result.exclusions) == result.source_candidate_count == 4
     assert {item.reason for item in result.exclusions} >= {
         CandidateExclusionReason.NORMALIZATION_REJECTED,
-        CandidateExclusionReason.RAW_ENTRY_MISSING,
+        CandidateExclusionReason.BLOCK_SHORTFALL,
     }
 
 
-def test_selection_rejects_future_or_mismatched_source_evidence() -> None:
+def test_selection_rejects_stale_or_malformed_source_evidence() -> None:
     protocol = _candidate()
     markets = tuple(_market(index) for index in range(1, 5))
-    raw = {
-        market.market_id: {
-            "enableOrderBook": True,
-            "acceptingOrders": True,
-            "outcomePrices": ["0.4", "0.6"],
-        }
-        for market in markets
-    }
     args = {
         "block_ordinal": 1,
         "selected_at": WINDOW_START + timedelta(seconds=1),
-        "normalization": NormalizationReport(accepted=markets),
-        "raw_by_market_id": raw,
-        "source_payload_sha256": "a" * 64,
-        "source_entry_count": 4,
+        "source_payload_bytes": _source(markets),
         "source_retrieved_at": WINDOW_START,
-        "earlier_event_ids": frozenset(),
+        "prior_block_selections": (),
     }
     with pytest.raises(ValueError, match="retrieved after"):
         select_block_candidates(
@@ -439,10 +496,10 @@ def test_selection_rejects_future_or_mismatched_source_evidence() -> None:
         select_block_candidates(
             protocol, **{**args, "source_retrieved_at": WINDOW_START - timedelta(seconds=1)}
         )
-    with pytest.raises(ValueError, match="discovery page digest"):
-        select_block_candidates(protocol, **{**args, "source_payload_sha256": "b" * 64})
-    with pytest.raises(ValueError, match="every discovery page entry"):
-        select_block_candidates(protocol, **{**args, "source_entry_count": 5})
+    with pytest.raises(ValueError, match="not valid JSON"):
+        select_block_candidates(protocol, **{**args, "source_payload_bytes": b"not json"})
+    with pytest.raises(ValueError, match="market page"):
+        select_block_candidates(protocol, **{**args, "source_payload_bytes": b"{}"})
     with pytest.raises(ValueError, match="insufficient time remains"):
         select_block_candidates(
             protocol,
@@ -456,16 +513,18 @@ def test_selection_rejects_future_or_mismatched_source_evidence() -> None:
             protocol,
             **{**args, "selected_at": protocol.blocks[0].end},
         )
-    future_market = markets[0].model_copy(
-        update={"normalized_at": WINDOW_START + timedelta(seconds=2)}
-    )
-    rejected = select_block_candidates(
+    selected = select_block_candidates(protocol, **args)
+    altered = select_block_candidates(
         protocol,
-        **{**args, "normalization": NormalizationReport(accepted=(future_market, *markets[1:]))},
+        **{
+            **args,
+            "source_payload_bytes": _source(markets, updates={"1": {"acceptingOrders": False}}),
+        },
     )
-    assert rejected.status is BlockSelectionStatus.REJECTED_SHORT_BLOCK
-    assert CandidateExclusionReason.NORMALIZED_AFTER_SELECTION in {
-        item.reason for item in rejected.exclusions
+    assert selected.source_payload_sha256 != altered.source_payload_sha256
+    assert altered.status is BlockSelectionStatus.REJECTED_SHORT_BLOCK
+    assert CandidateExclusionReason.ORDER_BOOK_UNAVAILABLE in {
+        item.reason for item in altered.exclusions
     }
 
 
@@ -480,6 +539,7 @@ def test_selection_rejects_future_or_mismatched_source_evidence() -> None:
         ({"archived": True}, {}, CandidateExclusionReason.ARCHIVED),
         ({"outcomes": ("No", "Yes")}, {}, CandidateExclusionReason.NOT_BINARY_YES_NO),
         ({"end_time": None}, {}, CandidateExclusionReason.END_TIME_OUT_OF_RANGE),
+        ({}, {"liquidity": "NaN"}, CandidateExclusionReason.NORMALIZATION_REJECTED),
         ({"liquidity": Decimal(1)}, {}, CandidateExclusionReason.LIQUIDITY_BELOW_MINIMUM),
         ({}, {"enableOrderBook": False}, CandidateExclusionReason.ORDER_BOOK_UNAVAILABLE),
         ({}, {"outcomePrices": "not json"}, CandidateExclusionReason.MALFORMED_PRICES),
@@ -498,22 +558,13 @@ def test_candidate_exclusion_is_recorded_for_each_guard(
 ) -> None:
     protocol = _candidate()
     market = _market(1).model_copy(update=market_update)
-    raw = {
-        "enableOrderBook": True,
-        "acceptingOrders": True,
-        "outcomePrices": ["0.4", "0.6"],
-        **raw_update,
-    }
     result = select_block_candidates(
         protocol,
         block_ordinal=1,
         selected_at=WINDOW_START + timedelta(seconds=1),
-        normalization=NormalizationReport(accepted=(market,)),
-        raw_by_market_id={market.market_id: raw},
-        source_payload_sha256="a" * 64,
-        source_entry_count=1,
+        source_payload_bytes=_source((market,), updates={market.market_id: raw_update}),
         source_retrieved_at=WINDOW_START,
-        earlier_event_ids=frozenset(),
+        prior_block_selections=(),
     )
     assert result.status is BlockSelectionStatus.REJECTED_SHORT_BLOCK
     assert result.exclusions[0].reason is reason
