@@ -530,6 +530,24 @@ def test_unidentified_source_entry_fails_closed() -> None:
         )
 
 
+def test_malformed_entry_with_integer_id_remains_accountable() -> None:
+    protocol = _candidate()
+    selected = select_block_candidates(
+        protocol,
+        block_ordinal=1,
+        selected_at=WINDOW_START,
+        source_payload_bytes=_source(
+            tuple(_market(index) for index in range(2, 6)), extra=({"id": 1},)
+        ),
+        source_retrieved_at=WINDOW_START,
+        prior_block_selections=(),
+    )
+    assert selected.status is BlockSelectionStatus.ADMITTED
+    assert selected.source_candidate_count == 5
+    assert selected.exclusions[0].market_id == "1"
+    assert selected.exclusions[0].reason is CandidateExclusionReason.NORMALIZATION_REJECTED
+
+
 def test_liquidity_rank_is_independent_of_decimal_context() -> None:
     protocol = _candidate()
     markets = tuple(

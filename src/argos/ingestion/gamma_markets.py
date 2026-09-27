@@ -177,8 +177,14 @@ def _quarantine(
     normalized_at: datetime,
 ) -> QuarantinedMarketV1:
     identifiers = payload if isinstance(payload, dict) else {}
+    raw_market_id = identifiers.get("id")
+    market_id = (
+        str(raw_market_id)
+        if isinstance(raw_market_id, int) and not isinstance(raw_market_id, bool)
+        else _optional_text(identifiers, "id")
+    )
     return QuarantinedMarketV1(
-        market_id=_optional_text(identifiers, "id"),
+        market_id=market_id,
         slug=_optional_text(identifiers, "slug"),
         reason=error.reason,
         detail=error.message,
