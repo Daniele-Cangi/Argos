@@ -711,6 +711,131 @@ async def test_regular_polls_use_the_indexed_chain_without_rescanning_archive(
     assert reads == 1
 
 
+@pytest.mark.anyio
+async def test_alternating_owners_refresh_the_cached_lifecycle_chain(tmp_path: Path) -> None:
+    schedule_at = DEADLINE + timedelta(seconds=20)
+    first_at = schedule_at + timedelta(seconds=1)
+    second_at = first_at + timedelta(seconds=61)
+    third_at = second_at + timedelta(seconds=61)
+    first_clock = _Clock(schedule_at)
+    first_owner = _monitor(
+        tmp_path,
+        first_clock,
+        [
+            _response(_pending_payload(), first_at),
+            _response(_pending_payload(), third_at),
+        ],
+    )
+
+    first = await first_owner.poll_once()
+    assert first.next_poll_at is not None
+    assert len(first_owner._load_chain()) == 1
+
+    second_owner = _monitor(
+        tmp_path,
+        _Clock(first.next_poll_at),
+        [_response(_pending_payload(), second_at)],
+    )
+    second = await second_owner.poll_once()
+    assert second.next_poll_at is not None
+    assert second.checkpoint.next_ordinal == 2
+
+    first_clock.set(second.next_poll_at)
+    third = await first_owner.poll_once()
+
+    assert third.poll_performed
+    assert third.observation is not None and third.observation.ordinal == 3
+    assert third.checkpoint.next_ordinal == 3
+    assert len(first_owner._load_chain()) == 3
+    assert cast(_Source, first_owner.source).calls == 2
+    assert cast(_Source, second_owner.source).calls == 1
+
+
+@pytest.mark.anyio
+async def test_cached_owner_recovers_another_owners_uncheckpointed_poll(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    schedule_at = DEADLINE + timedelta(seconds=20)
+    first_at = schedule_at + timedelta(seconds=1)
+    second_at = first_at + timedelta(seconds=61)
+    first_clock = _Clock(schedule_at)
+    first_owner = _monitor(
+        tmp_path,
+        first_clock,
+        [_response(_pending_payload(), first_at)],
+    )
+    first = await first_owner.poll_once()
+    assert first.next_poll_at is not None
+    assert len(first_owner._load_chain()) == 1
+
+    second_owner = _monitor(
+        tmp_path,
+        _Clock(first.next_poll_at),
+        [_response(_pending_payload(), second_at)],
+    )
+    original_save = second_owner.monitor.save
+
+    def fail_second_checkpoint(checkpoint: ResumableMonitorCheckpointV1) -> None:
+        if checkpoint.next_ordinal == 2:
+            raise OSError("simulated checkpoint rename failure")
+        original_save(checkpoint)
+
+    monkeypatch.setattr(second_owner.monitor, "save", fail_second_checkpoint)
+    with pytest.raises(OSError, match="simulated checkpoint rename failure"):
+        await second_owner.poll_once()
+    assert first_owner.monitor.load().next_ordinal == 1
+
+    first_clock.set(second_at + timedelta(seconds=1))
+    recovered = await first_owner.poll_once()
+
+    assert not recovered.poll_performed
+    assert recovered.observation is not None and recovered.observation.ordinal == 2
+    assert recovered.checkpoint.next_ordinal == 2
+    assert cast(_Source, first_owner.source).calls == 1
+    assert len(first_owner._load_chain()) == 2
+
+
+@pytest.mark.anyio
+async def test_cached_owner_recovers_another_owners_uncheckpointed_gap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    schedule_at = DEADLINE + timedelta(seconds=20)
+    first_at = schedule_at + timedelta(seconds=1)
+    first_clock = _Clock(schedule_at)
+    first_owner = _monitor(
+        tmp_path,
+        first_clock,
+        [_response(_pending_payload(), first_at)],
+    )
+    first = await first_owner.poll_once()
+    assert first.next_poll_at is not None
+    assert first_owner._load_gap_evidence() == []
+
+    second_clock = _Clock(first.next_poll_at)
+    second_owner = _monitor(tmp_path, second_clock, [TimeoutError("Gamma unavailable")])
+    original_save = second_owner.monitor.save
+
+    def fail_gap_checkpoint(checkpoint: ResumableMonitorCheckpointV1) -> None:
+        if checkpoint.gaps:
+            raise OSError("simulated gap checkpoint rename failure")
+        original_save(checkpoint)
+
+    monkeypatch.setattr(second_owner.monitor, "save", fail_gap_checkpoint)
+    with pytest.raises(OSError, match="simulated gap checkpoint rename failure"):
+        await second_owner.poll_once()
+    assert first_owner.monitor.load().gaps == ()
+
+    first_clock.set(second_clock.now() + timedelta(seconds=1))
+    recovered = await first_owner.poll_once()
+
+    assert not recovered.poll_performed
+    assert recovered.checkpoint.next_ordinal == 1
+    assert len(recovered.checkpoint.gaps) == 1
+    assert "Gamma unavailable" in recovered.checkpoint.gaps[0].reason
+    assert len(first_owner._load_gap_evidence()) == 1
+    assert cast(_Source, first_owner.source).calls == 1
+
+
 @pytest.mark.parametrize(
     ("receipt_name", "kind_name", "record_name", "artifact_name"),
     [

@@ -775,6 +775,7 @@ class LateLifecycleMonitor:
         self._gap_cache: (
             list[tuple[LifecycleMonitorGapEvidenceV1, EvidencePersistenceReceiptV1]] | None
         ) = None
+        self._cache_archive_names: frozenset[str] | None = None
         self._minimum_retrieved_at: datetime | None = None
         self._campaign_id = f"{protocol.experiment_id}:{target.target_id}"
         self._configuration_sha256 = record_sha256(
@@ -917,6 +918,9 @@ class LateLifecycleMonitor:
                 final_outcome.append((outcome, outcome_receipt))
             else:
                 final_outcome.append(None)
+            # This snapshot is taken while the lease is held. A different owner
+            # appending after release will then invalidate our cached chain.
+            self._mark_archive_cache_current()
             return PollCommit(
                 ordinal=checkpoint.next_ordinal,
                 receipt_id=receipt.receipt_id,
@@ -941,19 +945,19 @@ class LateLifecycleMonitor:
         except _AlreadyFinal:
             checkpoint = self.monitor.load()
             return self._result_from_checkpoint(checkpoint, poll_performed=False, next_poll_at=None)
-        except Exception:
+        except BaseException:
             # A poll may have durably appended evidence before a later step or
             # checkpoint write failed. Force the next attempt to reconcile the
             # archive rather than trusting an in-memory head that may be stale.
-            self._chain_cache = None
+            self._invalidate_archive_cache()
             raise
         if len(committed) != 1 or len(final_outcome) != 1:
-            self._chain_cache = None
+            self._invalidate_archive_cache()
             raise RuntimeError("late monitor returned without exactly one durable poll")
         observation, receipt = committed[0]
         chain = self._load_chain()
         if len(chain) + 1 != observation.ordinal:
-            self._chain_cache = None
+            self._invalidate_archive_cache()
             raise RuntimeError("committed lifecycle ordinal disagrees with the cached chain head")
         chain.append((observation, receipt))
         outcome_tuple = final_outcome[0]
@@ -981,6 +985,7 @@ class LateLifecycleMonitor:
             or checkpoint.configuration_sha256 != self._configuration_sha256
         ):
             raise ValueError("late monitor checkpoint belongs to another frozen schedule")
+        self._refresh_archive_caches()
         chain = self._load_chain()
         if checkpoint.next_ordinal > len(chain):
             raise ValueError("checkpoint is ahead of the durable lifecycle evidence")
@@ -1017,6 +1022,8 @@ class LateLifecycleMonitor:
                 }
             )
         reconciled = self._reconcile_archived_gaps(checkpoint, reconciled, chain)
+        # Loading a stale chain may itself repair a missing receipt link.
+        self._mark_archive_cache_current()
 
         if chain and chain[-1][0].finality is ResolutionStatus.FINAL:
             # The durable observation is authoritative if a crash happened
@@ -1064,7 +1071,28 @@ class LateLifecycleMonitor:
             )
             reconciled = gap
             self._minimum_retrieved_at = now
+            self._mark_archive_cache_current()
         return reconciled
+
+    def _archived_evidence_names(self) -> frozenset[str]:
+        return frozenset(
+            path.name for path in (self.evidence_archive / "argos_evidence").glob("*.raw.json")
+        )
+
+    def _refresh_archive_caches(self) -> None:
+        names = self._archived_evidence_names()
+        if names != self._cache_archive_names:
+            self._chain_cache = None
+            self._gap_cache = None
+        self._cache_archive_names = names
+
+    def _mark_archive_cache_current(self) -> None:
+        self._cache_archive_names = self._archived_evidence_names()
+
+    def _invalidate_archive_cache(self) -> None:
+        self._chain_cache = None
+        self._gap_cache = None
+        self._cache_archive_names = None
 
     def _reconcile_archived_gaps(
         self,
