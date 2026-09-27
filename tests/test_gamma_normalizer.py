@@ -84,6 +84,11 @@ def test_the_whole_recorded_page_normalizes_without_quarantine() -> None:
     assert report.total == len(_page())
 
 
+def test_quarantine_preserves_integer_market_id() -> None:
+    report = normalize_markets([{"id": 1}], raw_payload_sha256=DIGEST, normalized_at=NORMALIZED_AT)
+    assert report.quarantined[0].market_id == "1"
+
+
 def test_money_fields_become_decimals_without_float_noise() -> None:
     market = _normalize(_market(liquidity="16085.17368", orderPriceMinTickSize=0.001))
     assert market.liquidity == Decimal("16085.17368")

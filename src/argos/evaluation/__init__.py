@@ -11,6 +11,18 @@ exit criterion "unresolved markets are not scored as negatives" is enforced by
 the type rather than by a check somebody has to remember.
 """
 
+from argos.evaluation.async_cohort import (
+    AsynchronousCohortProtocolV1,
+    BlockSelectionStatus,
+    CandidateExclusionReason,
+    CandidateExclusionV1,
+    CohortBlockV1,
+    GammaSelectionV1,
+    OfflineBlockSelectionV1,
+    select_block_candidates,
+    validate_block_admission,
+    verify_block_selection,
+)
 from argos.evaluation.bundle import (
     EvaluationDecisionV1,
     EvaluationExclusionV1,
@@ -159,11 +171,16 @@ __all__ = [
     "EVALUATOR_VERSION",
     "MAX_LOG_LOSS_EPSILON",
     "AcrossTargetWeighting",
+    "AsynchronousCohortProtocolV1",
+    "BlockSelectionStatus",
     "CalibrationBin",
     "CalibrationReport",
     "CalibrationVerdict",
+    "CandidateExclusionReason",
+    "CandidateExclusionV1",
     "CaptureRejectionEvidenceV1",
     "CaptureRunSummaryV1",
+    "CohortBlockV1",
     "CohortReport",
     "CutoffBasis",
     "EnduranceCheckpointV1",
@@ -186,6 +203,7 @@ __all__ = [
     "ForecastEvaluationV2",
     "FrozenForecastSnapshotV1",
     "FunctionalScenarioEvidenceV1",
+    "GammaSelectionV1",
     "HeadlineStatus",
     "LateFinalOutcomeV1",
     "LateLifecycleMonitor",
@@ -201,6 +219,7 @@ __all__ = [
     "LifecyclePollRetrievalV1",
     "LifecycleReceiptChainLinkV1",
     "MeasurementLayerVerdict",
+    "OfflineBlockSelectionV1",
     "ProspectiveClaimArtifactIndexV1",
     "ProspectiveEvaluationResult",
     "ProspectiveExperimentBundleV1",
@@ -260,7 +279,10 @@ __all__ = [
     "require_epsilon",
     "score_forecast",
     "score_late_final_outcome",
+    "select_block_candidates",
     "spread_bucket",
+    "validate_block_admission",
+    "verify_block_selection",
     "verify_late_outcome_archives",
     "verify_published_claim_artifact",
 ]
