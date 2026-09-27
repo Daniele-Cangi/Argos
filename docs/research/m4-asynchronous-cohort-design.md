@@ -55,22 +55,32 @@ claim edge or superiority from a partial cohort.
 
 1. Complete: merge the corrected T1–T8 implementation and repository-contained
    proof after clean-checkout verification and Windows/Ubuntu CI pass (PR #18).
-2. In progress: implement and adversarially verify the append-only
-   late-resolution record and an exclusive resumable lifecycle owner; preserve
+2. Complete as an offline/synthetic boundary: the append-only late-resolution
+   record and exclusive resumable lifecycle owner preserve
    original raw bytes. `FrozenForecastSnapshotV1` binds the four baseline
    forecasts, target receipt, capture identity, manifest hash, revision and
    configuration. `LateFinalOutcomeV1` binds the original protocol, durable
    snapshot, contiguous lifecycle/receipt chain and actual first-observed
    final retrieval time. Archive verification reloads every referenced record
    and source payload, re-normalizes Gamma finality and refuses an earlier raw
-   final hidden as nonfinal. The late owner and scorer in PR #20 remain a
+   final hidden as nonfinal. The late owner and scorer merged in PR #20 remain a
    synthetic-tested implementation, not an integrated live cohort operator.
    Each poll writes a separate append-only `LifecyclePollRetrievalV1` so
    identical Gamma bytes cannot reuse the first retrieval timestamp as proof
    of a later poll; a response timestamp before its request is rejected.
-3. Freeze the exact UTC blocks, query, bounds, cutoff rule, stopping rule,
-   missingness, metrics, input identities and code revision in a new protocol.
-   Test candidate availability without admitting probe observations.
+3. In progress: `AsynchronousCohortProtocolV1` and
+   `scripts/m4_async_cohort_preflight.py` validate a candidate four-block,
+   16-target declaration and deterministic public-Gamma selection *offline*.
+   The preflight writes no evidence, queries no source and does not freeze or
+   launch a campaign. Exact future UTC blocks, query, bounds, cutoff rule,
+   stopping rule, missingness, metrics, input identities and clean revision
+   still require an owner-approved candidate, then durable protocol/receipt
+   persistence before any target selection. Candidate availability probes
+   must not admit observations.
+   A candidate record can be checked with
+   `uv run python scripts/m4_async_cohort_preflight.py --spec <candidate.json>`
+   from a clean checkout. Its `PREFLIGHT_ONLY_NOT_FROZEN` output is not a
+   persistence receipt or permission to start the first block.
 4. Start the first block only after the protocol and target/contract receipts
    are durable. Announce capture completion promptly; wait asynchronously for
    finality. Do not make the campaign's completion depend on a fixed 48-hour
