@@ -22,7 +22,7 @@ import orjson
 from pydantic import Field, field_validator, model_validator
 
 from argos.clock import Clock, ensure_utc
-from argos.domain.provenance import SourceProvenanceV1
+from argos.domain.provenance import SourceProvenanceV1, sha256_hex
 from argos.domain.versioning import VersionedModel, ensure_supported_version, resolve_schema
 from argos.evaluation.bundle import record_sha256
 from argos.evaluation.late_resolution import (
@@ -397,13 +397,16 @@ class LateResolutionProgressV1(VersionedModel):
             if self.late_outcome_id is not None or self.selected_cutoff is not None:
                 raise ValueError("pending target cannot carry a final outcome or cutoff")
         else:
+            if self.last_observation_id is None:
+                raise ValueError("final progress requires a bound observation ID")
+            if self.late_outcome_id is None:
+                raise ValueError("final progress requires a bound outcome and actual cutoff")
             if (
-                self.late_outcome_id is None
-                or self.last_observed_finality is not ResolutionStatus.FINAL
+                self.last_observed_finality is not ResolutionStatus.FINAL
                 or self.selected_cutoff is None
                 or self.last_observed_at != self.selected_cutoff
             ):
-                raise ValueError("final progress requires a bound outcome and actual cutoff")
+                raise ValueError("final progress requires a final observation and actual cutoff")
         return self
 
 
@@ -1344,6 +1347,28 @@ class LateLifecycleMonitor:
             lifecycle_observation_id=build_lifecycle_observation_id(**observation_fields),
             **observation_fields,
         )
+        if resolution is not None and resolution.resolution_status is ResolutionStatus.FINAL:
+            # Validate the terminal outcome contract before making the final
+            # observation durable. Otherwise an ineligible final observation
+            # would permanently stop polling while every recovery retries the
+            # same outcome construction failure.
+            observation_raw = orjson.dumps(observation.to_record(), option=orjson.OPT_SORT_KEYS)
+            planned_provenance = SourceProvenanceV1(
+                source="argos_evidence",
+                endpoint=(
+                    f"argos-evidence://{observation.schema_version}/"
+                    f"{observation.lifecycle_observation_id}"
+                ),
+                retrieved_at=persisted_at,
+                raw_sha256=sha256_hex(observation_raw),
+                byte_length=len(observation_raw),
+            )
+            planned_receipt = self._reconstruct_receipt(
+                observation,
+                planned_provenance,
+                EvidenceArtifactKind.LIFECYCLE_OBSERVATION,
+            )
+            self._build_late_outcome((*chain, (observation, planned_receipt)), resolution)
         receipt = persist_evidence_record(
             self.evidence_archive,
             record=observation,

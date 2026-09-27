@@ -901,6 +901,10 @@ async def test_progress_and_score_records_reject_pending_finality_claims(tmp_pat
     final = await monitor.poll_once()
     assert final.observation is not None
     assert final.outcome is not None
+    final_progress_without_observation = final.progress.to_record()
+    final_progress_without_observation["last_observation_id"] = None
+    with pytest.raises(ValueError, match="bound observation"):
+        LateResolutionProgressV1.from_record(final_progress_without_observation)
     final_progress_without_outcome = final.progress.to_record()
     final_progress_without_outcome["late_outcome_id"] = None
     with pytest.raises(ValueError, match="bound outcome"):
@@ -911,6 +915,27 @@ async def test_progress_and_score_records_reject_pending_finality_claims(tmp_pat
             latest_observation=final.observation,
             created_at=schedule_at + timedelta(seconds=2),
         )
+
+
+@pytest.mark.anyio
+async def test_ineligible_final_resolution_is_rejected_before_observation_persistence(
+    tmp_path: Path,
+) -> None:
+    schedule_at = DEADLINE + timedelta(seconds=20)
+    retrieved_at = schedule_at + timedelta(seconds=1)
+    monitor = _monitor(
+        tmp_path,
+        _Clock(schedule_at),
+        [_response(_final_payload(START), retrieved_at)],
+    )
+
+    with pytest.raises(ValueError, match="forecast was frozen after the source terminal timestamp"):
+        await monitor.poll_once()
+
+    assert monitor._load_chain() == []
+    checkpoint = monitor.monitor.load()
+    assert checkpoint.next_ordinal == 0
+    assert len(checkpoint.gaps) == 1
 
 
 @pytest.mark.anyio
