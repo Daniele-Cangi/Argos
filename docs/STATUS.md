@@ -1,6 +1,22 @@
 # ARGOS status
 
-Last updated: 2026-09-26
+Last updated: 2026-09-27
+
+## 2026-09-27 M4 methodology revision — no live launch
+
+ADR-0020 separates operational M4, descriptive evaluation and scientific claims.
+Future cohorts use partial block accounting, reviewed event groups, capture-close
+outcome-blind snapshots and target/time/byte budgets. A fixed 30-target count no
+longer acts as a scientific pass gate; historical protocols/verdicts are unchanged.
+
+The new `AsynchronousCohortProtocolV2` and schema-dispatched preflight validate
+declarations only. They explicitly do not certify live readiness, actual disk
+space, human review or runtime enforcement. V1 remains readable and unchanged.
+PR #20 supplied the synthetic late-owner/scorer and PR #21 the offline V1
+selector. Next: V2 reviewed partial admission and unified outcome path, a small
+synthetic proof, then an owner-frozen 2-4-slot live pilot. No live cohort is
+frozen or running; no calibration or predictive claim follows. Acceptance cases:
+`docs/research/m4-asynchronous-cohort-design.md`.
 
 ## 2026-09-26 corrected technical qualification and M4 design gate
 

@@ -1,5 +1,18 @@
 # Research protocol
 
+## Future M4 cohort amendment — ADR-0020
+
+For new asynchronous cohorts, ADR-0020 supersedes the historical fixed-count
+and last-before-settlement choices below. Freeze budgeted, partially fillable
+blocks; admit reviewed independent event groups; freeze a shared forecast state
+at capture close before the answer is knowable. Keep immutable outcome receipts
+and score asynchronously. Separate operational closure, descriptive evaluation
+and scientific claims. Brier is primary, log loss secondary with fixed epsilon,
+absolute error diagnostic. Preserve all slot/target/method denominators. A
+scientific claim requires its own precision-justified, predeclared design; no
+universal 30/2/5/5 pass rule applies. Historical records keep their original
+rules. Implementation/launch gates: `docs/research/m4-asynchronous-cohort-design.md`.
+
 ## Source text is data, never instruction
 
 Market questions and descriptions are written by whoever created the market. They

@@ -44,6 +44,7 @@ from argos.evaluation.claim_artifact import (
     ProspectiveClaimArtifactIndexV1,
     verify_published_claim_artifact,
 )
+from argos.evaluation.cohort_protocol_v2 import AsynchronousCohortProtocolV2, CohortStratumV1
 from argos.evaluation.late_monitor import (
     LateLifecycleMonitor,
     LateMonitoringScheduleV1,
@@ -172,6 +173,7 @@ __all__ = [
     "MAX_LOG_LOSS_EPSILON",
     "AcrossTargetWeighting",
     "AsynchronousCohortProtocolV1",
+    "AsynchronousCohortProtocolV2",
     "BlockSelectionStatus",
     "CalibrationBin",
     "CalibrationReport",
@@ -182,6 +184,7 @@ __all__ = [
     "CaptureRunSummaryV1",
     "CohortBlockV1",
     "CohortReport",
+    "CohortStratumV1",
     "CutoffBasis",
     "EnduranceCheckpointV1",
     "EnduranceScenarioEvidenceV1",

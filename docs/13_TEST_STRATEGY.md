@@ -2,6 +2,16 @@
 
 ## Layers
 
+### M4 cohort revision compatibility
+
+`tests/test_cohort_protocol_v2.py` checks the ADR-0020 declaration boundary:
+variable/partial-capacity blocks, disjoint half-open strata, quota/byte/time
+feasibility, nested schemas, immutable receipt reload, no calibration promotion
+and explicit non-launch preflight output. Run it with `tests/test_async_cohort.py`
+to preserve the original V1 semantics. These tests do not claim V2 runtime
+admission or live coverage; the synthetic vertical launch-gate cases are listed
+in `docs/research/m4-asynchronous-cohort-design.md`.
+
 ### Unit tests
 
 Pure domain contracts, validation, quote calculations, scoring rules, clocks, ordering, and state transitions. No live network or filesystem outside temporary directories.
