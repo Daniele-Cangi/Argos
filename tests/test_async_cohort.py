@@ -377,7 +377,7 @@ def test_offline_selector_is_deterministic_atomic_and_independent() -> None:
     with pytest.raises(ValidationError, match="account for every discovery entry"):
         OfflineBlockSelectionV1.from_record(incomplete)
     overlapping = selected.to_record()
-    overlapping["exclusions"][0]["market_id"] = selected.selected_markets[0].market_id
+    overlapping["exclusions"][0]["market_id"] = "0" * 128 + selected.selected_markets[0].market_id
     with pytest.raises(ValidationError, match="must be disjoint"):
         OfflineBlockSelectionV1.from_record(overlapping)
     repeated_exclusion = selected.to_record()
@@ -485,6 +485,18 @@ def test_duplicate_market_ids_fail_closed_independent_of_page_order() -> None:
             block_ordinal=1,
             selected_at=WINDOW_START + timedelta(seconds=1),
             source_payload_bytes=orjson.dumps([{"id": "invalid"}, {"id": "invalid"}]),
+            source_retrieved_at=WINDOW_START,
+            prior_block_selections=(),
+        )
+    long_id = "9" * 128
+    with pytest.raises(ValueError, match="duplicate market IDs"):
+        select_block_candidates(
+            protocol,
+            block_ordinal=1,
+            selected_at=WINDOW_START + timedelta(seconds=1),
+            source_payload_bytes=orjson.dumps(
+                [_raw_market(markets[0], id=long_id), {"id": "0" + long_id}]
+            ),
             source_retrieved_at=WINDOW_START,
             prior_block_selections=(),
         )

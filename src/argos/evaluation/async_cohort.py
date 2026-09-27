@@ -700,7 +700,7 @@ def _canonical_market_id(market_id: str) -> bool:
 
 
 def _market_identity(market_id: str) -> str:
-    if _bounded_digits(market_id):
+    if market_id.isascii() and market_id.isdecimal():
         return f"numeric:{market_id.lstrip('0') or '0'}"
     return f"text:{market_id}"
 
