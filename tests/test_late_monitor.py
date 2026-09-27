@@ -94,7 +94,9 @@ class _Source:
         return response
 
 
-def _protocol() -> ProspectiveExperimentProtocolV2:
+def _protocol(
+    *, log_loss_epsilon: Decimal = Decimal("0.000001")
+) -> ProspectiveExperimentProtocolV2:
     return ProspectiveExperimentProtocolV2(
         experiment_id=EXPERIMENT,
         declared_at=BASE,
@@ -113,7 +115,7 @@ def _protocol() -> ProspectiveExperimentProtocolV2:
         across_target_weighting=AcrossTargetWeighting.EQUAL_RESOLVED_TARGET,
         metrics=("brier_score", "log_loss", "absolute_error"),
         calibration_bin_edges=(Decimal("0"), Decimal("0.5"), Decimal("1")),
-        log_loss_epsilon=Decimal("0.000001"),
+        log_loss_epsilon=log_loss_epsilon,
         uncertainty_reporting="none for a structural fixture",
         missingness_treatment="pending remains in denominator",
         abstention_treatment="record abstentions without score",
@@ -191,9 +193,10 @@ def _monitor(
     responses: list[GammaResponse | Exception],
     *,
     first_poll_at: datetime | None = None,
+    log_loss_epsilon: Decimal = Decimal("0.000001"),
 ) -> LateLifecycleMonitor:
     evidence = tmp_path / "evidence"
-    protocol = _protocol()
+    protocol = _protocol(log_loss_epsilon=log_loss_epsilon)
     protocol_receipt = persist_evidence_record(
         evidence,
         record=protocol,
@@ -368,6 +371,7 @@ async def test_late_monitor_keeps_pending_unscored_then_scores_actual_final_cuto
             _response(_pending_payload(), first_at),
             _response(_final_payload(resolved_at), next_at),
         ],
+        log_loss_epsilon=Decimal("0.00001"),
     )
 
     first = await monitor.poll_once()
@@ -402,13 +406,20 @@ async def test_late_monitor_keeps_pending_unscored_then_scores_actual_final_cuto
     score = score_late_final_outcome(
         second.outcome,
         created_at=next_at + timedelta(seconds=1),
-        epsilon=Decimal("0.000001"),
     )
     assert score.disposition is LateScoreDisposition.SCORED
     assert len(score.evaluations) == 4
     assert score.planned_forecast_count == 4
     assert score.late_outcome_id == second.outcome.late_outcome_id
+    assert score.log_loss_epsilon == monitor.protocol.log_loss_epsilon
     assert LateScoringResultV1.from_record(score.to_record()) == score
+
+    with pytest.raises(ValueError, match="must match the frozen protocol"):
+        score_late_final_outcome(
+            second.outcome,
+            created_at=next_at + timedelta(seconds=1),
+            epsilon=Decimal("0.000001"),
+        )
 
     terminal = await monitor.poll_once()
     assert not terminal.poll_performed
@@ -1108,7 +1119,7 @@ async def test_late_final_score_cannot_predate_the_observed_cutoff(tmp_path: Pat
         ("unscorable_with_evaluations", "cannot carry evaluations"),
         ("duplicate_evaluations", "unique frozen forecasts"),
         ("overlapping_abstention", "both scored and abstained"),
-        ("epsilon_mismatch", "declared clipping epsilon"),
+        ("epsilon_mismatch", "disagrees with the frozen protocol"),
         ("forecast_not_in_snapshot", "accounting does not match the frozen forecasts"),
         ("score_disagrees_with_snapshot", "late evaluation disagrees with its frozen forecast"),
         ("wrong_resolution", "disagree with their bound late outcome"),
@@ -1265,6 +1276,10 @@ async def test_final_unscorable_target_counts_each_abstention(tmp_path: Path) ->
     invalid_epsilon["log_loss_epsilon"] = "NaN"
     with pytest.raises(ValueError):
         LateScoringResultV1.from_record(invalid_epsilon)
+    mismatched_epsilon = score.to_record()
+    mismatched_epsilon["log_loss_epsilon"] = "0.01"
+    with pytest.raises(ValueError, match="disagrees with the frozen protocol"):
+        LateScoringResultV1.from_record(mismatched_epsilon)
 
 
 @pytest.mark.anyio

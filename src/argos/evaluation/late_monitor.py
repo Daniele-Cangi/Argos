@@ -485,6 +485,8 @@ class LateScoringResultV1(VersionedModel):
                 or outcome.protocol.experiment_id != self.experiment_id
             ):
                 raise ValueError("late score is not bound to its durable late outcome")
+            if self.log_loss_epsilon != outcome.protocol.log_loss_epsilon:
+                raise ValueError("late score epsilon disagrees with the frozen protocol")
             if self.created_at < outcome.selected_cutoff:
                 raise ValueError("late score cannot predate its bound final outcome cutoff")
             if len(self.evaluations) + len(self.abstained_forecast_ids) != (
@@ -622,11 +624,15 @@ def score_late_final_outcome(
     outcome: LateFinalOutcomeV1,
     *,
     created_at: datetime,
-    epsilon: Decimal = DEFAULT_LOG_LOSS_EPSILON,
+    epsilon: Decimal | None = None,
 ) -> LateScoringResultV1:
     """Score only the original frozen baselines after durable observed finality."""
     created = ensure_utc(created_at)
-    require_epsilon(epsilon)
+    frozen_epsilon = outcome.protocol.log_loss_epsilon
+    selected_epsilon = frozen_epsilon if epsilon is None else epsilon
+    require_epsilon(selected_epsilon)
+    if selected_epsilon != frozen_epsilon:
+        raise ValueError("late score epsilon must match the frozen protocol")
     if created < outcome.selected_cutoff:
         raise ValueError("late score cannot predate the observed final cutoff")
     winning = (
@@ -653,7 +659,7 @@ def score_late_final_outcome(
                 winning_outcome=winning,
                 calibration_status=forecast.calibration_status.value,
                 created_at=created,
-                epsilon=epsilon,
+                epsilon=selected_epsilon,
             )
         )
     disposition = (
@@ -672,7 +678,7 @@ def score_late_final_outcome(
         "evaluations": tuple(evaluations),
         "abstained_forecast_ids": tuple(abstained),
         "created_at": created,
-        "log_loss_epsilon": epsilon,
+        "log_loss_epsilon": selected_epsilon,
     }
     return LateScoringResultV1(result_id=_late_score_identity(fields), **fields)
 
