@@ -401,12 +401,15 @@ def _spread_from_book(
         book.condition_id != market.condition_id
         or _token_identity(book.asset_id) != _token_identity(attempt.requested_token_id)
         or book.anomalies
-        or book.spread is None
+        or not book.bids
+        or not book.asks
     ):
         return None
     with evaluation_context():
-        spread = book.spread
-    return spread if spread is not None and Decimal(0) <= spread <= Decimal(1) else None
+        spread = book.asks[0].price - book.bids[0].price
+        if not Decimal(0) <= spread <= Decimal(1):
+            return None
+    return spread
 
 
 def _matching_stratum(
@@ -683,6 +686,10 @@ def select_block_candidates_v2(
         if matched_attempt is None:
             raise ValueError("approved eligible candidate is missing an accounted book attempt")
         attempt, attempt_receipt = matched_attempt
+        receipt_earliest = attempt.attempted_at
+        if attempt.status is BookAttemptStatus.RESPONSE:
+            assert attempt.source_provenance is not None
+            receipt_earliest = attempt.source_provenance.retrieved_at
         used_book_market_ids.add(market.market_id)
         if attempt.experiment_id != protocol.experiment_id or not _receipt_matches(
             attempt_receipt,
@@ -690,7 +697,7 @@ def select_block_candidates_v2(
             experiment_id=protocol.experiment_id,
             kind=EvidenceArtifactKind.COHORT_BOOK_ATTEMPT,
             artifact_id=attempt.attempt_id,
-            earliest=attempt.attempted_at,
+            earliest=receipt_earliest,
             latest=at,
         ):
             raise ValueError("book attempt has no valid pre-selection receipt")

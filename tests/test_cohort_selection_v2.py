@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, Inexact, localcontext
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -81,6 +81,9 @@ def _prepare(
     approved_ids: tuple[str, ...] = (),
     failed_book_ids: tuple[str, ...] = (),
     group_overrides: dict[str, str] | None = None,
+    bid_price: str = "0.40",
+    ask_price: str = "0.45",
+    tick_size: str = "0.01",
 ) -> tuple[
     bytes,
     SourceProvenanceV1,
@@ -164,9 +167,9 @@ def _prepare(
                 {
                     "market": market.condition_id,
                     "asset_id": market.token_id_for("Yes"),
-                    "bids": [{"price": "0.40", "size": "10"}],
-                    "asks": [{"price": "0.45", "size": "10"}],
-                    "tick_size": "0.01",
+                    "bids": [{"price": bid_price, "size": "10"}],
+                    "asks": [{"price": ask_price, "size": "10"}],
+                    "tick_size": tick_size,
                     "min_order_size": "1",
                     "neg_risk": False,
                     "last_trade_price": "0.42",
@@ -257,6 +260,77 @@ def test_partial_block_retains_one_target_and_archives_replay(tmp_path: Path) ->
         )
         == decision
     )
+
+
+def test_response_receipt_cannot_precede_book_response_retrieval(tmp_path: Path) -> None:
+    raw, source, reviews, receipts, attempts, attempt_receipts, books = _prepare(
+        tmp_path,
+        [_entry(101)],
+        approved_ids=("101",),
+    )
+    attempt = attempts[0]
+    assert attempt.source_provenance is not None
+    receipt = attempt_receipts[0]
+    persisted_at = attempt.source_provenance.retrieved_at - timedelta(microseconds=1)
+    early_receipt = receipt.model_copy(
+        update={
+            "persisted_at": persisted_at,
+            "receipt_id": build_persistence_receipt_id(
+                experiment_id=receipt.experiment_id,
+                artifact_kind=receipt.artifact_kind,
+                artifact_id=receipt.artifact_id,
+                artifact_schema_version=receipt.artifact_schema_version,
+                artifact_sha256=receipt.artifact_sha256,
+                artifact_byte_length=receipt.artifact_byte_length,
+                persisted_at=persisted_at,
+                storage_backend=receipt.storage_backend,
+                storage_identity=receipt.storage_identity,
+            ),
+        }
+    )
+    with pytest.raises(ValueError, match="book attempt has no valid pre-selection receipt"):
+        select_block_candidates_v2(
+            _protocol(),
+            block_ordinal=1,
+            selected_at=START + timedelta(seconds=30),
+            source_payload_bytes=raw,
+            source_provenance=source,
+            reviews=reviews,
+            review_receipts=receipts,
+            book_attempts=attempts,
+            book_attempt_receipts=(early_receipt,),
+            book_payload_bytes=books,
+        )
+
+
+def test_spread_is_computed_in_pinned_context_not_ambient_decimal_context(
+    tmp_path: Path,
+) -> None:
+    raw, source, reviews, receipts, attempts, attempt_receipts, books = _prepare(
+        tmp_path,
+        [_entry(101)],
+        approved_ids=("101",),
+        bid_price="0.4012",
+        ask_price="0.4525",
+        tick_size="0.0001",
+    )
+    with localcontext() as context:
+        context.prec = 2
+        context.traps[Inexact] = True
+        decision = select_block_candidates_v2(
+            _protocol(),
+            block_ordinal=1,
+            selected_at=START + timedelta(seconds=30),
+            source_payload_bytes=raw,
+            source_provenance=source,
+            reviews=reviews,
+            review_receipts=receipts,
+            book_attempts=attempts,
+            book_attempt_receipts=attempt_receipts,
+            book_payload_bytes=books,
+        )
+        assert decision.page_decisions[0].observed_spread == Decimal("0.0513")
+        assert context.flags[Inexact] is False
 
 
 def test_book_failure_yields_empty_accounted_block(tmp_path: Path) -> None:
