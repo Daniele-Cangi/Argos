@@ -85,11 +85,15 @@ claim edge or superiority from a partial cohort.
    (including integer/text aliases
    before normalization can quarantine an entry),
    and returns a versioned partition of selected and excluded candidates with
-   reasons and source hash. Later blocks derive earlier event identities from
-   admitted, hash-linked prior block records, including their capture-time
-   reservation. Each predecessor is replayed from its archived discovery bytes
-   before admission of the next block; callers cannot supply an independent
-   ID set. Numeric event-ID aliases count as the same event. The protocol keeps
+   reasons and source hash. A page with an entry lacking an accountable market
+   ID fails closed rather than recording an anonymous exclusion. Liquidity
+   ranking is independent of the ambient decimal precision, and event-ID
+   deduplication ignores surrounding whitespace. Later blocks derive earlier
+   event identities from admitted, hash-linked prior block records, including
+   their capture-time reservation. Each predecessor is replayed from its
+   archived discovery bytes before admission of the next block; callers cannot
+   supply an independent ID set. Numeric event-ID aliases count as the same
+   event. The protocol keeps
    the earliest eligible target end
    after the final observation block; admitted records recheck distinct
    canonical market IDs, explicit event identities, distinct condition and

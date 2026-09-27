@@ -228,7 +228,7 @@ class CandidateExclusionV1(VersionedModel):
 
     schema_version: ClassVar[str] = "m4_candidate_exclusion.v1"
 
-    market_id: str | None
+    market_id: str = Field(min_length=1)
     reason: CandidateExclusionReason
     detail: str | None = None
 
@@ -280,11 +280,7 @@ class OfflineBlockSelectionV1(VersionedModel):
         if len(self.selected_markets) + len(self.exclusions) != self.source_candidate_count:
             raise ValueError("offline selection must account for every discovery entry")
         selected_ids = {_market_identity(market.market_id) for market in self.selected_markets}
-        exclusion_ids = [
-            _market_identity(exclusion.market_id)
-            for exclusion in self.exclusions
-            if exclusion.market_id is not None
-        ]
+        exclusion_ids = [_market_identity(exclusion.market_id) for exclusion in self.exclusions]
         if any(exclusion_id in selected_ids for exclusion_id in exclusion_ids) or len(
             set(exclusion_ids)
         ) != len(exclusion_ids):
@@ -538,14 +534,18 @@ def select_block_candidates(
             if isinstance(market_id, str | int) and not isinstance(market_id, bool):
                 raw_by_market_id[str(market_id)] = entry
     selection = protocol.selection
-    exclusions = [
-        CandidateExclusionV1(
-            market_id=item.market_id,
-            reason=CandidateExclusionReason.NORMALIZATION_REJECTED,
-            detail=f"{item.reason.value}: {item.detail}",
+    exclusions: list[CandidateExclusionV1] = []
+    for item in normalization.quarantined:
+        market_id = item.market_id
+        if market_id is None:
+            raise ValueError("discovery page contains an entry without an accountable market ID")
+        exclusions.append(
+            CandidateExclusionV1(
+                market_id=market_id,
+                reason=CandidateExclusionReason.NORMALIZATION_REJECTED,
+                detail=f"{item.reason.value}: {item.detail}",
+            )
         )
-        for item in normalization.quarantined
-    ]
     eligible: list[MarketDefinitionV1] = []
     for market in normalization.accepted:
         raw = raw_by_market_id.get(market.market_id)
@@ -573,7 +573,9 @@ def select_block_candidates(
             )
             continue
         eligible.append(market)
-    eligible.sort(key=lambda market: (-(market.liquidity or Decimal(0)), int(market.market_id)))
+    eligible.sort(
+        key=lambda market: ((market.liquidity or Decimal(0)).copy_negate(), int(market.market_id))
+    )
     chosen: list[MarketDefinitionV1] = []
     seen = set(earlier_event_ids)
     seen_conditions = set(earlier_conditions)
@@ -706,6 +708,7 @@ def _market_identity(market_id: str) -> str:
 
 
 def _event_identity(event_id: str) -> str:
+    event_id = event_id.strip()
     if event_id.isascii() and event_id.isdecimal():
         return f"numeric:{event_id.lstrip('0') or '0'}"
     return f"text:{event_id}"

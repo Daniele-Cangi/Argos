@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from pathlib import Path
 from runpy import run_path
 from typing import Any
@@ -386,6 +386,10 @@ def test_offline_selector_is_deterministic_atomic_and_independent() -> None:
     )
     with pytest.raises(ValidationError, match="must be disjoint"):
         OfflineBlockSelectionV1.from_record(repeated_exclusion)
+    missing_exclusion_identity = selected.to_record()
+    missing_exclusion_identity["exclusions"][0]["market_id"] = None
+    with pytest.raises(ValidationError):
+        OfflineBlockSelectionV1.from_record(missing_exclusion_identity)
     foreign_exclusion = selected.to_record()
     foreign_exclusion["exclusions"][0]["schema_version"] = "m4_candidate_exclusion.v0"
     with pytest.raises(SchemaVersionError, match="not supported"):
@@ -509,6 +513,61 @@ def test_duplicate_market_ids_fail_closed_independent_of_page_order() -> None:
             source_retrieved_at=WINDOW_START,
             prior_block_selections=(),
         )
+
+
+def test_unidentified_source_entry_fails_closed() -> None:
+    protocol = _candidate()
+    with pytest.raises(ValueError, match="without an accountable market ID"):
+        select_block_candidates(
+            protocol,
+            block_ordinal=1,
+            selected_at=WINDOW_START,
+            source_payload_bytes=_source(
+                tuple(_market(index) for index in range(1, 5)), extra=({},)
+            ),
+            source_retrieved_at=WINDOW_START,
+            prior_block_selections=(),
+        )
+
+
+def test_liquidity_rank_is_independent_of_decimal_context() -> None:
+    protocol = _candidate()
+    markets = tuple(
+        _market(index).model_copy(update={"liquidity": Decimal(f"1000.000{index}")})
+        for index in range(1, 6)
+    )
+    with localcontext() as context:
+        context.prec = 3
+        selected = select_block_candidates(
+            protocol,
+            block_ordinal=1,
+            selected_at=WINDOW_START,
+            source_payload_bytes=_source(markets),
+            source_retrieved_at=WINDOW_START,
+            prior_block_selections=(),
+        )
+    assert tuple(market.market_id for market in selected.selected_markets) == ("5", "4", "3", "2")
+
+
+def test_event_identity_ignores_surrounding_whitespace() -> None:
+    protocol = _candidate()
+    markets = (
+        _market(1, event_id="411239"),
+        _market(2, event_id="411239 "),
+        *(_market(index) for index in range(3, 6)),
+    )
+    selected = select_block_candidates(
+        protocol,
+        block_ordinal=1,
+        selected_at=WINDOW_START,
+        source_payload_bytes=_source(markets),
+        source_retrieved_at=WINDOW_START,
+        prior_block_selections=(),
+    )
+    assert tuple(market.market_id for market in selected.selected_markets) == ("1", "3", "4", "5")
+    assert CandidateExclusionReason.EVENT_ID_REUSED in {
+        exclusion.reason for exclusion in selected.exclusions
+    }
 
 
 def test_later_blocks_derive_independence_from_hash_linked_prior_records() -> None:
