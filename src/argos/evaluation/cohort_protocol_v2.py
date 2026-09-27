@@ -183,16 +183,12 @@ class AsynchronousCohortProtocolV2(VersionedModel):
                 self.selection.target_end_max
                 >= block.start + timedelta(seconds=stratum.minimum_horizon_seconds)
                 and self.selection.target_end_min
-                < block.end
-                - reserved_window
-                + timedelta(seconds=stratum.maximum_horizon_seconds)
+                < block.end - reserved_window + timedelta(seconds=stratum.maximum_horizon_seconds)
                 for stratum in self.strata
             )
             for block in self.blocks
         ):
-            raise ValueError(
-                "Gamma target-end window cannot intersect a block's stratum horizon"
-            )
+            raise ValueError("Gamma target-end window cannot intersect a block's stratum horizon")
         if any(
             stratum.minimum_liquidity < self.selection.minimum_liquidity for stratum in self.strata
         ):
