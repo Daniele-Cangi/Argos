@@ -184,6 +184,38 @@ def test_monitor_persists_gap_before_propagating_poll_failure(tmp_path: Path) ->
     assert persisted.gaps[0].reason == "TimeoutError: injected"
 
 
+def test_gap_recorder_failure_does_not_commit_checkpoint_gap(tmp_path: Path) -> None:
+    monitor = ResumableMonitor(tmp_path / "checkpoint.json", tmp_path / "monitor.lock")
+    initial = _checkpoint()
+    monitor.save(initial)
+    times = iter((NOW, NOW + timedelta(seconds=5)))
+
+    def fail_poll(_: ResumableMonitorCheckpointV1) -> PollCommit:
+        raise TimeoutError("injected poll failure")
+
+    def fail_recorder(
+        _: ResumableMonitorCheckpointV1,
+        __: datetime,
+        ___: datetime,
+        ____: BaseException,
+    ) -> None:
+        raise OSError("injected gap archive failure")
+
+    with pytest.raises(TimeoutError, match="injected poll failure") as raised:
+        monitor.run_once(
+            poll=fail_poll,
+            failure_time=lambda: next(times),
+            record_failure=fail_recorder,
+        )
+
+    assert monitor.load() == initial
+    assert any(
+        "Could not persist the explicit monitor-gap artifact" in note
+        for note in raised.value.__notes__
+    )
+    assert isinstance(raised.value.__cause__, OSError)
+
+
 @pytest.mark.asyncio
 async def test_async_monitor_persists_gap_before_reraising_poll_cancellation(
     tmp_path: Path,
@@ -226,6 +258,49 @@ async def test_async_monitor_persists_gap_before_reraising_poll_cancellation(
     assert len(recorded) == 1
     assert recorded[0][:2] == (NOW, NOW + timedelta(seconds=5))
     assert isinstance(recorded[0][2], asyncio.CancelledError)
+
+
+@pytest.mark.asyncio
+async def test_async_gap_recorder_failure_does_not_commit_checkpoint_gap(
+    tmp_path: Path,
+) -> None:
+    monitor = ResumableMonitor(tmp_path / "checkpoint.json", tmp_path / "monitor.lock")
+    initial = _checkpoint()
+    monitor.save(initial)
+    poll_started = asyncio.Event()
+    times = iter((NOW, NOW + timedelta(seconds=5)))
+
+    async def wait_for_poll(_: ResumableMonitorCheckpointV1) -> PollCommit:
+        poll_started.set()
+        await asyncio.Future()
+
+    def fail_recorder(
+        _: ResumableMonitorCheckpointV1,
+        __: datetime,
+        ___: datetime,
+        ____: BaseException,
+    ) -> None:
+        raise OSError("injected gap archive failure")
+
+    task = asyncio.create_task(
+        monitor.run_once_async(
+            poll=wait_for_poll,
+            failure_time=lambda: next(times),
+            record_failure=fail_recorder,
+        )
+    )
+    await poll_started.wait()
+    task.cancel("injected cancellation")
+
+    with pytest.raises(asyncio.CancelledError, match="injected cancellation") as raised:
+        await task
+
+    assert monitor.load() == initial
+    assert any(
+        "Could not persist the explicit monitor-gap artifact" in note
+        for note in raised.value.__notes__
+    )
+    assert isinstance(raised.value.__cause__, OSError)
 
 
 def test_existing_partial_checkpoint_blocks_overwrite(tmp_path: Path) -> None:

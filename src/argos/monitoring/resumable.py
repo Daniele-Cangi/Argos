@@ -426,3 +426,8 @@ class ResumableMonitor:
                 "Could not persist the explicit monitor-gap artifact: "
                 f"{type(recording_error).__name__}: {recording_error}"
             )
+            # A checkpoint gap is only valid when its durable evidence artifact
+            # was written first. Do not turn a failed recorder into an
+            # unsubstantiated checkpoint entry; preserve the original poll
+            # failure while leaving the checkpoint available for recovery.
+            raise error from recording_error

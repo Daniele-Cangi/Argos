@@ -1397,6 +1397,54 @@ async def test_append_failure_gap_uses_the_durable_observation_as_predecessor(
 
 
 @pytest.mark.anyio
+async def test_poll_rejects_existing_reconstructed_source_sidecar(
+    tmp_path: Path,
+) -> None:
+    schedule_at = DEADLINE + timedelta(seconds=20)
+    retrieved_at = schedule_at + timedelta(seconds=1)
+    response = _response(_pending_payload(), retrieved_at)
+    monitor = _monitor(tmp_path, _Clock(schedule_at), [response])
+    reconstructed = response.provenance.model_copy(update={"reconstructed": True})
+    write_raw_payload(monitor.source_archive, raw=response.raw, provenance=reconstructed)
+
+    with pytest.raises(ValueError, match="does not preserve first-hand source provenance"):
+        await monitor.poll_once()
+
+    checkpoint = monitor.monitor.load()
+    assert checkpoint.next_ordinal == 0
+    assert len(checkpoint.gaps) == 1
+    records = [
+        orjson.loads(path.read_bytes())
+        for path in (tmp_path / "evidence" / "argos_evidence").glob("*.raw.json")
+    ]
+    assert all(
+        record.get("schema_version") != LifecycleObservationV1.schema_version for record in records
+    )
+
+
+@pytest.mark.anyio
+async def test_repeated_identical_gamma_bytes_keep_the_first_archived_timestamp(
+    tmp_path: Path,
+) -> None:
+    schedule_at = DEADLINE + timedelta(seconds=20)
+    first_retrieval = schedule_at + timedelta(seconds=1)
+    later_retrieval = first_retrieval + timedelta(seconds=300)
+    raw = orjson.dumps(_pending_payload())
+    response = _response(_pending_payload(), later_retrieval)
+    monitor = _monitor(tmp_path, _Clock(schedule_at), [response])
+    write_raw_payload(
+        monitor.source_archive,
+        raw=raw,
+        provenance=_response(_pending_payload(), first_retrieval).provenance,
+    )
+
+    result = await monitor.poll_once()
+
+    assert result.observation is not None
+    assert result.observation.retrieved_at == later_retrieval
+
+
+@pytest.mark.anyio
 async def test_malformed_archive_record_fails_closed_during_reconstruction(
     tmp_path: Path,
 ) -> None:

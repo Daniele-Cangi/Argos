@@ -1379,6 +1379,19 @@ class LateLifecycleMonitor:
         if provenance.retrieved_at > persisted_at:
             raise ValueError("Gamma retrieval time is ahead of the monitor clock")
         write_raw_payload(self.source_archive, raw=response.raw, provenance=provenance)
+        archived_raw, archived_provenance = read_raw_payload(
+            self.source_archive, provenance.raw_sha256
+        )
+        if (
+            archived_raw != response.raw
+            or archived_provenance.reconstructed
+            or archived_provenance.source != provenance.source
+            or archived_provenance.endpoint != provenance.endpoint
+            or archived_provenance.retrieved_at > provenance.retrieved_at
+            or archived_provenance.raw_sha256 != provenance.raw_sha256
+            or archived_provenance.byte_length != provenance.byte_length
+        ):
+            raise ValueError("archived Gamma poll does not preserve first-hand source provenance")
         try:
             payload = orjson.loads(response.raw)
         except orjson.JSONDecodeError as error:
