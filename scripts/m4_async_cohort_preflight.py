@@ -17,13 +17,18 @@ import orjson
 from argos.clock import LiveClock, ensure_utc
 from argos.domain.provenance import sha256_hex
 from argos.evaluation.async_cohort import AsynchronousCohortProtocolV1
+from argos.evaluation.cohort_protocol_v2 import AsynchronousCohortProtocolV2
 
 
 def preflight_protocol(
     record: dict[str, Any], *, revision: str, checked_at: datetime
 ) -> dict[str, Any]:
     """Validate exact bytes' meaning without admitting observations or persisting a claim."""
-    protocol = AsynchronousCohortProtocolV1.from_record(record)
+    protocol: AsynchronousCohortProtocolV1 | AsynchronousCohortProtocolV2
+    if record.get("schema_version") == AsynchronousCohortProtocolV2.schema_version:
+        protocol = AsynchronousCohortProtocolV2.from_record(record)
+    else:
+        protocol = AsynchronousCohortProtocolV1.from_record(record)
     now = ensure_utc(checked_at)
     if protocol.code_revision != revision:
         raise ValueError("cohort protocol revision disagrees with the clean checkout")
@@ -32,7 +37,7 @@ def preflight_protocol(
     if protocol.declared_at > now:
         raise ValueError("candidate declaration time is in the future")
     canonical = orjson.dumps(protocol.to_record(), option=orjson.OPT_SORT_KEYS)
-    return {
+    result = {
         "status": "PREFLIGHT_ONLY_NOT_FROZEN",
         "experiment_id": protocol.experiment_id,
         "protocol_schema_version": protocol.schema_version,
@@ -43,6 +48,20 @@ def preflight_protocol(
         "final_block_end": protocol.blocks[-1].end.isoformat(),
         "intended_targets": sum(block.intended_targets for block in protocol.blocks),
     }
+    if isinstance(protocol, AsynchronousCohortProtocolV2):
+        result.update(
+            {
+                "intended_targets_semantics": "maximum_slots_not_admitted_targets",
+                "live_launch_supported": False,
+                "implementation_boundary": "declaration_only",
+                "required_initial_free_bytes": (
+                    protocol.campaign_max_bytes + protocol.free_disk_margin_bytes
+                ),
+                "disk_space_checked": False,
+                "calibration_claim": protocol.calibration_claim,
+            }
+        )
+    return result
 
 
 def _clean_revision() -> str:

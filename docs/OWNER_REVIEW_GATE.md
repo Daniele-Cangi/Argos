@@ -2,6 +2,21 @@
 
 Claude must stop implementation when this gate is reached.
 
+## Owner decision update — 2026-09-27
+
+The owner approved the M4 methodology revision in ADR-0020. Gate A remains
+**not passed**: this is authorization to revise and implement M4, not M5-M8.
+For future cohorts, review operational evidence separately from final-outcome
+progress and scientific adequacy. Pending settlement alone does not block
+operational closure; verified prospective captures/snapshots, contract review,
+replay, complete accounting and a tested outcome/scoring path are still required.
+
+The V2 declaration/preflight is implemented, not a live operator. Before a new
+2-4-slot live pilot, verify the synthetic vertical path, runtime resource limits,
+human semantic receipts and a concrete durable protocol. Then review the three
+result levels and limitations under `docs/research/m4-asynchronous-cohort-design.md`.
+The dated verdicts/checklists below remain historical and are not upgraded.
+
 ## Owner decision update — 2026-08-22
 
 **BLOCKED. The gate still has not passed.** V4 was aborted before observation

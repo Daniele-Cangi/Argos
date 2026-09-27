@@ -2,6 +2,26 @@
 
 Work top to bottom unless a milestone dependency requires reordering.
 
+## ADR-0020 budgeted prospective cohorts — current priority
+
+- [x] Supersede future fixed 4x4/30-target rules with separate operational,
+      descriptive and scientific claims; retain historical evidence unchanged.
+- [x] Add an independent V2 declaration/preflight for variable slot/stratum caps,
+      snapshot policies, resource budgets and explicit non-launch readiness.
+- [ ] Add contract-bound human semantic review and real-world event grouping.
+- [ ] Implement archive-replayable V2 partial selection, anonymous quarantine,
+      empty-block accounting and no post-admission replacement.
+- [ ] Integrate capture-close snapshot and unified early/late finality owner;
+      enforce time/frame/byte/disk limits and actual outcome blindness.
+- [ ] Prove the small vertical path synthetically, including fault cases in
+      `docs/research/m4-asynchronous-cohort-design.md`.
+- [ ] Freeze and run a separately approved 2-4-slot live integration pilot.
+- [ ] Publish distinct operational, preliminary-score and scientific statuses;
+      complete owner review without treating pending finality as lost evidence.
+
+The section below records ADR-0019 delivery. Its fixed future-cohort sizing is
+superseded by ADR-0020, not retroactively applied to historical experiments.
+
 ## ADR-0019 resilient validation campaign
 
 - [x] Define a versioned technical-scenario result and aggregate that preserve
@@ -22,13 +42,12 @@ Work top to bottom unless a milestone dependency requires reordering.
       passed on 2026-09-26. Repository-contained proof passed Windows/Ubuntu
       CI and closure PR #18 was merged. This qualifies machinery, not
       prediction.
-- [ ] Add an append-only late-resolution record that can score a previously
-      frozen forecast without reconstructing a historical first-observed
-      cutoff. A versioned snapshot/outcome schema and archive verifier are
-      under review; operator integration and scoring remain open.
-- [ ] Build the next asynchronous cohort with at least 10-20 intended targets;
-      retain ADR-0014's 30-resolved-target and dispersion requirements for any
-      calibration claim.
+- [x] Add the synthetic-tested append-only frozen-snapshot/late-outcome archive
+      boundary, resumable owner and scorer (merged through PR #20). Unified V2
+      operator integration remains open above.
+- [x] Deliver the offline V1 4x4 declaration/selector/verifier (PR #21). The
+      unlaunched fixed-count design is superseded by ADR-0020 above; it is not a
+      live cohort or calibration result.
 
 ## Owner priority — M4 reopened 2026-08-19
 

@@ -4,6 +4,11 @@ This plan operationalizes ADR-0019. It authorizes no live experiment by itself.
 Every live campaign still needs a frozen protocol, clean revision and explicit
 owner start decision.
 
+Update 2026-09-27: ADR-0020 governs future cohort admission, snapshot timing and
+scientific claims. The T1-T8 matrix and historical verdicts below are unchanged;
+the qualified campaign need not be repeated merely to revise the research design.
+See `m4-asynchronous-cohort-design.md` for the current sequence.
+
 ## Objectives
 
 The next work separates three questions that V8 coupled:
@@ -69,9 +74,12 @@ The predictive cohort is separate from the technical matrix:
 - append a versioned final-outcome receipt when finality becomes admissible;
 - score only resolved targets while reporting both intended and resolved counts.
 
-The cohort should contain at least 10–20 targets before drawing operational
-comparisons and at least 30 resolved targets, with ADR-0014's category and
-YES/NO minima, before evaluating calibration.
+Under ADR-0020, begin with a bounded 2-4-slot integration pilot after a synthetic
+vertical proof; retain valid partial blocks. Larger descriptive cohorts use
+predeclared target/time/resource budgets. Scientific adequacy requires a
+precision-based design, not a universal 30-resolved/2-category/5-YES/5-NO gate.
+Calibration diagnostics can assess raw scores without relabeling them as
+calibrated probabilities. Operational closure and calibration claims are separate.
 
 ## Implementation order
 

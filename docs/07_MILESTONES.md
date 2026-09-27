@@ -93,6 +93,13 @@ Claude Code may progress autonomously through M4. It must close each milestone w
 
 ## M4 — Baseline probability and evaluation
 
+For future cohorts, ADR-0020 separates operational M4 closure from preliminary
+outcome evaluation and scientific claims. Pending settlement alone does not
+block operational closure, but a complete ledger alone does not establish it:
+reviewed prospective evidence, replay and a tested outcome/scoring path are
+required. Keep failures explicit, all denominators and owner review. A small
+descriptive cohort cannot establish calibration or edge.
+
 ### Deliverables
 
 - versioned market baseline forecast records;
