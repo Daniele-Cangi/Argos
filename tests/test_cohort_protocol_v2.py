@@ -227,6 +227,34 @@ def test_invalid_block_windows(block_index: int, update: dict[str, Any], message
 
 
 @pytest.mark.parametrize(
+    "selection",
+    [
+        GammaSelectionV1(
+            base_url="https://gamma-api.polymarket.com",
+            query=(("active", "true"), ("limit", "100")),
+            minimum_liquidity=Decimal("1000"),
+            minimum_outcome_price=Decimal("0.05"),
+            maximum_outcome_price=Decimal("0.95"),
+            target_end_min=START - timedelta(days=2),
+            target_end_max=START + timedelta(minutes=9),
+        ),
+        GammaSelectionV1(
+            base_url="https://gamma-api.polymarket.com",
+            query=(("active", "true"), ("limit", "100")),
+            minimum_liquidity=Decimal("1000"),
+            minimum_outcome_price=Decimal("0.05"),
+            maximum_outcome_price=Decimal("0.95"),
+            target_end_min=START + timedelta(days=1, hours=1, minutes=7, seconds=30),
+            target_end_max=START + timedelta(days=3),
+        ),
+    ],
+)
+def test_gamma_end_window_must_intersect_block_horizon(selection: GammaSelectionV1) -> None:
+    with pytest.raises(ValidationError, match="cannot intersect"):
+        _protocol(selection=selection)
+
+
+@pytest.mark.parametrize(
     "updates",
     [
         {"minimum_liquidity": 100000},
