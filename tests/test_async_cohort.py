@@ -294,6 +294,10 @@ def test_offline_selector_is_deterministic_atomic_and_independent() -> None:
     ]
     with pytest.raises(ValidationError, match="distinct explicit event identities"):
         OfflineBlockSelectionV1.from_record(duplicate_event)
+    foreign_source = selected.to_record()
+    foreign_source["selected_markets"][0]["raw_payload_sha256"] = "b" * 64
+    with pytest.raises(ValidationError, match="recorded discovery source digest"):
+        OfflineBlockSelectionV1.from_record(foreign_source)
     reordered = select_block_candidates(
         protocol,
         block_ordinal=1,
@@ -470,6 +474,7 @@ def test_selection_rejects_future_or_mismatched_source_evidence() -> None:
     [
         ({"event_id": None}, {}, CandidateExclusionReason.EVENT_ID_MISSING),
         ({"market_id": "01"}, {}, CandidateExclusionReason.MARKET_ID_INVALID),
+        ({"market_id": "1" * 4301}, {}, CandidateExclusionReason.MARKET_ID_INVALID),
         ({"active": False}, {}, CandidateExclusionReason.NOT_ACTIVE),
         ({"closed": True}, {}, CandidateExclusionReason.CLOSED),
         ({"archived": True}, {}, CandidateExclusionReason.ARCHIVED),
@@ -478,6 +483,11 @@ def test_selection_rejects_future_or_mismatched_source_evidence() -> None:
         ({"liquidity": Decimal(1)}, {}, CandidateExclusionReason.LIQUIDITY_BELOW_MINIMUM),
         ({}, {"enableOrderBook": False}, CandidateExclusionReason.ORDER_BOOK_UNAVAILABLE),
         ({}, {"outcomePrices": "not json"}, CandidateExclusionReason.MALFORMED_PRICES),
+        (
+            {},
+            {"outcomePrices": '["invalid", "0.5"]'},
+            CandidateExclusionReason.MALFORMED_PRICES,
+        ),
         ({}, {"outcomePrices": ["0.01", "0.99"]}, CandidateExclusionReason.PRICE_OUT_OF_RANGE),
     ],
 )

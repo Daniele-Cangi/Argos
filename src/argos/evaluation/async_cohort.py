@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from itertools import pairwise
 from typing import Any, ClassVar
@@ -27,6 +27,8 @@ from argos.evaluation.prospective import (
     ProspectiveExperimentProtocolV1,
 )
 from argos.ingestion.gamma_markets import NormalizationReport
+
+MAX_MARKET_ID_DIGITS = 128
 
 
 class CohortBlockV1(VersionedModel):
@@ -265,6 +267,11 @@ class OfflineBlockSelectionV1(VersionedModel):
         if self.status is BlockSelectionStatus.ADMITTED:
             market_ids = [market.market_id for market in self.selected_markets]
             event_ids = [market.event_id for market in self.selected_markets]
+            if any(
+                market.raw_payload_sha256 != self.source_payload_sha256
+                for market in self.selected_markets
+            ):
+                raise ValueError("admitted markets must match the recorded discovery source digest")
             if any(not _canonical_market_id(market_id) for market_id in market_ids) or len(
                 set(market_ids)
             ) != len(market_ids):
@@ -394,15 +401,10 @@ def select_block_candidates(
         )
         if market_id is not None
     ]
-    numeric_ids = [int(market_id) for market_id in all_ids if _canonical_digits(market_id)]
-    duplicates = sorted(
-        str(market_id) for market_id, count in Counter(numeric_ids).items() if count > 1
-    )
-    duplicates.extend(
-        market_id
-        for market_id, count in Counter(all_ids).items()
-        if not _canonical_digits(market_id) and count > 1
-    )
+    numeric_ids = [
+        market_id.lstrip("0") or "0" for market_id in all_ids if _bounded_digits(market_id)
+    ]
+    duplicates = sorted(market_id for market_id, count in Counter(numeric_ids).items() if count > 1)
     if duplicates:
         raise ValueError(f"duplicate market IDs in discovery page: {duplicates}")
     exclusions = [
@@ -529,12 +531,14 @@ def _candidate_rejection(
     return None
 
 
-def _canonical_digits(market_id: str) -> bool:
-    return market_id.isascii() and market_id.isdecimal()
+def _bounded_digits(market_id: str) -> bool:
+    return (
+        0 < len(market_id) <= MAX_MARKET_ID_DIGITS and market_id.isascii() and market_id.isdecimal()
+    )
 
 
 def _canonical_market_id(market_id: str) -> bool:
-    return _canonical_digits(market_id) and str(int(market_id)) == market_id
+    return _bounded_digits(market_id) and (len(market_id) == 1 or market_id[0] != "0")
 
 
 def _outcome_prices(raw: Any) -> tuple[Decimal, ...] | None:
@@ -544,5 +548,5 @@ def _outcome_prices(raw: Any) -> tuple[Decimal, ...] | None:
             return None
         prices = tuple(Decimal(str(value)) for value in values)
         return prices if all(price.is_finite() for price in prices) else None
-    except (orjson.JSONDecodeError, ValueError, TypeError):
+    except (orjson.JSONDecodeError, InvalidOperation, ValueError, TypeError):
         return None
