@@ -143,8 +143,11 @@ source eligibility, runtime enforcement or a durable protocol freeze.
 
 V1 remains 4x4 with original validators/tests. Historical V2/V3/V5/V8 experiments,
 T1-T8 proof, old aggregation and `LateFinalOutcomeV1` remain unchanged. Do not
-route V2 declarations into V1 selection or post-deadline lifecycle code. New
-review, selection and unified outcome records/adapters remain launch blockers.
+route V2 declarations into V1 selection or post-deadline lifecycle code.
+Offline human-review and V2 selection records have synthetic archive-replay
+coverage, including true CLOB bid/ask spread. Human authentication, live
+source/review acquisition, bounded capture and unified outcome records/adapters
+remain launch blockers.
 
 Follow `docs/research/m4-asynchronous-cohort-design.md`: reuse qualified technical
 machinery, rerun affected regression/fault tests, prove a small synthetic vertical

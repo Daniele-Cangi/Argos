@@ -106,6 +106,9 @@ class EvidenceArtifactKind(StrEnum):
     LIFECYCLE_MONITOR_GAP = "lifecycle_monitor_gap"
     LIFECYCLE_RECEIPT_CHAIN_LINK = "lifecycle_receipt_chain_link"
     LATE_MONITORING_SCHEDULE = "late_monitoring_schedule"
+    SEMANTIC_REVIEW = "semantic_review"
+    COHORT_BOOK_ATTEMPT = "cohort_book_attempt"
+    COHORT_BLOCK_SELECTION = "cohort_block_selection"
 
 
 class ProspectiveExperimentProtocolV1(VersionedModel):

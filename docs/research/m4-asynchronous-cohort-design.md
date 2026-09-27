@@ -30,10 +30,20 @@ V8, invents finality, establishes calibration/edge or authorizes M5/trading.
   time/byte budgets, snapshot timing policies, three-hour-compatible monitoring
   and separate descriptive/scientific claims. Nested schemas and preflight
   compatibility are tested. **This is not runtime enforcement.**
+- Offline V2 admission: exact-page human review attestation, source-linked public
+  CLOB Yes-token bid/ask spread, per-entry partition (including anonymous
+  quarantine), partial/empty slot accounting, quota and predecessor replay,
+  and archive re-read of raw bytes and persistence receipts. Synthetic tests
+  cover a retained 3/4 block, time-limited slots, an empty then valid block,
+  event-group reuse, book failure, corrupt bytes and aliased identities. The
+  review record is an attestation schema, not authentication of a person; no
+  live review workflow or acquisition owner is wired yet.
 
-## Next vertical slice: offline V2 admission and synthetic end-to-end proof
+## Remaining vertical slice: capture, outcome and synthetic end-to-end proof
 
-Implement in this order, with versioned records and archive-derived checks:
+Implement the remaining path in this order, with versioned records and
+archive-derived checks. Steps 1-3 below have an offline synthetic proof, not a
+live runner or a full capture-to-score proof:
 
 1. Semantic-review receipt bound to contract/version, human reviewer, outcome
    conditions/authority, canonical category, real-world event group and earliest
