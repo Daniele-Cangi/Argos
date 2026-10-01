@@ -109,6 +109,7 @@ class EvidenceArtifactKind(StrEnum):
     SEMANTIC_REVIEW = "semantic_review"
     COHORT_BOOK_ATTEMPT = "cohort_book_attempt"
     COHORT_BLOCK_SELECTION = "cohort_block_selection"
+    COHORT_CAPTURE_CLOSE = "cohort_capture_close"
 
 
 class ProspectiveExperimentProtocolV1(VersionedModel):
