@@ -250,5 +250,5 @@ def test_v2_capture_close_refuses_frame_cap_overrun(tmp_path: Path) -> None:
 
 
 def test_v2_capture_close_rejects_a_postclose_forecast_freeze(tmp_path: Path) -> None:
-    with pytest.raises(ValidationError, match="freeze receipt must precede capture close"):
+    with pytest.raises(ValidationError, match="freeze must occur during capture"):
         _synthetic_snapshot(tmp_path, freeze_after_capture_close=True)

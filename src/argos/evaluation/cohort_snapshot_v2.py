@@ -529,12 +529,12 @@ class CohortCaptureCloseV1(VersionedModel):
             kind=EvidenceArtifactKind.FROZEN_FORECAST_SNAPSHOT,
             artifact_id=snapshot.snapshot_id,
         )
+        if not self.started_at <= snapshot.frozen_at < self.closed_at:
+            raise ValueError("V2 forecast freeze must occur during capture and before close")
         if self.forecast_snapshot_receipt.persisted_at < snapshot.frozen_at:
             raise ValueError("V2 frozen forecast snapshot was persisted before it was frozen")
         if self.forecast_snapshot_receipt.persisted_at >= self.closed_at:
             raise ValueError("V2 forecast freeze receipt must precede capture close")
-        if not self.started_at <= snapshot.frozen_at < self.closed_at:
-            raise ValueError("V2 forecast freeze must occur during capture and before close")
         if snapshot.capture_run_manifest.created_at > self.started_at:
             raise ValueError("V2 capture manifest was created after capture began")
         admitted_at = max(
