@@ -21,6 +21,7 @@ from pydantic import Field, field_validator, model_validator
 from argos.baselines import BaselineMethod, MarketBaselineForecastV2
 from argos.clock import ensure_utc
 from argos.config.manifest import RunManifest, RunMode, WorkingTreeStatus
+from argos.domain.market import MarketDefinitionV1
 from argos.domain.provenance import SHA256_LENGTH, SourceProvenanceV1
 from argos.domain.versioning import VersionedModel, ensure_supported_version
 from argos.evaluation.cohort_protocol_v2 import AsynchronousCohortProtocolV2
@@ -28,6 +29,7 @@ from argos.evaluation.cohort_review_v2 import SemanticReviewDecision
 from argos.evaluation.cohort_selection_v2 import (
     BookAttemptStatus,
     OfflineBlockSelectionV2,
+    PageDecisionV1,
     verify_block_selection_v2_archives,
 )
 from argos.evaluation.prospective import (
@@ -92,14 +94,15 @@ def _selected_target(
         selected,
         key=lambda item: (
             str(item.stratum_id),
-            -(item.market.liquidity or Decimal(0)),
-            int(item.market.market_id),
+            -(_selected_market(item).liquidity or Decimal(0)),
+            int(_selected_market(item).market_id),
         ),
     )
     ranks = {item.entry_index: rank for rank, item in enumerate(ordered, start=1)}
     decision = next((item for item in selected if item.entry_index == entry_index), None)
     if decision is None:
         raise ValueError("capture close target was not admitted by the V2 selection")
+    market = _selected_market(decision)
     review_match = next(
         (
             (review, receipt)
@@ -114,7 +117,7 @@ def _selected_target(
     if (
         review.entry_index != entry_index
         or review.market_id != decision.market_id
-        or review.condition_id != decision.market.condition_id
+        or review.condition_id != market.condition_id
         or review.decision is not SemanticReviewDecision.APPROVED
         or review.event_group_id != decision.event_group_id
         or review.earliest_outcome_knowable_at is None
@@ -143,12 +146,19 @@ def _selected_target(
     attempt, attempt_receipt = book_match
     if (
         attempt.market_id != decision.market_id
-        or attempt.requested_token_id != decision.market.token_id_for("Yes")
+        or attempt.requested_token_id != market.token_id_for("Yes")
         or attempt.status is not BookAttemptStatus.RESPONSE
         or attempt_receipt.persisted_at > selection.selected_at
     ):
         raise ValueError("V2 admitted target does not bind a pre-selection Yes-token book")
     return decision, review, ranks[entry_index]
+
+
+def _selected_market(decision: PageDecisionV1) -> MarketDefinitionV1:
+    market = decision.market
+    if market is None:
+        raise ValueError("selected V2 entry has no market definition")
+    return market
 
 
 def _capture_target_id(
