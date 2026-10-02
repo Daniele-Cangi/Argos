@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 
-from argos.clock import Clock, Pacer, ensure_utc
+from argos.clock import Clock, Pacer, ReplayClock, ensure_utc
 from argos.ingestion.capture import CaptureHealth, FrameSource, run_capture
 from argos.sources.clob_ws import MarketFrame
 from argos.store.event_store import EventStore
@@ -98,15 +98,22 @@ class _BoundedFrameSource:
                     return
 
                 frame: MarketFrame | None = None
-                with self._pacer.move_on_after(remaining) as scope:
+                if isinstance(self._clock, ReplayClock):
                     try:
                         frame = await anext(iterator)
                     except StopAsyncIteration:
                         self.stop_reason = BoundedCaptureStopReasonV2.SOURCE_EXHAUSTED
                         return
-                if scope.cancelled_caught:
-                    self.stop_reason = BoundedCaptureStopReasonV2.DURATION_CAP
-                    return
+                else:
+                    with self._pacer.move_on_after(remaining) as scope:
+                        try:
+                            frame = await anext(iterator)
+                        except StopAsyncIteration:
+                            self.stop_reason = BoundedCaptureStopReasonV2.SOURCE_EXHAUSTED
+                            return
+                    if scope.cancelled_caught:
+                        self.stop_reason = BoundedCaptureStopReasonV2.DURATION_CAP
+                        return
                 assert frame is not None
                 raw = frame.text.encode("utf-8")
                 if not frame.provenance.matches(raw):
@@ -116,6 +123,11 @@ class _BoundedFrameSource:
                 # a live clock advances independently. Use the later instant so a
                 # replay cannot smuggle post-deadline data into the bounded run.
                 received_at = ensure_utc(frame.received_time)
+                retrieved_at = ensure_utc(frame.provenance.retrieved_at)
+                if received_at != retrieved_at:
+                    raise ValueError(
+                        "V2 frame receive time disagrees with source provenance retrieval time"
+                    )
                 clock_now = ensure_utc(self._clock.now())
                 effective_now = max(clock_now, received_at)
                 if effective_now > deadline:

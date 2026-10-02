@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
+from contextlib import AbstractContextManager
 from datetime import timedelta
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
+from anyio import CancelScope
 from test_capture_loop import (
     START,
     TOKEN_NO,
@@ -16,7 +19,7 @@ from test_capture_loop import (
     _unknown_event,
 )
 
-from argos.clock import RealPacer, ReplayClock
+from argos.clock import Pacer, RealPacer, ReplayClock
 from argos.ingestion import BoundedCaptureStopReasonV2, run_bounded_cohort_capture_v2
 from argos.sources.clob_ws import MarketFrame
 from argos.store.event_store import SQLiteEventStore, open_sqlite_event_store
@@ -54,6 +57,14 @@ class _ReplayScheduledFrameSource:
                 await close()
 
 
+class _ForbiddenReplayPacer:
+    async def wait(self, seconds: float) -> NoReturn:
+        raise AssertionError("replay capture must not consult wall-clock pacing")
+
+    def move_on_after(self, seconds: float) -> AbstractContextManager[CancelScope, bool]:
+        raise AssertionError("replay capture must not consult wall-clock pacing")
+
+
 @pytest.fixture
 def store() -> SQLiteEventStore:
     return open_sqlite_event_store(":memory:")
@@ -76,6 +87,7 @@ async def _capture(
     max_frames: int = 10,
     max_bytes: int = 10_000,
     frame_source: object | None = None,
+    pacer: Pacer | None = None,
     after_frame=None,
     advance_replay_clock: bool = True,
 ):
@@ -88,7 +100,7 @@ async def _capture(
         frame_source=source,
         store=store,
         clock=clock,
-        pacer=RealPacer(),
+        pacer=pacer or RealPacer(),
         capture_run_id=run_id,
         subscribed_token_ids=(TOKEN_YES, TOKEN_NO),
         max_seconds=max_seconds,
@@ -234,6 +246,45 @@ async def test_v2_capture_rejects_tampered_source_provenance(
     run = store.get_capture_run("tampered-provenance")
     assert run is not None and run.ended_at is not None
     assert run.completion_status.value == "failed"
+
+
+async def test_v2_capture_rejects_receive_time_not_bound_to_source_retrieval(
+    store: SQLiteEventStore, tmp_path: Path
+) -> None:
+    original = _frame_at(1)
+    mismatched = MarketFrame(
+        text=original.text,
+        received_time=original.received_time + timedelta(seconds=1),
+        provenance=original.provenance,
+    )
+
+    with pytest.raises(ValueError, match="receive time disagrees with source provenance"):
+        await _capture(
+            store=store,
+            archive=tmp_path,
+            frames=[mismatched],
+            run_id="mismatched-receipt-time",
+        )
+
+    run = store.get_capture_run("mismatched-receipt-time")
+    assert run is not None and run.completion_status.value == "failed"
+
+
+async def test_v2_replay_duration_is_driven_only_by_recorded_timestamps(
+    store: SQLiteEventStore, tmp_path: Path
+) -> None:
+    summary = await _capture(
+        store=store,
+        archive=tmp_path,
+        frames=[_frame_at(1)],
+        run_id="replay-does-not-use-wall-clock-timeout",
+        max_seconds=2,
+        pacer=_ForbiddenReplayPacer(),
+    )
+
+    assert summary.stop_reason is BoundedCaptureStopReasonV2.SOURCE_EXHAUSTED
+    assert summary.frames_archived == 1
+    assert summary.finished_at == _frame_at(1).received_time
 
 
 async def test_v2_capture_rejects_replay_frame_ahead_of_clock(

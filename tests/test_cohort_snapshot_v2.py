@@ -15,6 +15,8 @@ from test_cohort_selection_v2 import _entry, _persist_selection, _prepare
 from argos.baselines import BaselineMethod, build_baseline_forecast_v2
 from argos.baselines.quote import MarketQuoteV1
 from argos.config.manifest import RunManifest, RunMode, WorkingTreeStatus
+from argos.domain.observation import ObservationEnvelopeV1, RejectedObservationV1
+from argos.domain.pricechange import PriceChangeV1
 from argos.domain.provenance import SourceProvenanceV1, sha256_hex
 from argos.evaluation.cohort_selection_v2 import select_block_candidates_v2
 from argos.evaluation.cohort_snapshot_v2 import (
@@ -36,6 +38,7 @@ def _synthetic_snapshot(
     archive: Path,
     *,
     frame_count: int = 3,
+    forecast_sequence: int | None = None,
     freeze_after_capture_close: bool = False,
 ) -> tuple[CohortCaptureCloseV1, object]:
     protocol = _protocol()
@@ -67,6 +70,7 @@ def _synthetic_snapshot(
     decision = selection.page_decisions[0]
     assert decision.market is not None
     market = decision.market
+    frozen_sequence = frame_count if forecast_sequence is None else forecast_sequence
     review = next(item for item in selection.reviews if item.entry_index == decision.entry_index)
     target_id = build_target_id(
         experiment_id=protocol.experiment_id,
@@ -102,6 +106,9 @@ def _synthetic_snapshot(
             "target_database_id": f"synthetic-db-{target_id}",
         },
         schema_versions=(
+            ObservationEnvelopeV1.schema_version,
+            RejectedObservationV1.schema_version,
+            PriceChangeV1.schema_version,
             CohortCaptureCloseV1.schema_version,
             CohortFrozenForecastSnapshotV1.schema_version,
         ),
@@ -116,7 +123,7 @@ def _synthetic_snapshot(
                 "condition_id": market.condition_id,
                 "received_at": (START + timedelta(seconds=90)).isoformat(),
                 "observation_id": f"synthetic-observation-{ordinal}",
-                "information_state_hash": "e" * 64,
+                "information_state_hash": f"{ordinal:064x}",
             }
             for ordinal in range(1, frame_count + 1)
         ]
@@ -149,12 +156,12 @@ def _synthetic_snapshot(
             method=method,
             quote=quote,
             as_of_received_time=quote_at,
-            as_of_ingest_sequence=frame_count,
+            as_of_ingest_sequence=frozen_sequence,
             previous_score=None if method is BaselineMethod.PERSISTENCE else Decimal("0.42"),
             evaluation_run_id="synthetic-evaluation-701",
             source_capture_run_id=capture_run_id,
-            source_observation_id=f"synthetic-observation-{frame_count}",
-            information_state_hash="e" * 64,
+            source_observation_id=f"synthetic-observation-{frozen_sequence}",
+            information_state_hash=f"{frozen_sequence:064x}",
             market_id=market.market_id,
             contract_id=review.contract_id,
         )
@@ -252,3 +259,10 @@ def test_v2_capture_close_refuses_frame_cap_overrun(tmp_path: Path) -> None:
 def test_v2_capture_close_rejects_a_postclose_forecast_freeze(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="freeze must occur during capture"):
         _synthetic_snapshot(tmp_path, freeze_after_capture_close=True)
+
+
+def test_v2_freeze_must_reference_last_frame_available_by_freeze(tmp_path: Path) -> None:
+    close, receipt = _synthetic_snapshot(tmp_path, forecast_sequence=2)
+
+    with pytest.raises(ValueError, match="last shared state available"):
+        verify_cohort_capture_close_archives(close, receipt, archive_dir=tmp_path)

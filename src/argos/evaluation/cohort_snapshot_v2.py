@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Sequence
 from datetime import datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -22,6 +22,8 @@ from argos.baselines import BaselineMethod, MarketBaselineForecastV2
 from argos.clock import ensure_utc
 from argos.config.manifest import RunManifest, RunMode, WorkingTreeStatus
 from argos.domain.market import MarketDefinitionV1
+from argos.domain.observation import ObservationEnvelopeV1, RejectedObservationV1
+from argos.domain.pricechange import PriceChangeV1
 from argos.domain.provenance import SHA256_LENGTH, SourceProvenanceV1
 from argos.domain.versioning import VersionedModel, ensure_supported_version
 from argos.evaluation.cohort_protocol_v2 import AsynchronousCohortProtocolV2
@@ -52,6 +54,19 @@ __all__ = [
 
 def _digest(value: object) -> str:
     return hashlib.sha256(orjson.dumps(value, option=orjson.OPT_SORT_KEYS)).hexdigest()
+
+
+_FROZEN_SNAPSHOT_SCHEMA_VERSION = "m4_cohort_frozen_forecast_snapshot.v1"
+_CAPTURE_CLOSE_SCHEMA_VERSION = "m4_cohort_capture_close.v1"
+_REQUIRED_CAPTURE_SCHEMA_VERSIONS = frozenset(
+    {
+        ObservationEnvelopeV1.schema_version,
+        RejectedObservationV1.schema_version,
+        PriceChangeV1.schema_version,
+        _CAPTURE_CLOSE_SCHEMA_VERSION,
+        _FROZEN_SNAPSHOT_SCHEMA_VERSION,
+    }
+)
 
 
 def _verify_receipt(
@@ -151,6 +166,13 @@ def _selected_target(
         or attempt_receipt.persisted_at > selection.selected_at
     ):
         raise ValueError("V2 admitted target does not bind a pre-selection Yes-token book")
+    _verify_receipt(
+        attempt_receipt,
+        attempt,
+        experiment_id=protocol.experiment_id,
+        kind=EvidenceArtifactKind.COHORT_BOOK_ATTEMPT,
+        artifact_id=attempt.attempt_id,
+    )
     return decision, review, ranks[entry_index]
 
 
@@ -204,18 +226,13 @@ def _capture_manifest_matches(
         or parameters.get("target_id") != target_id
     ):
         raise ValueError("capture manifest does not identify one bounded V2 target")
-    required_schemas = {
-        CohortCaptureCloseV1.schema_version,
-        CohortFrozenForecastSnapshotV1.schema_version,
-    }
-    if not required_schemas.issubset(manifest.schema_versions):
+    if not _REQUIRED_CAPTURE_SCHEMA_VERSIONS.issubset(manifest.schema_versions):
         raise ValueError("capture manifest omits required V2 capture evidence schemas")
-    try:
-        max_seconds = Decimal(str(parameters.get("max_seconds")))
-    except (InvalidOperation, ValueError) as error:
-        raise ValueError("capture manifest omits a numeric duration cap") from error
-    if not max_seconds.is_finite() or max_seconds != Decimal(
-        protocol.capture_max_seconds_per_target
+    max_seconds = parameters.get("max_seconds")
+    if (
+        not isinstance(max_seconds, int)
+        or isinstance(max_seconds, bool)
+        or max_seconds != protocol.capture_max_seconds_per_target
     ):
         raise ValueError("capture duration cap disagrees with the V2 protocol")
     for parameter, expected in (
@@ -287,7 +304,7 @@ def _capture_frames(
 class CohortFrozenForecastSnapshotV1(VersionedModel):
     """Four baselines durably frozen while one admitted V2 target is live."""
 
-    schema_version: ClassVar[str] = "m4_cohort_frozen_forecast_snapshot.v1"
+    schema_version: ClassVar[str] = _FROZEN_SNAPSHOT_SCHEMA_VERSION
 
     snapshot_id: str = Field(min_length=1)
     protocol: AsynchronousCohortProtocolV2
@@ -485,7 +502,7 @@ def build_cohort_capture_close_id(
 class CohortCaptureCloseV1(VersionedModel):
     """Immutable close facts binding a prior durable V2 forecast freeze."""
 
-    schema_version: ClassVar[str] = "m4_cohort_capture_close.v1"
+    schema_version: ClassVar[str] = _CAPTURE_CLOSE_SCHEMA_VERSION
 
     capture_close_id: str = Field(min_length=1)
     forecast_snapshot: CohortFrozenForecastSnapshotV1
@@ -577,11 +594,9 @@ class CohortCaptureCloseV1(VersionedModel):
             or self.capture_archive_provenance.retrieved_at < self.closed_at
         ):
             raise ValueError("capture archive provenance must be first-hand and post-close")
-        required_schemas = {
-            CohortCaptureCloseV1.schema_version,
-            CohortFrozenForecastSnapshotV1.schema_version,
-        }
-        if not required_schemas.issubset(snapshot.capture_run_manifest.schema_versions):
+        if not _REQUIRED_CAPTURE_SCHEMA_VERSIONS.issubset(
+            snapshot.capture_run_manifest.schema_versions
+        ):
             raise ValueError("capture manifest omits required V2 capture evidence schemas")
         expected_id = build_cohort_capture_close_id(
             forecast_snapshot=snapshot,
@@ -677,6 +692,12 @@ def verify_cohort_capture_close_archives(
     if state_sequence > len(frames):
         raise ValueError("frozen V2 forecast state is absent from the capture archive")
     frozen_frame = frames[state_sequence - 1]
+    if any(
+        frame["sequence"] > state_sequence
+        and ensure_utc(datetime.fromisoformat(frame["received_at"])) <= snapshot.frozen_at
+        for frame in frames
+    ):
+        raise ValueError("V2 forecast freeze does not use the last shared state available")
     if any(
         forecast.as_of_ingest_sequence != frozen_frame["sequence"]
         or forecast.source_observation_id != frozen_frame["observation_id"]

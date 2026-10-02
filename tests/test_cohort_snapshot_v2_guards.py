@@ -15,6 +15,8 @@ from test_cohort_snapshot_v2 import _synthetic_snapshot
 
 from argos.baselines.quote import MarketQuoteV1
 from argos.config.manifest import RunMode, WorkingTreeStatus
+from argos.domain.observation import ObservationEnvelopeV1, RejectedObservationV1
+from argos.domain.pricechange import PriceChangeV1
 from argos.evaluation.cohort_selection_v2 import BookAttemptStatus
 from argos.evaluation.cohort_snapshot_v2 import (
     _capture_frames,
@@ -117,6 +119,9 @@ def test_capture_manifest_rejects_runtime_identity_mismatches(
         lambda params: params.update(target_id="wrong-target"),
         lambda params: params.update(max_seconds="not-a-number"),
         lambda params: params.update(max_seconds="NaN"),
+        lambda params: params.update(max_seconds="120"),
+        lambda params: params.update(max_seconds=120.0),
+        lambda params: params.update(max_seconds=True),
         lambda params: params.update(max_seconds=1),
         lambda params: params.update(max_frames=True),
         lambda params: params.update(max_frames=1),
@@ -149,13 +154,24 @@ def test_capture_manifest_rejects_bad_caps_scope_and_archive_policy(
 
 
 @pytest.mark.parametrize(
-    "schema_versions",
-    [(), ("m4_cohort_capture_close.v1",), ("m4_cohort_frozen_forecast_snapshot.v1",)],
+    "missing_schema",
+    [
+        ObservationEnvelopeV1.schema_version,
+        RejectedObservationV1.schema_version,
+        PriceChangeV1.schema_version,
+        "m4_cohort_capture_close.v1",
+        "m4_cohort_frozen_forecast_snapshot.v1",
+    ],
 )
-def test_capture_manifest_requires_both_v2_evidence_schemas(
-    tmp_path: Path, schema_versions: tuple[str, ...]
+def test_capture_manifest_requires_all_capture_evidence_schemas(
+    tmp_path: Path, missing_schema: str
 ) -> None:
     close, _, snapshot, decision = _context(tmp_path)
+    schema_versions = tuple(
+        schema
+        for schema in snapshot.capture_run_manifest.schema_versions
+        if schema != missing_schema
+    )
     manifest = _unchecked(snapshot.capture_run_manifest, schema_versions=schema_versions)
     market = decision.market
     assert market is not None
@@ -169,6 +185,22 @@ def test_capture_manifest_requires_both_v2_evidence_schemas(
             no_token_id=market.token_id_for("No"),
             started_at=close.started_at,
         )
+
+
+def test_selected_target_rejects_book_receipt_for_other_canonical_attempt(
+    tmp_path: Path,
+) -> None:
+    _close, _receipt, snapshot, _decision = _context(tmp_path)
+    selection = snapshot.selection
+    receipt = selection.book_attempt_receipts[0]
+    forged_receipt = _unchecked(receipt, artifact_sha256="0" * 64)
+    forged_selection = _unchecked(
+        selection,
+        book_attempt_receipts=(forged_receipt, *selection.book_attempt_receipts[1:]),
+    )
+
+    with pytest.raises(ValueError, match="canonical artifact record"):
+        _selected_target(snapshot.protocol, forged_selection, snapshot.entry_index)
 
 
 @pytest.mark.parametrize(
