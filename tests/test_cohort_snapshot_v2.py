@@ -18,6 +18,7 @@ from argos.config.manifest import RunManifest, RunMode, WorkingTreeStatus
 from argos.domain.observation import ObservationEnvelopeV1, RejectedObservationV1
 from argos.domain.pricechange import PriceChangeV1
 from argos.domain.provenance import SourceProvenanceV1, sha256_hex
+from argos.errors import StorageError
 from argos.evaluation.cohort_selection_v2 import select_block_candidates_v2
 from argos.evaluation.cohort_snapshot_v2 import (
     CohortCaptureCloseV1,
@@ -129,7 +130,7 @@ def _synthetic_snapshot(
         ]
     )
     capture_provenance = SourceProvenanceV1(
-        source="clob_ws",
+        source="clob_market_ws",
         endpoint=f"clob-capture://{capture_run_id}/{target_id}",
         retrieved_at=closed_at + timedelta(seconds=1),
         raw_sha256=sha256_hex(capture_bytes),
@@ -265,4 +266,14 @@ def test_v2_freeze_must_reference_last_frame_available_by_freeze(tmp_path: Path)
     close, receipt = _synthetic_snapshot(tmp_path, forecast_sequence=2)
 
     with pytest.raises(ValueError, match="last shared state available"):
+        verify_cohort_capture_close_archives(close, receipt, archive_dir=tmp_path)
+
+
+def test_v2_capture_close_archive_verifier_requires_persisted_close_record(
+    tmp_path: Path,
+) -> None:
+    close, receipt = _synthetic_snapshot(tmp_path)
+    (tmp_path / receipt.storage_identity).unlink()
+
+    with pytest.raises(StorageError, match="no archived payload"):
         verify_cohort_capture_close_archives(close, receipt, archive_dir=tmp_path)

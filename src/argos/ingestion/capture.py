@@ -143,9 +143,9 @@ rather than silently worked around.**
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Final, Protocol
 
@@ -289,6 +289,7 @@ async def run_capture(
     raw_archive_dir: Path | None = None,
     dispatcher: ObservationDispatcher | None = None,
     clock_skew_tolerance: timedelta = DEFAULT_CLOCK_SKEW_TOLERANCE,
+    successful_end_time: Callable[[datetime], datetime] | None = None,
 ) -> CaptureHealth:
     """Consume `frame_source` into `store` under one `capture_run`, until exhausted or failed.
 
@@ -307,6 +308,9 @@ async def run_capture(
     module docstring, Decision 2. Decoding one frame's JSON, and dispatching
     each event inside it, is entirely synchronous, single-threaded work; the
     only `await` in this function is the frame source's own `async for`.
+    A bounded caller may provide `successful_end_time` to cap a normal close
+    timestamp after the source has observed an excluded boundary frame. Failed
+    runs always retain the actual observed clock time.
     """
     tokens: Sequence[str] = sorted(frozenset(subscribed_token_ids))
     store.open_capture_run(capture_run_id, started_at=clock.now())
@@ -348,6 +352,9 @@ async def run_capture(
                 tokens=tokens,
                 clock_skew_tolerance=clock_skew_tolerance,
             )
+        ended_at = clock.now()
+        if successful_end_time is not None:
+            ended_at = successful_end_time(ended_at)
     except BaseException:
         store.close_capture_run(
             capture_run_id, ended_at=clock.now(), completion_status=CompletionStatus.FAILED
@@ -355,7 +362,7 @@ async def run_capture(
         raise
     else:
         store.close_capture_run(
-            capture_run_id, ended_at=clock.now(), completion_status=CompletionStatus.COMPLETED
+            capture_run_id, ended_at=ended_at, completion_status=CompletionStatus.COMPLETED
         )
     return state.health
 

@@ -179,6 +179,11 @@ async def test_duration_cap_excludes_a_frame_received_after_the_deadline(
     assert summary.frames_archived == 1
     assert summary.boundary_frame_sha256 == late.provenance.raw_sha256
     assert summary.health.frames_consumed == 1
+    expected_deadline = START + timedelta(seconds=5)
+    assert summary.finished_at == expected_deadline
+    run = store.get_capture_run("duration-cap")
+    assert run is not None and run.ended_at == expected_deadline
+    assert (summary.finished_at - summary.started_at).total_seconds() <= 5
 
 
 async def test_source_exhaustion_is_reported_and_source_is_closed(

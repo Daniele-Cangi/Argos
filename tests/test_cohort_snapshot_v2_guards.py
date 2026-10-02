@@ -25,9 +25,11 @@ from argos.evaluation.cohort_snapshot_v2 import (
     _verify_receipt,
     build_cohort_capture_close_id,
     build_cohort_frozen_forecast_snapshot_id,
+    verify_cohort_capture_close_archives,
 )
 from argos.evaluation.prospective import EvidenceArtifactKind, persist_evidence_record
-from argos.store.raw_archive import read_raw_payload
+from argos.sources.clob_ws import SOURCE_NAME as CLOB_WS_SOURCE_NAME
+from argos.store.raw_archive import read_raw_payload, write_raw_payload
 
 
 def _unchecked(model: Any, **updates: Any) -> Any:
@@ -511,6 +513,42 @@ def test_capture_close_validator_requires_durable_freeze_and_raw_archive(
     malformed = _unchecked(close, capture_archive_provenance=late_archive)
     with pytest.raises(ValueError, match="first-hand and post-close"):
         malformed._capture_is_bound_and_bounded()
+
+
+def test_capture_close_rejects_archive_from_non_clob_websocket_source(
+    tmp_path: Path,
+) -> None:
+    close, _receipt, _snapshot, _decision = _context(tmp_path)
+    foreign_provenance = close.capture_archive_provenance.model_copy(
+        update={"source": "foreign_feed", "endpoint": "fixture://foreign-feed"}
+    )
+    malformed = _close_with_consistent_id(close, capture_archive_provenance=foreign_provenance)
+
+    with pytest.raises(ValueError, match=CLOB_WS_SOURCE_NAME):
+        malformed._capture_is_bound_and_bounded()
+
+
+def test_archive_verifier_rejects_capture_bound_to_foreign_source(
+    tmp_path: Path,
+) -> None:
+    close, original_receipt, _snapshot, _decision = _context(tmp_path)
+    capture_bytes, _ = read_raw_payload(tmp_path, close.capture_archive_provenance.raw_sha256)
+    foreign_provenance = close.capture_archive_provenance.model_copy(
+        update={"source": "foreign_feed", "endpoint": "fixture://foreign-feed"}
+    )
+    write_raw_payload(tmp_path, raw=capture_bytes, provenance=foreign_provenance)
+    malformed = _close_with_consistent_id(close, capture_archive_provenance=foreign_provenance)
+    receipt = persist_evidence_record(
+        tmp_path,
+        record=malformed,
+        experiment_id=malformed.forecast_snapshot.protocol.experiment_id,
+        artifact_kind=EvidenceArtifactKind.COHORT_CAPTURE_CLOSE,
+        artifact_id=malformed.capture_close_id,
+        persisted_at=original_receipt.persisted_at,
+    )
+
+    with pytest.raises(ValueError, match=CLOB_WS_SOURCE_NAME):
+        verify_cohort_capture_close_archives(malformed, receipt, archive_dir=tmp_path)
 
 
 def test_capture_close_rejects_start_before_selection_receipt(tmp_path: Path) -> None:

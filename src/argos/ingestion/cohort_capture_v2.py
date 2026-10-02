@@ -78,6 +78,7 @@ class _BoundedFrameSource:
         self._max_bytes = max_bytes
         self._after_frame = after_frame
         self.started_at: datetime | None = ensure_utc(clock.now())
+        self.deadline: datetime | None = None
         self.stop_reason: BoundedCaptureStopReasonV2 | None = None
         self.frames_archived = 0
         self.raw_bytes_archived = 0
@@ -87,6 +88,7 @@ class _BoundedFrameSource:
         iterator = self._source.frames().__aiter__()
         assert self.started_at is not None
         deadline = self.started_at + timedelta(seconds=self._max_seconds)
+        self.deadline = deadline
         try:
             while True:
                 if self.frames_archived >= self._max_frames:
@@ -214,6 +216,12 @@ async def run_bounded_cohort_capture_v2(
         capture_run_id=capture_run_id,
         subscribed_token_ids=token_ids,
         raw_archive_dir=raw_archive_dir,
+        successful_end_time=lambda observed_at: (
+            min(observed_at, bounded_source.deadline)
+            if bounded_source.stop_reason is BoundedCaptureStopReasonV2.DURATION_CAP
+            and bounded_source.deadline is not None
+            else observed_at
+        ),
     )
     run = store.get_capture_run(capture_run_id)
     if run is None or run.ended_at is None or bounded_source.started_at is None:

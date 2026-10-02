@@ -41,6 +41,7 @@ from argos.evaluation.prospective import (
     load_persisted_record,
     verify_receipt_for_record,
 )
+from argos.sources.clob_ws import SOURCE_NAME as CLOB_WS_SOURCE_NAME
 from argos.store.raw_archive import read_raw_payload
 
 __all__ = [
@@ -582,6 +583,8 @@ class CohortCaptureCloseV1(VersionedModel):
             raise ValueError("capture archive must contain bytes")
         if self.capture_archive_provenance.byte_length > protocol.capture_max_bytes_per_target:
             raise ValueError("capture archive exceeds the per-target V2 byte cap")
+        if self.capture_archive_provenance.source != CLOB_WS_SOURCE_NAME:
+            raise ValueError("V2 capture archive provenance must come from clob_market_ws")
         decision, review, _ = _selected_target(protocol, selection, snapshot.entry_index)
         assert decision.market is not None
         blind_deadline = review.earliest_outcome_knowable_at - timedelta(
@@ -631,6 +634,9 @@ def verify_cohort_capture_close_archives(
         kind=EvidenceArtifactKind.COHORT_CAPTURE_CLOSE,
         artifact_id=close.capture_close_id,
     )
+    archived_close = load_persisted_record(archive_dir, close_receipt, CohortCaptureCloseV1)
+    if archived_close != close:
+        raise ValueError("archived V2 capture-close record disagrees with close evidence")
     if close_receipt.persisted_at < max(
         close.closed_at, close.capture_archive_provenance.retrieved_at
     ):
@@ -670,6 +676,8 @@ def verify_cohort_capture_close_archives(
     archived_capture, stored_provenance = read_raw_payload(
         archive_dir, close.capture_archive_provenance.raw_sha256
     )
+    if stored_provenance.source != CLOB_WS_SOURCE_NAME:
+        raise ValueError("archived V2 capture payload is not from clob_market_ws")
     if (
         stored_provenance != close.capture_archive_provenance
         or not stored_provenance.matches(archived_capture)
