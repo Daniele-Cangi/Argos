@@ -25,6 +25,24 @@ symlink-privilege skips; Ruff, formatting, mypy (89 source files) and
 `git diff --check` passed. This slice is isolated on the dedicated branch pending
 CI/review and merge; it is not yet part of `main`.
 
+PR #25 initially passed its functional tests on both CI platforms but failed
+the Ubuntu coverage gate: run accounting measured 76.42%, journal/replay 84.35%,
+against the unchanged 90% per-module threshold. The test-only follow-up adds
+69 synthetic falsification cases for wrong receipt/admission bindings,
+self-identified but inconsistent outcomes, journal inventory/chronology,
+omitted snapshots, altered endpoints and corrupt store metadata. Focused local
+coverage measures 97.56% and 95.36% respectively; no production behavior,
+threshold or historical evidence is changed.
+
+The first complete Windows coverage attempt recorded a pre-existing T5
+subprocess readiness timeout (five-second startup bound): 2,411 passed, two
+symlink-privilege skips and one failed. Its temporary failure artifact was
+inspected without alteration; isolated T5 under coverage then passed. The
+complete follow-up gate passed with 2,412 tests, two symlink-privilege skips,
+all declared coverage thresholds satisfied and the same 97.56%/95.36%
+measurements. Ruff, formatting, mypy and diff checks also passed. The startup
+timeout remains an observed intermittent limitation, not a repaired guarantee.
+
 ## 2026-10-02 V2 capture-run accounting sub-slice — not an owner
 
 The first sub-slice on `feat/m4-v2-capture-close-owner` added a versioned capture
