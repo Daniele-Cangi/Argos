@@ -1,6 +1,42 @@
 # ARGOS status
 
-Last updated: 2026-09-27
+Last updated: 2026-10-03
+
+## 2026-10-03 V2 capture-to-freeze owner — synthetic integration only
+
+The current branch adds an offline-testable target owner: exclusive fresh
+database/raw archive, bounded shared ingestion, durable accounting and a
+versioned frame journal preserving empty arrays, duplicate frame arrivals and
+processing timestamps separately from ingest sequence. Independent raw
+re-normalization checks the EventStore delivery/rejection ledger and all health
+counters; stored replay reconstructs the final four baseline decisions and
+persistence history without any final label. Empty/unseeded captures retain
+accounting without an invented snapshot. Corrupt bytes, extra deliveries,
+altered forecasts and missed blind boundaries are refused.
+
+Actual snapshot finalization follows acquisition close and must be durably
+confirmed before the reviewed outcome-knowable margin, as allowed by ADR-0020.
+It does not rewrite `CohortCaptureCloseV1`'s earlier synthetic before-close
+receipt rule. Total DB/WAL/artifact disk enforcement, crash recovery, exclusive
+resumable finality and the capture-to-score join remain outstanding. No live
+campaign is frozen or launched; no calibration or predictive claim is made.
+Local verification on the final source tree: 2,343 tests passed, two Windows
+symlink-privilege skips; Ruff, formatting, mypy (89 source files) and
+`git diff --check` passed. This slice is isolated on the dedicated branch pending
+CI/review and merge; it is not yet part of `main`.
+
+## 2026-10-02 V2 capture-run accounting sub-slice — not an owner
+
+The first sub-slice on `feat/m4-v2-capture-close-owner` added a versioned capture
+outcome recording stop reason, frame/raw-byte counts, health counters, and the
+size/hash of an excluded boundary frame. It binds the declaration and admitted
+target, replays their archive receipts, and checks the declared capture bounds.
+That subrecord alone remains a runner-reported assertion: counts are not derived
+independently from EventStore/raw frames, nor is the record joined to the
+capture-close/snapshot owner or crash/resume path. It establishes no live
+readiness, finality, scoring, calibration, or predictive claim. The full suite
+passed locally (2,321 passed; two symlink-capability skips), as did Ruff, format
+and mypy. The 2026-10-03 entry records the next integration sub-slice.
 
 ## 2026-09-27 M4 methodology revision — no live launch
 

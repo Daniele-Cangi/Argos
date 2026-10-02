@@ -17,6 +17,7 @@ from pathlib import Path
 
 from argos.clock import Clock, Pacer, ReplayClock, ensure_utc
 from argos.ingestion.capture import CaptureHealth, FrameSource, run_capture
+from argos.projections.dispatch import ObservationDispatcher
 from argos.sources.clob_ws import MarketFrame
 from argos.store.event_store import EventStore
 
@@ -170,6 +171,7 @@ async def run_bounded_cohort_capture_v2(
     max_bytes: int,
     raw_archive_dir: Path,
     after_frame: Callable[[MarketFrame, int], None] | None = None,
+    dispatcher: ObservationDispatcher | None = None,
 ) -> BoundedCaptureSummaryV2:
     """Run the existing ingestion handlers under one V2 target's hard limits.
 
@@ -216,6 +218,7 @@ async def run_bounded_cohort_capture_v2(
         capture_run_id=capture_run_id,
         subscribed_token_ids=token_ids,
         raw_archive_dir=raw_archive_dir,
+        dispatcher=dispatcher,
         successful_end_time=lambda observed_at: (
             min(observed_at, bounded_source.deadline)
             if bounded_source.stop_reason is BoundedCaptureStopReasonV2.DURATION_CAP
