@@ -38,6 +38,22 @@ V8, invents finality, establishes calibration/edge or authorizes M5/trading.
   event-group reuse, book failure, corrupt bytes and aliased identities. The
   review record is an attestation schema, not authentication of a person; no
   live review workflow or acquisition owner is wired yet.
+- First V2 admission-to-freeze slice: versioned capture-close and shared
+  forecast-snapshot records bind a ranked admitted target, V2 caps, both token
+  subscriptions, archived ordered frames and all four baseline methods at one
+  reviewed outcome-blind information state. A no-network archive-replay test
+  includes a persistence-method abstention. This proves the synthetic close and
+  freeze boundary only; it is not a live capture owner, finality monitor, or
+  complete capture-to-score proof.
+- Synthetic bounded-ingestion slice: `run_bounded_cohort_capture_v2` drives the
+  existing `run_capture`/`EventStore` path with a required raw archive, enforces
+  the first duration/frame/byte cap, and tests that the next out-of-window
+  frame is not normalized or stored. For a time/byte boundary it returns only
+  that excluded frame's size/hash in a non-persistent run summary; this is not
+  complete evidence for the excluded payload. Tests use a fake source and no
+  socket. The bounded adapter does not yet produce/persist the V2 close and
+  shared snapshot in the same owner, resume after crash, check disk headroom,
+  or qualify a live adapter.
 
 ## Remaining vertical slice: capture, outcome and synthetic end-to-end proof
 
@@ -55,9 +71,12 @@ live runner or a full capture-to-score proof:
    one empty slot, and allow a later block. An empty/failed predecessor must have
    evidence; a missing/corrupt predecessor must stop admission. No slot/quota
    transfer, post-admission replacement or recapture to select a better score.
-4. Shared capture-close snapshot for the four baseline methods, with abstention;
-   enforce reviewed outcome blindness and actual freeze receipt before scoring.
-   A target can end before the *last* cohort block when its own timing is valid.
+4. Join the bounded ingestion adapter to the V2 capture-close/snapshot owner
+   and reproducible forecast-state replay; persist excluded-boundary and stop
+   accounting, keep the reviewed outcome-blind boundary and durable freeze
+   receipt before any scoring, and prove crash/resume. The current adapter is
+   only synthetic-tested and is not a complete owner. A target can end before
+   the *last* cohort block when its own timing is valid.
 5. Unified early/late finality join and exclusive resumable owner, retaining raw
    hashes, ordinal/receipt chains, observed gaps and actual retrieval time.
    Do not force V2 through `LateFinalOutcomeV1`'s old post-deadline condition.

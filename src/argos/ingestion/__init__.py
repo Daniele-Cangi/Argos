@@ -16,6 +16,11 @@ from argos.ingestion.clob_ws_book import (
     CLOB_WS_BOOK_NORMALIZER_VERSION,
     normalize_clob_ws_book,
 )
+from argos.ingestion.cohort_capture_v2 import (
+    BoundedCaptureStopReasonV2,
+    BoundedCaptureSummaryV2,
+    run_bounded_cohort_capture_v2,
+)
 from argos.ingestion.gamma_markets import (
     NORMALIZER_VERSION,
     NormalizationReport,
@@ -31,6 +36,8 @@ __all__ = [
     "CLOB_WS_BOOK_NORMALIZER_VERSION",
     "CLOB_WS_PRICE_CHANGE_EVENT_TYPE",
     "NORMALIZER_VERSION",
+    "BoundedCaptureStopReasonV2",
+    "BoundedCaptureSummaryV2",
     "CaptureHealth",
     "FrameSource",
     "NormalizationReport",
@@ -39,5 +46,6 @@ __all__ = [
     "normalize_clob_ws_book",
     "normalize_market",
     "normalize_markets",
+    "run_bounded_cohort_capture_v2",
     "run_capture",
 ]

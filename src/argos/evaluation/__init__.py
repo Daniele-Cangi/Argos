@@ -57,6 +57,13 @@ from argos.evaluation.cohort_selection_v2 import (
     verify_block_selection_v2,
     verify_block_selection_v2_archives,
 )
+from argos.evaluation.cohort_snapshot_v2 import (
+    CohortCaptureCloseV1,
+    CohortFrozenForecastSnapshotV1,
+    build_cohort_capture_close_id,
+    build_cohort_frozen_forecast_snapshot_id,
+    verify_cohort_capture_close_archives,
+)
 from argos.evaluation.late_monitor import (
     LateLifecycleMonitor,
     LateMonitoringScheduleV1,
@@ -198,6 +205,8 @@ __all__ = [
     "CaptureRejectionEvidenceV1",
     "CaptureRunSummaryV1",
     "CohortBlockV1",
+    "CohortCaptureCloseV1",
+    "CohortFrozenForecastSnapshotV1",
     "CohortReport",
     "CohortStratumV1",
     "CutoffBasis",
@@ -282,6 +291,8 @@ __all__ = [
     "brier_score",
     "build_capture_rejection_evidence",
     "build_capture_run_summary",
+    "build_cohort_capture_close_id",
+    "build_cohort_frozen_forecast_snapshot_id",
     "build_frozen_forecast_snapshot_id",
     "build_late_final_outcome_id",
     "build_late_monitoring_schedule_id",
@@ -309,6 +320,7 @@ __all__ = [
     "verify_block_selection",
     "verify_block_selection_v2",
     "verify_block_selection_v2_archives",
+    "verify_cohort_capture_close_archives",
     "verify_late_outcome_archives",
     "verify_published_claim_artifact",
 ]
