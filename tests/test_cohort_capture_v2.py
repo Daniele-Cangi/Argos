@@ -35,6 +35,25 @@ class _ClosableFrameSource:
             self.closed = True
 
 
+class _ReplayScheduledFrameSource:
+    """Synthetic scheduler that advances replay time before each frame arrives."""
+
+    def __init__(self, source: object, clock: ReplayClock) -> None:
+        self._source = source
+        self._clock = clock
+
+    async def frames(self) -> AsyncIterator[MarketFrame]:
+        iterator = self._source.frames().__aiter__()
+        try:
+            async for frame in iterator:
+                self._clock.advance_to(max(self._clock.now(), frame.received_time))
+                yield frame
+        finally:
+            close = getattr(iterator, "aclose", None)
+            if callable(close):
+                await close()
+
+
 @pytest.fixture
 def store() -> SQLiteEventStore:
     return open_sqlite_event_store(":memory:")
@@ -58,12 +77,17 @@ async def _capture(
     max_bytes: int = 10_000,
     frame_source: object | None = None,
     after_frame=None,
+    advance_replay_clock: bool = True,
 ):
+    clock = ReplayClock(START)
+    source = frame_source or ListFrameSource(frames)
+    if advance_replay_clock:
+        source = _ReplayScheduledFrameSource(source, clock)
     return await run_bounded_cohort_capture_v2(
         target_id="target-1",
-        frame_source=frame_source or ListFrameSource(frames),
+        frame_source=source,
         store=store,
-        clock=ReplayClock(START),
+        clock=clock,
         pacer=RealPacer(),
         capture_run_id=run_id,
         subscribed_token_ids=(TOKEN_YES, TOKEN_NO),
@@ -99,6 +123,7 @@ async def test_bounded_capture_uses_shared_loop_and_stops_before_frame_cap_overr
     assert summary.raw_bytes_archived == sum(len(frame.text.encode()) for frame in frames[:2])
     assert summary.boundary_frame_bytes is None
     assert [count for _, count in observed_counts] == [1, 2]
+    assert summary.finished_at == frames[1].received_time
     assert store.get_capture_run("frame-cap").ended_at == summary.finished_at
     assert list(store.iter_open_capture_runs()) == []
 
@@ -209,3 +234,19 @@ async def test_v2_capture_rejects_tampered_source_provenance(
     run = store.get_capture_run("tampered-provenance")
     assert run is not None and run.ended_at is not None
     assert run.completion_status.value == "failed"
+
+
+async def test_v2_capture_rejects_replay_frame_ahead_of_clock(
+    store: SQLiteEventStore, tmp_path: Path
+) -> None:
+    with pytest.raises(ValueError, match="advance its replay clock"):
+        await _capture(
+            store=store,
+            archive=tmp_path,
+            frames=[_frame_at(1)],
+            run_id="stale-replay-clock",
+            advance_replay_clock=False,
+        )
+
+    run = store.get_capture_run("stale-replay-clock")
+    assert run is not None and run.completion_status.value == "failed"

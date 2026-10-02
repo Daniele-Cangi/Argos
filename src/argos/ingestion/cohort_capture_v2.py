@@ -116,11 +116,16 @@ class _BoundedFrameSource:
                 # a live clock advances independently. Use the later instant so a
                 # replay cannot smuggle post-deadline data into the bounded run.
                 received_at = ensure_utc(frame.received_time)
-                effective_now = max(ensure_utc(self._clock.now()), received_at)
+                clock_now = ensure_utc(self._clock.now())
+                effective_now = max(clock_now, received_at)
                 if effective_now > deadline:
                     self.stop_reason = BoundedCaptureStopReasonV2.DURATION_CAP
                     self.boundary_frame = _BoundaryFrame(len(raw), frame.provenance.raw_sha256)
                     return
+                if received_at > clock_now:
+                    raise ValueError(
+                        "V2 frame source must advance its replay clock to accepted receipt times"
+                    )
                 if self.raw_bytes_archived + len(raw) > self._max_bytes:
                     self.stop_reason = BoundedCaptureStopReasonV2.BYTE_CAP
                     self.boundary_frame = _BoundaryFrame(len(raw), frame.provenance.raw_sha256)
@@ -158,7 +163,11 @@ async def run_bounded_cohort_capture_v2(
     deliberately target-scoped and requires raw archival; a caller creates a
     distinct store and archive for each target. A limit stop is a clean end of
     the bounded window, not an ingestion exception; source/store failures still
-    flow through ``run_capture`` and close the store run as failed.
+    flow through ``run_capture`` and close the store run as failed. For replay,
+    the frame-source scheduler owns the supplied ``ReplayClock`` and must
+    advance it to each accepted frame's receive time before yielding that frame;
+    a frame ahead of the clock is rejected rather than recorded in a run that
+    ends before the archived evidence.
     """
     if not isinstance(target_id, str) or not target_id.strip():
         raise ValueError("V2 capture requires one admitted target ID")

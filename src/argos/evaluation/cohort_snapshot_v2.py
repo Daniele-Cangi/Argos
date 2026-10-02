@@ -199,10 +199,17 @@ def _capture_manifest_matches(
         not isinstance(tokens, Sequence)
         or isinstance(tokens, (str, bytes))
         or len(tokens) != 2
-        or set(str(item) for item in tokens) != {yes_token_id, no_token_id}
+        or any(not isinstance(item, str) or not item.strip() for item in tokens)
+        or set(tokens) != {yes_token_id, no_token_id}
         or parameters.get("target_id") != target_id
     ):
         raise ValueError("capture manifest does not identify one bounded V2 target")
+    required_schemas = {
+        CohortCaptureCloseV1.schema_version,
+        CohortFrozenForecastSnapshotV1.schema_version,
+    }
+    if not required_schemas.issubset(manifest.schema_versions):
+        raise ValueError("capture manifest omits required V2 capture evidence schemas")
     try:
         max_seconds = Decimal(str(parameters.get("max_seconds")))
     except (InvalidOperation, ValueError) as error:
@@ -384,7 +391,9 @@ class CohortFrozenForecastSnapshotV1(VersionedModel):
                 forecast.as_of_ingest_sequence,
                 forecast.information_state_hash,
                 forecast.source_observation_id,
+                forecast.as_of_event_time,
                 forecast.as_of_received_time,
+                orjson.dumps(forecast.quote.to_record(), option=orjson.OPT_SORT_KEYS),
             )
             for forecast in self.forecasts
         }
@@ -568,8 +577,12 @@ class CohortCaptureCloseV1(VersionedModel):
             or self.capture_archive_provenance.retrieved_at < self.closed_at
         ):
             raise ValueError("capture archive provenance must be first-hand and post-close")
-        if self.schema_version not in snapshot.capture_run_manifest.schema_versions:
-            raise ValueError("capture manifest omits the V2 capture-close schema")
+        required_schemas = {
+            CohortCaptureCloseV1.schema_version,
+            CohortFrozenForecastSnapshotV1.schema_version,
+        }
+        if not required_schemas.issubset(snapshot.capture_run_manifest.schema_versions):
+            raise ValueError("capture manifest omits required V2 capture evidence schemas")
         expected_id = build_cohort_capture_close_id(
             forecast_snapshot=snapshot,
             forecast_snapshot_receipt=self.forecast_snapshot_receipt,

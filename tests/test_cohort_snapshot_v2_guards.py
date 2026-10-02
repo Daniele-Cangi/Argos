@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ import pytest
 from test_cohort_protocol_v2 import START
 from test_cohort_snapshot_v2 import _synthetic_snapshot
 
+from argos.baselines.quote import MarketQuoteV1
 from argos.config.manifest import RunMode, WorkingTreeStatus
 from argos.evaluation.cohort_selection_v2 import BookAttemptStatus
 from argos.evaluation.cohort_snapshot_v2 import (
@@ -111,6 +113,7 @@ def test_capture_manifest_rejects_runtime_identity_mismatches(
         lambda params: params.update(subscribed_token_ids="yes,no"),
         lambda params: params.update(subscribed_token_ids=("yes",)),
         lambda params: params.update(subscribed_token_ids=("wrong", "pair")),
+        lambda params: params.update(subscribed_token_ids=(701, "702")),
         lambda params: params.update(target_id="wrong-target"),
         lambda params: params.update(max_seconds="not-a-number"),
         lambda params: params.update(max_seconds="NaN"),
@@ -135,6 +138,29 @@ def test_capture_manifest_rejects_bad_caps_scope_and_archive_policy(
     assert market is not None
 
     with pytest.raises(ValueError):
+        _capture_manifest_matches(
+            snapshot.protocol,
+            manifest,
+            target_id=snapshot.target_id,
+            yes_token_id=market.token_id_for("Yes"),
+            no_token_id=market.token_id_for("No"),
+            started_at=close.started_at,
+        )
+
+
+@pytest.mark.parametrize(
+    "schema_versions",
+    [(), ("m4_cohort_capture_close.v1",), ("m4_cohort_frozen_forecast_snapshot.v1",)],
+)
+def test_capture_manifest_requires_both_v2_evidence_schemas(
+    tmp_path: Path, schema_versions: tuple[str, ...]
+) -> None:
+    close, _, snapshot, decision = _context(tmp_path)
+    manifest = _unchecked(snapshot.capture_run_manifest, schema_versions=schema_versions)
+    market = decision.market
+    assert market is not None
+
+    with pytest.raises(ValueError, match="omits required V2 capture evidence schemas"):
         _capture_manifest_matches(
             snapshot.protocol,
             manifest,
@@ -371,6 +397,36 @@ def test_snapshot_validator_rejects_missing_mixed_and_unavailable_baselines(
     )
     malformed = _unchecked(snapshot, forecasts=changed_forecasts)
     with pytest.raises(ValueError, match="unavailable at the frozen information state"):
+        malformed._one_blind_shared_information_state()
+
+
+@pytest.mark.parametrize("anchor", ["quote", "as_of_event_time"])
+def test_snapshot_validator_rejects_different_quote_or_event_anchors(
+    tmp_path: Path, anchor: str
+) -> None:
+    _, _, snapshot, _ = _context(tmp_path)
+    forecast = snapshot.forecasts[0]
+    if anchor == "quote":
+        changed_quote = MarketQuoteV1.model_validate(
+            {
+                **forecast.quote.model_dump(),
+                "best_bid": Decimal("0.39"),
+                "midpoint": Decimal("0.42"),
+                "spread": Decimal("0.06"),
+            }
+        )
+        changed_forecast = _unchecked(forecast, quote=changed_quote)
+    else:
+        changed_forecast = _unchecked(
+            forecast,
+            as_of_event_time=forecast.as_of_event_time + timedelta(seconds=1),
+        )
+    malformed = _unchecked(
+        snapshot,
+        forecasts=(changed_forecast, *snapshot.forecasts[1:]),
+    )
+
+    with pytest.raises(ValueError, match="share one evaluation information state"):
         malformed._one_blind_shared_information_state()
 
 
