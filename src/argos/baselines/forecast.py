@@ -45,8 +45,10 @@ __all__ = [
     "CalibrationStatus",
     "MarketBaselineForecastV1",
     "MarketBaselineForecastV2",
+    "MarketBaselineForecastV3",
     "build_baseline_forecast",
     "build_baseline_forecast_v2",
+    "build_baseline_forecast_v3",
 ]
 
 DISPLAYED_PRICE_LAST_TRADE_SPREAD = Decimal("0.10")
@@ -221,6 +223,42 @@ class MarketBaselineForecastV2(MarketBaselineForecastV1):
     contract_id: str | None = Field(default=None, min_length=1)
 
 
+class MarketBaselineForecastV3(MarketBaselineForecastV2):
+    """Book quote time and information-change trigger time are distinct evidence.
+
+    ``as_of_event_time`` remains the book's source time, equal to ``quote_time``.
+    A standalone trade may trigger a forecast without refreshing that book.
+    Missing or out-of-order trigger timestamps are preserved, never repaired.
+    V1/V2 records are not migrated or reinterpreted.
+    """
+
+    schema_version: ClassVar[str] = "market_baseline_forecast.v3"
+    trigger_event_time: datetime | None
+
+    @field_validator("trigger_event_time")
+    @classmethod
+    def _trigger_utc(cls, value: datetime | None) -> datetime | None:
+        return None if value is None else ensure_utc(value)
+
+    @model_validator(mode="after")
+    def _book_time(self) -> MarketBaselineForecastV3:
+        if self.as_of_event_time != self.quote.quote_time:
+            raise ValueError("forecast book time must equal the source quote time")
+        if self.forecast_id != _forecast_v3_id(self, self.trigger_event_time):
+            raise ValueError("V3 forecast identity disagrees with its evidence and clocks")
+        return self
+
+
+def _forecast_v3_id(forecast: MarketBaselineForecastV2, trigger: datetime | None) -> str:
+    material = {
+        **forecast.model_dump(mode="json", exclude={"forecast_id", "trigger_event_time"}),
+        "schema_version": MarketBaselineForecastV3.schema_version,
+        "trigger_event_time": None if trigger is None else ensure_utc(trigger).isoformat(),
+    }
+    digest = hashlib.sha256(orjson.dumps(material, option=orjson.OPT_SORT_KEYS)).hexdigest()
+    return f"forecast-{digest[:32]}"
+
+
 def build_baseline_forecast(
     *,
     method: BaselineMethod,
@@ -317,4 +355,40 @@ def build_baseline_forecast_v2(
         information_state_hash=information_state_hash,
         market_id=market_id,
         contract_id=contract_id,
+    )
+
+
+def build_baseline_forecast_v3(
+    *,
+    method: BaselineMethod,
+    quote: MarketQuoteV1,
+    trigger_event_time: datetime | None,
+    as_of_received_time: datetime,
+    as_of_ingest_sequence: int,
+    previous_score: Decimal | None,
+    evaluation_run_id: str,
+    source_capture_run_id: str,
+    source_observation_id: str,
+    information_state_hash: str,
+    market_id: str,
+    contract_id: str | None,
+) -> MarketBaselineForecastV3:
+    """Same baseline scores, new versioned identity including separate clocks."""
+    legacy = build_baseline_forecast_v2(
+        method=method,
+        quote=quote,
+        as_of_received_time=as_of_received_time,
+        as_of_ingest_sequence=as_of_ingest_sequence,
+        previous_score=previous_score,
+        evaluation_run_id=evaluation_run_id,
+        source_capture_run_id=source_capture_run_id,
+        source_observation_id=source_observation_id,
+        information_state_hash=information_state_hash,
+        market_id=market_id,
+        contract_id=contract_id,
+    )
+    trigger = None if trigger_event_time is None else ensure_utc(trigger_event_time)
+    return MarketBaselineForecastV3(
+        **dict(legacy, forecast_id=_forecast_v3_id(legacy, trigger)),
+        trigger_event_time=trigger,
     )

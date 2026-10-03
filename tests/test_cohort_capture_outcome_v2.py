@@ -14,6 +14,7 @@ from argos.domain.provenance import SHA256_LENGTH
 from argos.errors import ImmutabilityViolationError
 from argos.evaluation.cohort_capture_outcome_v2 import (
     CohortCaptureRunOutcomeV1,
+    CohortCaptureRunOutcomeV2,
     build_cohort_capture_run_outcome,
     build_cohort_capture_run_outcome_id,
     persist_cohort_capture_run_outcome,
@@ -195,6 +196,146 @@ def test_capture_outcome_allows_decode_rejection_without_decoded_event(
     )
     assert outcome.health_decode_failures == outcome.health_rejected == 1
     assert outcome.health_events_seen == 0
+
+
+@pytest.mark.parametrize(
+    ("health", "message"),
+    [
+        (
+            CaptureHealth(
+                frames_consumed=2,
+                events_seen=1,
+                decode_failures=1,
+                unknown_event_type=1,
+                rejected=1,
+            ),
+            "combined reason counters",
+        ),
+        (CaptureHealth(frames_consumed=2, events_seen=2), "fewer outcomes than decoded events"),
+        (
+            CaptureHealth(frames_consumed=2, decode_failures=3, rejected=3),
+            "decode failures exceed consumed frames",
+        ),
+        (
+            CaptureHealth(frames_consumed=2, events_seen=1, unknown_event_type=2, rejected=2),
+            "unknown-event reasons exceed decoded events",
+        ),
+    ],
+)
+@pytest.mark.parametrize("record_model", [CohortCaptureRunOutcomeV1, CohortCaptureRunOutcomeV2])
+def test_builder_refuses_impossible_health_with_fresh_identity(
+    tmp_path, health, message, record_model
+):
+    protocol, protocol_receipt, selection, selection_receipt, summary, original = _prepared_outcome(
+        tmp_path
+    )
+    with pytest.raises(ValueError, match=message):
+        build_cohort_capture_run_outcome(
+            protocol=protocol,
+            protocol_receipt=protocol_receipt,
+            selection=selection,
+            selection_receipt=selection_receipt,
+            entry_index=0,
+            summary=replace(summary, health=health),
+            record_model=record_model,
+        )
+    record = original.to_record()
+    record.update(
+        schema_version=record_model.schema_version,
+        health_decode_failures=health.decode_failures,
+        health_events_seen=health.events_seen,
+        health_unknown_event_type=health.unknown_event_type,
+        health_rejected=health.rejected,
+        health_accepted=health.accepted,
+    )
+    with pytest.raises(ValueError, match=message):
+        record_model.from_record(record)
+
+
+@pytest.mark.parametrize("record_model", [CohortCaptureRunOutcomeV1, CohortCaptureRunOutcomeV2])
+@pytest.mark.parametrize(
+    "health",
+    [
+        CaptureHealth(frames_consumed=1, events_seen=3, unknown_event_type=3, rejected=3),
+        CaptureHealth(frames_consumed=1, decode_failures=1, rejected=1),
+    ],
+)
+def test_reason_population_bounds_allow_arrays_and_malformed_frames(tmp_path, record_model, health):
+    protocol, protocol_receipt, selection, selection_receipt, summary, _ = _prepared_outcome(
+        tmp_path
+    )
+    outcome = build_cohort_capture_run_outcome(
+        protocol=protocol,
+        protocol_receipt=protocol_receipt,
+        selection=selection,
+        selection_receipt=selection_receipt,
+        entry_index=0,
+        summary=replace(summary, frames_archived=1, health=health),
+        record_model=record_model,
+    )
+    assert outcome.health == health
+    receipt = persist_cohort_capture_run_outcome(
+        tmp_path,
+        outcome=outcome,
+        persisted_at=outcome.finished_at + timedelta(seconds=1),
+    )
+    assert (
+        verify_cohort_capture_run_outcome_archives(
+            outcome,
+            receipt,
+            protocol=protocol,
+            protocol_receipt=protocol_receipt,
+            selection=selection,
+            selection_receipt=selection_receipt,
+            archive_dir=tmp_path,
+        )
+        == outcome
+    )
+
+
+@pytest.mark.parametrize("record_model", [CohortCaptureRunOutcomeV1, CohortCaptureRunOutcomeV2])
+def test_duration_cap_requires_exact_deadline_in_builder_and_archive(tmp_path, record_model):
+    protocol, protocol_receipt, selection, selection_receipt, summary, original = _prepared_outcome(
+        tmp_path
+    )
+    updates = dict(
+        stop_reason=BoundedCaptureStopReasonV2.DURATION_CAP,
+        finished_at=summary.started_at + timedelta(seconds=1),
+    )
+    original = build_cohort_capture_run_outcome(
+        protocol=protocol,
+        protocol_receipt=protocol_receipt,
+        selection=selection,
+        selection_receipt=selection_receipt,
+        entry_index=0,
+        summary=summary,
+        record_model=record_model,
+    )
+    with pytest.raises(ValueError, match="duration-cap stop must reach"):
+        build_cohort_capture_run_outcome(
+            protocol=protocol,
+            protocol_receipt=protocol_receipt,
+            selection=selection,
+            selection_receipt=selection_receipt,
+            entry_index=0,
+            summary=replace(summary, **updates),
+            record_model=record_model,
+        )
+    # A content-valid assertion and real receipt do not prove a reached deadline.
+    altered = _reidentified_outcome(original, **updates)
+    receipt = persist_cohort_capture_run_outcome(
+        tmp_path, outcome=altered, persisted_at=altered.finished_at
+    )
+    with pytest.raises(ValueError, match="duration-cap stop must reach"):
+        verify_cohort_capture_run_outcome_archives(
+            altered,
+            receipt,
+            protocol=protocol,
+            protocol_receipt=protocol_receipt,
+            selection=selection,
+            selection_receipt=selection_receipt,
+            archive_dir=tmp_path,
+        )
 
 
 @pytest.mark.parametrize(
@@ -406,8 +547,14 @@ def _reidentified_outcome(outcome, **updates):
         )
     }
     identity["health"] = outcome.health
-    return CohortCaptureRunOutcomeV1.model_validate(
-        {**altered, "outcome_id": build_cohort_capture_run_outcome_id(**identity)}
+    return type(outcome).model_validate(
+        {
+            **altered,
+            "outcome_id": build_cohort_capture_run_outcome_id(
+                **identity,
+                schema_version=outcome.schema_version,
+            ),
+        }
     )
 
 

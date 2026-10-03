@@ -13,12 +13,12 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Self
 
 import orjson
 from pydantic import Field, field_validator, model_validator
 
-from argos.baselines import BaselineMethod, MarketBaselineForecastV2
+from argos.baselines import BaselineMethod, MarketBaselineForecastV2, MarketBaselineForecastV3
 from argos.clock import ensure_utc
 from argos.config.manifest import RunManifest, RunMode, WorkingTreeStatus
 from argos.domain.market import MarketDefinitionV1
@@ -47,6 +47,7 @@ from argos.store.raw_archive import read_raw_payload
 __all__ = [
     "CohortCaptureCloseV1",
     "CohortFrozenForecastSnapshotV1",
+    "CohortFrozenForecastSnapshotV2",
     "build_cohort_capture_close_id",
     "build_cohort_frozen_forecast_snapshot_id",
     "verify_cohort_capture_close_archives",
@@ -306,6 +307,7 @@ class CohortFrozenForecastSnapshotV1(VersionedModel):
     """Four baselines durably frozen while one admitted V2 target is live."""
 
     schema_version: ClassVar[str] = _FROZEN_SNAPSHOT_SCHEMA_VERSION
+    _forecast_model: ClassVar[type[MarketBaselineForecastV2]] = MarketBaselineForecastV2
 
     snapshot_id: str = Field(min_length=1)
     protocol: AsynchronousCohortProtocolV2
@@ -339,7 +341,7 @@ class CohortFrozenForecastSnapshotV1(VersionedModel):
         return record
 
     @classmethod
-    def from_record(cls, record: dict[str, Any]) -> CohortFrozenForecastSnapshotV1:
+    def from_record(cls, record: dict[str, Any]) -> Self:
         payload = dict(record)
         ensure_supported_version(payload.pop("schema_version", None), (cls.schema_version,))
         payload["protocol"] = AsynchronousCohortProtocolV2.from_record(dict(payload["protocol"]))
@@ -354,12 +356,14 @@ class CohortFrozenForecastSnapshotV1(VersionedModel):
             dict(payload["capture_run_manifest"])
         )
         payload["forecasts"] = tuple(
-            MarketBaselineForecastV2.from_record(dict(item)) for item in payload["forecasts"]
+            cls._forecast_model.from_record(dict(item)) for item in payload["forecasts"]
         )
         return cls.model_validate(payload)
 
     @model_validator(mode="after")
     def _one_blind_shared_information_state(self) -> CohortFrozenForecastSnapshotV1:
+        if any(type(forecast) is not self._forecast_model for forecast in self.forecasts):
+            raise ValueError("snapshot forecast runtime type disagrees with its declared schema")
         protocol = self.protocol
         selection = self.selection
         _verify_receipt(
@@ -451,6 +455,20 @@ class CohortFrozenForecastSnapshotV1(VersionedModel):
         )
         if self.snapshot_id != expected_id:
             raise ValueError("V2 snapshot identity disagrees with its frozen evidence")
+        return self
+
+
+class CohortFrozenForecastSnapshotV2(CohortFrozenForecastSnapshotV1):
+    """Four V3 forecasts sharing one trigger, separate from the book source time."""
+
+    schema_version: ClassVar[str] = "m4_cohort_frozen_forecast_snapshot.v2"
+    _forecast_model: ClassVar[type[MarketBaselineForecastV2]] = MarketBaselineForecastV3
+    forecasts: tuple[MarketBaselineForecastV3, ...]
+
+    @model_validator(mode="after")
+    def _one_trigger(self) -> CohortFrozenForecastSnapshotV2:
+        if len({forecast.trigger_event_time for forecast in self.forecasts}) != 1:
+            raise ValueError("snapshot baselines must share one information-change trigger time")
         return self
 
 
@@ -547,6 +565,10 @@ class CohortCaptureCloseV1(VersionedModel):
     @model_validator(mode="after")
     def _capture_is_bound_and_bounded(self) -> CohortCaptureCloseV1:
         snapshot = self.forecast_snapshot
+        if type(snapshot) is not CohortFrozenForecastSnapshotV1:
+            raise ValueError(
+                "capture close snapshot runtime type disagrees with its declared schema"
+            )
         protocol = snapshot.protocol
         selection = snapshot.selection
         _verify_receipt(

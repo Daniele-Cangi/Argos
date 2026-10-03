@@ -56,6 +56,7 @@ from argos.evaluation.cohort_capture_replay_v2 import (
     CohortCaptureFrameV1,
     CohortCaptureJournalV1,
     CohortCaptureJournalV2,
+    CohortCaptureJournalV3,
     verify_cohort_capture_journal_v2,
 )
 from argos.evaluation.cohort_protocol_v2 import AsynchronousCohortProtocolV2, CohortStratumV1
@@ -74,6 +75,7 @@ from argos.evaluation.cohort_selection_v2 import (
 from argos.evaluation.cohort_snapshot_v2 import (
     CohortCaptureCloseV1,
     CohortFrozenForecastSnapshotV1,
+    CohortFrozenForecastSnapshotV2,
     build_cohort_capture_close_id,
     build_cohort_frozen_forecast_snapshot_id,
     verify_cohort_capture_close_archives,
@@ -223,9 +225,11 @@ __all__ = [
     "CohortCaptureFrameV1",
     "CohortCaptureJournalV1",
     "CohortCaptureJournalV2",
+    "CohortCaptureJournalV3",
     "CohortCaptureRunOutcomeV1",
     "CohortCaptureRunOutcomeV2",
     "CohortFrozenForecastSnapshotV1",
+    "CohortFrozenForecastSnapshotV2",
     "CohortReport",
     "CohortStratumV1",
     "CutoffBasis",

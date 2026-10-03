@@ -27,6 +27,7 @@ from argos.evaluation.cohort_capture_replay_v2 import (
     CohortCaptureFrameV1,
     CohortCaptureJournalV1,
     CohortCaptureJournalV2,
+    CohortCaptureJournalV3,
     _schema_closure,
 )
 from argos.evaluation.prospective import (
@@ -354,7 +355,9 @@ async def test_v2_records_cannot_be_deserialized_as_legacy(tmp_path):
         CohortCaptureRunOutcomeV1.from_record(legacy_outcome)
     with pytest.raises(SchemaVersionError):
         CohortCaptureJournalV1.from_record(result.journal.to_record())
-    assert CohortCaptureJournalV2.from_record(result.journal.to_record()) == result.journal
+    with pytest.raises(SchemaVersionError):
+        CohortCaptureJournalV2.from_record(result.journal.to_record())
+    assert CohortCaptureJournalV3.from_record(result.journal.to_record()) == result.journal
 
 
 async def test_legacy_shapes_roundtrip_without_inheriting_v2_integrity(tmp_path):

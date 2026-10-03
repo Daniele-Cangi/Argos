@@ -13,7 +13,7 @@ from test_cohort_protocol_v2 import START, _protocol
 from test_cohort_selection_v2 import _entry, _persist_selection, _prepare
 from test_ws_book import _minimal_event
 
-from argos.baselines import BaselineMethod, build_baseline_forecast_v2
+from argos.baselines import BaselineMethod, build_baseline_forecast_v3
 from argos.clock import RealPacer, ReplayClock
 from argos.config.manifest import RunManifest, RunMode, WorkingTreeStatus
 from argos.domain.lasttrade import LastTradePriceV1
@@ -27,13 +27,14 @@ from argos.evaluation.cohort_capture_replay_v2 import (
     REQUIRED_OWNER_CAPTURE_SCHEMAS_V2,
     CohortCaptureFrameV1,
     CohortCaptureJournalV1,
-    CohortCaptureJournalV2,
+    CohortCaptureJournalV3,
     verify_cohort_capture_journal_v2,
 )
 from argos.evaluation.cohort_selection_v2 import select_block_candidates_v2
 from argos.evaluation.cohort_snapshot_v2 import (
     CohortCaptureCloseV1,
     CohortFrozenForecastSnapshotV1,
+    CohortFrozenForecastSnapshotV2,
     build_cohort_frozen_forecast_snapshot_id,
 )
 from argos.evaluation.prospective import (
@@ -213,7 +214,7 @@ async def test_owner_freezes_last_yes_state_not_last_frame_and_replays_all_basel
     ]
     args, result = await _run(tmp_path, frames)
     journal = result.journal
-    assert CohortCaptureJournalV2.from_record(journal.to_record()) == journal
+    assert CohortCaptureJournalV3.from_record(journal.to_record()) == journal
     assert await _verify(args, result) == journal
     assert journal.outcome.frames_archived == 6
     assert journal.outcome.health_accepted == 3
@@ -309,6 +310,9 @@ async def test_standalone_trade_is_part_of_replayed_final_information_state(tmp_
     assert methods[BaselineMethod.MIDPOINT].raw_score == Decimal("0.5")
     assert methods[BaselineMethod.PERSISTENCE].raw_score == Decimal("0.5")
     assert {f.as_of_ingest_sequence for f in methods.values()} == {2}
+    assert {f.quote.quote_time for f in methods.values()} == {START + timedelta(seconds=36)}
+    assert {f.as_of_event_time for f in methods.values()} == {START + timedelta(seconds=36)}
+    assert {f.trigger_event_time for f in methods.values()} == {START + timedelta(seconds=37)}
     assert await _verify(args, result) == result.journal
 
 
@@ -581,9 +585,10 @@ async def test_valid_receipts_do_not_mask_wrong_persistence_baseline(tmp_path):
     args, result = await _run(tmp_path, [_book(36), _book(37, bid="0.5", tag="def456")])
     snapshot = result.journal.snapshot
     forecasts = tuple(
-        build_baseline_forecast_v2(
+        build_baseline_forecast_v3(
             method=f.method,
             quote=f.quote,
+            trigger_event_time=f.trigger_event_time,
             as_of_received_time=f.as_of_received_time,
             as_of_ingest_sequence=f.as_of_ingest_sequence,
             previous_score=Decimal("0.2"),
@@ -598,7 +603,7 @@ async def test_valid_receipts_do_not_mask_wrong_persistence_baseline(tmp_path):
     )
     fields = {**dict(snapshot), "forecasts": forecasts}
     fields.pop("snapshot_id")
-    changed = CohortFrozenForecastSnapshotV1(
+    changed = CohortFrozenForecastSnapshotV2(
         snapshot_id=build_cohort_frozen_forecast_snapshot_id(**fields), **fields
     )
     snapshot_receipt = persist_evidence_record(
@@ -613,7 +618,7 @@ async def test_valid_receipts_do_not_mask_wrong_persistence_baseline(tmp_path):
     material.update(snapshot=changed.to_record(), snapshot_receipt=snapshot_receipt.to_record())
     material.pop("journal_id")
     material["journal_id"] = f"cohort-capture-journal-{record_sha256(material)[:32]}"
-    journal = CohortCaptureJournalV2.from_record(material)
+    journal = CohortCaptureJournalV3.from_record(material)
     receipt = persist_evidence_record(
         args["evidence_archive_dir"],
         record=journal,

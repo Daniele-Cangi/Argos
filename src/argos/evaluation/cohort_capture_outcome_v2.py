@@ -111,11 +111,12 @@ class CohortCaptureRunOutcomeV1(VersionedModel):
             raise ValueError("bounded capture outcome finishes before it starts")
         if self.health_frames_consumed != self.frames_archived:
             raise ValueError("bounded capture frame count disagrees with ingestion health")
-        if (
-            self.health_decode_failures > self.health_rejected
-            or self.health_unknown_event_type > self.health_rejected
-        ):
-            raise ValueError("capture health reason counters exceed rejected outcomes")
+        if self.health_decode_failures > self.health_frames_consumed:
+            raise ValueError("capture health decode failures exceed consumed frames")
+        if self.health_unknown_event_type > self.health_events_seen:
+            raise ValueError("capture health unknown-event reasons exceed decoded events")
+        if self.health_decode_failures + self.health_unknown_event_type > self.health_rejected:
+            raise ValueError("capture health combined reason counters exceed rejected outcomes")
         event_outcomes = (
             self.health_accepted
             + self.health_duplicate
@@ -123,6 +124,8 @@ class CohortCaptureRunOutcomeV1(VersionedModel):
             + self.health_not_applicable
             - self.health_decode_failures
         )
+        if event_outcomes < self.health_events_seen:
+            raise ValueError("capture health has fewer outcomes than decoded events")
         if event_outcomes > 2 * self.health_events_seen:
             raise ValueError("capture health outcomes exceed the two-token event fan-out")
         has_boundary_bytes = self.boundary_frame_bytes is not None
@@ -500,6 +503,10 @@ def _validate_summary_against_protocol(
         or any(character not in "0123456789abcdef" for character in summary.boundary_frame_sha256)
     ):
         raise ValueError("excluded boundary digest must be lowercase SHA-256 hex")
+    if summary.stop_reason is BoundedCaptureStopReasonV2.DURATION_CAP and elapsed != timedelta(
+        seconds=protocol.capture_max_seconds_per_target
+    ):
+        raise ValueError("duration-cap stop must reach the declared V2 duration limit")
 
 
 def _validate_outcome_against_protocol(
