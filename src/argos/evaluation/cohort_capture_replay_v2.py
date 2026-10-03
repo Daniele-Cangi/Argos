@@ -8,8 +8,9 @@ both the arrival ledger and all ingestion counters before a snapshot is trusted.
 Only capture acquisition is bounded here, not total DB/WAL/artifact storage.
 No network client, campaign launcher, recovery or finality polling is provided.
 The terminal journal is not a crash-resume checkpoint. V2 pins every arrival
-independently and retains a fetched excluded boundary separately. V1 journals
-remain readable but cannot establish that stronger integrity claim.
+independently and retains a fetched excluded boundary separately. V3 separates
+book quote time from information-change trigger time in the frozen forecasts.
+V1/V2 journals remain readable but cannot establish the current timing claim.
 """
 
 from __future__ import annotations
@@ -24,8 +25,8 @@ from pydantic import Field, field_validator, model_validator
 
 from argos.baselines import (
     BaselineMethod,
-    MarketBaselineForecastV2,
-    build_baseline_forecast_v2,
+    MarketBaselineForecastV3,
+    build_baseline_forecast_v3,
     quote_from_book_state,
 )
 from argos.clock import ReplayClock, ensure_utc
@@ -56,6 +57,7 @@ from argos.evaluation.cohort_selection_v2 import (
 from argos.evaluation.cohort_snapshot_v2 import (
     CohortCaptureCloseV1,
     CohortFrozenForecastSnapshotV1,
+    CohortFrozenForecastSnapshotV2,
     _capture_manifest_matches,
     _selected_target,
 )
@@ -78,6 +80,7 @@ __all__ = [
     "CohortCaptureFrameV1",
     "CohortCaptureJournalV1",
     "CohortCaptureJournalV2",
+    "CohortCaptureJournalV3",
     "verify_cohort_capture_journal_v2",
 ]
 
@@ -121,6 +124,7 @@ class CohortCaptureJournalV1(VersionedModel):
 
     schema_version: ClassVar[str] = "m4_cohort_capture_journal.v1"
     _outcome_model: ClassVar[type[CohortCaptureRunOutcomeV1]] = CohortCaptureRunOutcomeV1
+    _snapshot_model: ClassVar[type[CohortFrozenForecastSnapshotV1]] = CohortFrozenForecastSnapshotV1
     journal_id: str = Field(min_length=1)
     capture_run_manifest: RunManifest
     outcome: CohortCaptureRunOutcomeV1
@@ -157,7 +161,7 @@ class CohortCaptureJournalV1(VersionedModel):
             ("capture_run_manifest", RunManifest),
             ("outcome", cls._outcome_model),
             ("outcome_receipt", EvidencePersistenceReceiptV1),
-            ("snapshot", CohortFrozenForecastSnapshotV1),
+            ("snapshot", cls._snapshot_model),
             ("snapshot_receipt", EvidencePersistenceReceiptV1),
         ):
             if payload.get(name) is not None:
@@ -270,7 +274,7 @@ class CohortCaptureJournalV2(CohortCaptureJournalV1):
         }
 
     @classmethod
-    def from_record(cls, record: dict[str, Any]) -> CohortCaptureJournalV2:
+    def from_record(cls, record: dict[str, Any]) -> Self:
         payload = dict(record)
         payload["arrival_seal"] = CohortCaptureArrivalSealV1.from_record(payload["arrival_seal"])
         payload["arrival_seal_receipt"] = EvidencePersistenceReceiptV1.from_record(
@@ -327,6 +331,17 @@ class CohortCaptureJournalV2(CohortCaptureJournalV1):
         return self
 
 
+class CohortCaptureJournalV3(CohortCaptureJournalV2):
+    """Anchored capture with book/trigger clocks separated in V2 snapshots.
+
+    Legacy V1/V2 journals remain readable, but cannot establish V3 timing.
+    """
+
+    schema_version: ClassVar[str] = "m4_cohort_capture_journal.v3"
+    _snapshot_model: ClassVar[type[CohortFrozenForecastSnapshotV1]] = CohortFrozenForecastSnapshotV2
+    snapshot: CohortFrozenForecastSnapshotV2 | None = None
+
+
 def _schema_closure(*models: type[VersionedModel]) -> frozenset[str]:
     """All nested declared models, including optional/empty collection branches.
 
@@ -356,7 +371,7 @@ def _schema_closure(*models: type[VersionedModel]) -> frozenset[str]:
 
 
 REQUIRED_OWNER_CAPTURE_SCHEMAS_V2 = _schema_closure(
-    CohortCaptureJournalV2,
+    CohortCaptureJournalV3,
     CohortCaptureArrivalV1,
     ObservationEnvelopeV1,
     RejectedObservationV1,
@@ -416,14 +431,15 @@ def _last_forecasts(
     yes_token_id: str,
     market_id: str,
     contract_id: str,
-) -> tuple[tuple[MarketBaselineForecastV2, ...], ObservationDispatcher]:
+) -> tuple[tuple[MarketBaselineForecastV3, ...], ObservationDispatcher]:
     """Same information-change/persistence semantics as the M4 evaluator, no labels."""
     dispatcher = ObservationDispatcher()
     previous_hash: str | None = None
     previous_midpoint: Decimal | None = None
-    forecasts: tuple[MarketBaselineForecastV2, ...] = ()
+    forecasts: tuple[MarketBaselineForecastV3, ...] = ()
     expected_sequence = 1
     previous_received: datetime | None = None
+    book_event_time: datetime | None = None
     for arrival in read_capture_arrivals(store, capture_run_id):
         if arrival.ingest_sequence != expected_sequence or (
             previous_received is not None and arrival.received_time < previous_received
@@ -448,19 +464,25 @@ def _last_forecasts(
         projection = dispatcher.projections.get((condition_id, yes_token_id))
         if projection is None or not projection.is_seeded:
             continue
+        if result.kind in {DispatchOutcomeKind.APPLIED_SNAPSHOT, DispatchOutcomeKind.APPLIED_DELTA}:
+            # Projection.last_event_time retains the last *datable* event for
+            # regression detection. It cannot attest the current book's time
+            # after an undatable book update. Preserve that missingness here.
+            book_event_time = envelope.event_time
         information_hash = _information_state_hash(dispatcher, condition_id, yes_token_id)
         if information_hash == previous_hash:
             continue
         trade = dispatcher.last_trades.get((condition_id, yes_token_id))
         quote = quote_from_book_state(
             projection.state(),
-            quote_time=envelope.event_time,
+            quote_time=book_event_time,
             last_trade_price=trade.price if trade else None,
         )
         forecasts = tuple(
-            build_baseline_forecast_v2(
+            build_baseline_forecast_v3(
                 method=method,
                 quote=quote,
+                trigger_event_time=envelope.event_time,
                 as_of_received_time=arrival.received_time,
                 as_of_ingest_sequence=arrival.ingest_sequence,
                 previous_score=previous_midpoint,
@@ -585,10 +607,17 @@ async def verify_cohort_capture_journal_v2(
     evidence_archive_dir: Path,
     prior_selections: tuple[OfflineBlockSelectionV2, ...] = (),
     prior_selection_receipts: tuple[EvidencePersistenceReceiptV1, ...] = (),
-) -> CohortCaptureJournalV2:
-    """Read durable receipts, re-normalize raw frames, replay and compare freeze."""
-    if not isinstance(journal, CohortCaptureJournalV2):
-        raise ValueError("legacy journal does not provide independently anchored V2 integrity")
+) -> CohortCaptureJournalV3:
+    """Verify the V2 protocol owner's current V3 journal, including source clocks.
+
+    The function suffix identifies the cohort protocol, not the journal schema.
+    Older journal versions remain readable through their explicit record models;
+    they cannot be qualified by reinterpreting their historical forecast times.
+    """
+    if not isinstance(journal, CohortCaptureJournalV3):
+        raise ValueError(
+            "legacy journal does not provide independently anchored V3 timing integrity"
+        )
     outcome = journal.outcome
     _receipt(
         receipt,
@@ -603,7 +632,7 @@ async def verify_cohort_capture_journal_v2(
         journal.snapshot_receipt.persisted_at if journal.snapshot_receipt else outcome.finished_at,
     ):
         raise ValueError("journal receipt predates its child receipts")
-    if load_persisted_record(evidence_archive_dir, receipt, CohortCaptureJournalV2) != journal:
+    if load_persisted_record(evidence_archive_dir, receipt, CohortCaptureJournalV3) != journal:
         raise ValueError("archived journal differs from supplied evidence")
     verify_cohort_capture_run_outcome_archives(
         outcome,
@@ -688,7 +717,7 @@ async def verify_cohort_capture_journal_v2(
         assert journal.snapshot_receipt is not None
         if (
             load_persisted_record(
-                evidence_archive_dir, journal.snapshot_receipt, CohortFrozenForecastSnapshotV1
+                evidence_archive_dir, journal.snapshot_receipt, CohortFrozenForecastSnapshotV2
             )
             != journal.snapshot
         ):

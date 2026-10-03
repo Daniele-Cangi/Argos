@@ -13,7 +13,7 @@ from argos.clock import RealPacer, ReplayClock
 from argos.evaluation.bundle import record_sha256
 from argos.evaluation.cohort_capture_replay_v2 import (
     CohortCaptureFrameV1,
-    CohortCaptureJournalV2,
+    CohortCaptureJournalV3,
     verify_cohort_capture_journal_v2,
 )
 from argos.evaluation.prospective import (
@@ -144,7 +144,7 @@ async def test_journal_rejects_inconsistent_nested_evidence(tmp_path, case, mess
     else:
         fields["journal_id"] = "foreign"
     with pytest.raises(ValueError, match=message):
-        CohortCaptureJournalV2.model_validate(fields)
+        CohortCaptureJournalV3.model_validate(fields)
 
 
 @pytest.mark.parametrize("case", ["missing-schema", "manifest-before-admission"])
@@ -155,7 +155,7 @@ async def test_owner_refuses_incomplete_manifest_before_creating_database(tmp_pa
             "schema_versions": tuple(
                 version
                 for version in args["manifest"].schema_versions
-                if version != CohortCaptureJournalV2.schema_version
+                if version != CohortCaptureJournalV3.schema_version
             )
         }
         message = "omits journal/accounting schemas"
@@ -177,7 +177,7 @@ def _persist_altered_journal(args, journal, **updates):
     material.update(updates)
     material = TypeAdapter(dict).dump_python(material, mode="json")
     material.pop("journal_id")
-    altered = CohortCaptureJournalV2.from_record(
+    altered = CohortCaptureJournalV3.from_record(
         {**material, "journal_id": f"cohort-capture-journal-{record_sha256(material)[:32]}"}
     )
     receipt = persist_evidence_record(

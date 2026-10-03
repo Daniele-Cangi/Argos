@@ -33,7 +33,7 @@ from argos.evaluation.cohort_capture_outcome_v2 import (
 )
 from argos.evaluation.cohort_capture_replay_v2 import (
     CohortCaptureFrameV1,
-    CohortCaptureJournalV2,
+    CohortCaptureJournalV3,
     _last_forecasts,
     _runtime_reserve,
     verify_cohort_capture_journal_v2,
@@ -44,7 +44,7 @@ from argos.evaluation.cohort_selection_v2 import (
     verify_block_selection_v2_archives,
 )
 from argos.evaluation.cohort_snapshot_v2 import (
-    CohortFrozenForecastSnapshotV1,
+    CohortFrozenForecastSnapshotV2,
     _capture_manifest_matches,
     _capture_target_id,
     _selected_target,
@@ -66,7 +66,7 @@ __all__ = ["CohortCaptureOwnerResult", "run_cohort_capture_owner_v2"]
 
 @dataclass(frozen=True, slots=True)
 class CohortCaptureOwnerResult:
-    journal: CohortCaptureJournalV2
+    journal: CohortCaptureJournalV3
     receipt: EvidencePersistenceReceiptV1
 
 
@@ -263,7 +263,7 @@ async def run_cohort_capture_owner_v2(
                 forecasts=forecasts,
                 frozen_at=frozen_at,
             )
-            snapshot = CohortFrozenForecastSnapshotV1(
+            snapshot = CohortFrozenForecastSnapshotV2(
                 snapshot_id=build_cohort_frozen_forecast_snapshot_id(**args), **args
             )
             snapshot_receipt = persist_evidence_record(
@@ -296,7 +296,7 @@ async def run_cohort_capture_owner_v2(
             ),
         )
         material = {
-            "schema_version": CohortCaptureJournalV2.schema_version,
+            "schema_version": CohortCaptureJournalV3.schema_version,
             **{
                 name: (
                     [item.to_record() for item in value]
@@ -310,7 +310,7 @@ async def run_cohort_capture_owner_v2(
                 for name, value in args_journal.items()
             },
         }
-        journal = CohortCaptureJournalV2(
+        journal = CohortCaptureJournalV3(
             journal_id=f"cohort-capture-journal-{record_sha256(material)[:32]}", **args_journal
         )
         receipt = persist_evidence_record(

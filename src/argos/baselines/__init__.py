@@ -13,8 +13,10 @@ from argos.baselines.forecast import (
     CalibrationStatus,
     MarketBaselineForecastV1,
     MarketBaselineForecastV2,
+    MarketBaselineForecastV3,
     build_baseline_forecast,
     build_baseline_forecast_v2,
+    build_baseline_forecast_v3,
 )
 from argos.baselines.quote import MarketQuoteV1, quote_from_book_state
 
@@ -24,8 +26,10 @@ __all__ = [
     "CalibrationStatus",
     "MarketBaselineForecastV1",
     "MarketBaselineForecastV2",
+    "MarketBaselineForecastV3",
     "MarketQuoteV1",
     "build_baseline_forecast",
     "build_baseline_forecast_v2",
+    "build_baseline_forecast_v3",
     "quote_from_book_state",
 ]

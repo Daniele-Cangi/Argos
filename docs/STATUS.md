@@ -2,6 +2,47 @@
 
 Last updated: 2026-10-03
 
+## 2026-10-03 PR #25 follow-up: counter/deadline/timing corrections
+
+Copilot's next review reproduced four additional defects at published head
+`03e5659`: decode-failure and unknown-event reasons could jointly exceed
+rejections; decoded events could have no accounted outcome; standalone archive
+verification accepted an early `duration_cap`; and a standalone trade replaced
+the book's quote timestamp with its own event time. Four regression assertions
+failed on that implementation before the production corrections.
+
+Accounting now requires the combined disjoint reason count to fit rejections
+and decoded-event outcomes to lie between one and two per event, subtracting
+frame-level decode failures. Both outcome versions retain their shapes and
+valid-record identities. Builder and independent archive verification require
+duration-cap accounting to end exactly at the declared acquisition deadline.
+
+The current V2 protocol capture owner emits `MarketBaselineForecastV3` inside
+`CohortFrozenForecastSnapshotV2` and `CohortCaptureJournalV3`. Source book time
+(`quote.quote_time` / `as_of_event_time`) is separate from the required nullable
+`trigger_event_time`; receive time and ingest order remain unchanged. Undatable
+book updates do not borrow a prior book timestamp, and undatable/out-of-order
+trade triggers are retained honestly. V3 identity binds the complete forecast
+and both source clocks; raw/store replay rejects freshly receipted alternate
+trigger assertions. The manifest inventories the new transitive schema closure.
+
+Legacy forecasts, snapshots and journals remain readable through their explicit
+versioned models; the current replay verifier refuses to infer V3 timing from
+older journal records. No historical evidence is migrated or rewritten. This
+does not change the legacy capture-close contract or qualify a live campaign.
+
+Final local verification on unchanged production source: the affected 375-test
+set passes, followed by the complete branch-inclusive coverage gate with 2,518
+passed and two Windows symlink-privilege skips. Every declared per-module
+threshold passes; accounting measures 96.97%, journal/replay 94.44%, and snapshots
+90.80%. Forecast coverage rounds to 95%. Ruff, formatting, mypy (90 source files)
+and `git diff --check` pass. The published `03e5659` passed Ubuntu/Windows CI;
+that result does not cover these corrections. PR #25 was merged at `c7b715f`
+while local verification was running; its tree matches the tested baseline.
+These additional fixes are published on a separate follow-up branch/PR, with
+updated-head CI/review required separately. No follow-up merge or live capture
+is performed here.
+
 ## 2026-10-03 PR #25 Copilot follow-up — synthetic verification
 
 The manifest closure now omits `RunManifest`'s own envelope schema while still
