@@ -174,6 +174,10 @@ class CohortCaptureJournalV1(VersionedModel):
     @model_validator(mode="after")
     def _inventory(self) -> CohortCaptureJournalV1:
         outcome = self.outcome
+        if type(outcome) is not self._outcome_model:
+            raise ValueError("journal outcome runtime type disagrees with its declared schema")
+        if self.snapshot is not None and type(self.snapshot) is not self._snapshot_model:
+            raise ValueError("journal snapshot runtime type disagrees with its declared schema")
         if self.capture_run_manifest.capture_run_id != outcome.capture_run_id:
             raise ValueError("journal manifest and outcome identify different runs")
         _receipt(
@@ -432,10 +436,12 @@ def _last_forecasts(
     market_id: str,
     contract_id: str,
 ) -> tuple[tuple[MarketBaselineForecastV3, ...], ObservationDispatcher]:
-    """Same information-change/persistence semantics as the M4 evaluator, no labels."""
+    """Preserve evaluator score-state transitions while refreshing book-clock evidence."""
     dispatcher = ObservationDispatcher()
     previous_hash: str | None = None
     previous_midpoint: Decimal | None = None
+    forecast_previous_midpoint: Decimal | None = None
+    forecast_book_event_time: datetime | None = None
     forecasts: tuple[MarketBaselineForecastV3, ...] = ()
     expected_sequence = 1
     previous_received: datetime | None = None
@@ -470,8 +476,13 @@ def _last_forecasts(
             # after an undatable book update. Preserve that missingness here.
             book_event_time = envelope.event_time
         information_hash = _information_state_hash(dispatcher, condition_id, yes_token_id)
-        if information_hash == previous_hash:
+        information_changed = information_hash != previous_hash
+        if not information_changed and book_event_time == forecast_book_event_time:
             continue
+        if information_changed:
+            forecast_previous_midpoint = previous_midpoint
+        # A clock-only update must not turn persistence into the current score.
+        # Reuse the prior-state input from the last genuine information change.
         trade = dispatcher.last_trades.get((condition_id, yes_token_id))
         quote = quote_from_book_state(
             projection.state(),
@@ -485,7 +496,7 @@ def _last_forecasts(
                 trigger_event_time=envelope.event_time,
                 as_of_received_time=arrival.received_time,
                 as_of_ingest_sequence=arrival.ingest_sequence,
-                previous_score=previous_midpoint,
+                previous_score=forecast_previous_midpoint,
                 evaluation_run_id=f"cohort-freeze-{capture_run_id}",
                 source_capture_run_id=capture_run_id,
                 source_observation_id=envelope.observation_id,
@@ -496,7 +507,8 @@ def _last_forecasts(
             for method in BaselineMethod
         )
         previous_hash = information_hash
-        if quote.midpoint is not None:
+        forecast_book_event_time = book_event_time
+        if information_changed and quote.midpoint is not None:
             previous_midpoint = quote.midpoint
     return forecasts, dispatcher
 

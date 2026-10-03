@@ -362,6 +362,8 @@ class CohortFrozenForecastSnapshotV1(VersionedModel):
 
     @model_validator(mode="after")
     def _one_blind_shared_information_state(self) -> CohortFrozenForecastSnapshotV1:
+        if any(type(forecast) is not self._forecast_model for forecast in self.forecasts):
+            raise ValueError("snapshot forecast runtime type disagrees with its declared schema")
         protocol = self.protocol
         selection = self.selection
         _verify_receipt(
@@ -563,6 +565,10 @@ class CohortCaptureCloseV1(VersionedModel):
     @model_validator(mode="after")
     def _capture_is_bound_and_bounded(self) -> CohortCaptureCloseV1:
         snapshot = self.forecast_snapshot
+        if type(snapshot) is not CohortFrozenForecastSnapshotV1:
+            raise ValueError(
+                "capture close snapshot runtime type disagrees with its declared schema"
+            )
         protocol = snapshot.protocol
         selection = snapshot.selection
         _verify_receipt(

@@ -111,6 +111,10 @@ class CohortCaptureRunOutcomeV1(VersionedModel):
             raise ValueError("bounded capture outcome finishes before it starts")
         if self.health_frames_consumed != self.frames_archived:
             raise ValueError("bounded capture frame count disagrees with ingestion health")
+        if self.health_decode_failures > self.health_frames_consumed:
+            raise ValueError("capture health decode failures exceed consumed frames")
+        if self.health_unknown_event_type > self.health_events_seen:
+            raise ValueError("capture health unknown-event reasons exceed decoded events")
         if self.health_decode_failures + self.health_unknown_event_type > self.health_rejected:
             raise ValueError("capture health combined reason counters exceed rejected outcomes")
         event_outcomes = (

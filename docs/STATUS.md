@@ -2,6 +2,36 @@
 
 Last updated: 2026-10-03
 
+## 2026-10-03 PR #26 Copilot corrections — synthetic verification
+
+Copilot identified four reproducible defects at `3912b2c`, despite successful
+Ubuntu/Windows CI: a clock-only book update retained stale forecast timestamps;
+direct legacy snapshots accepted V3 forecasts; legacy journals/capture closes
+accepted V2 snapshots they could not reload; and reason counters could exceed
+their originating frame/event populations. Eleven new regression cases failed
+on that implementation before the corrections.
+
+The current V3 replay refreshes forecasts when the book source clock changes,
+including missing and out-of-order times, without changing the evaluator's
+information hash or advancing persistence on a clock-only update. The next
+genuine information change still uses the correct previous midpoint. Snapshot
+and journal models now pin nested runtime types to their declared readers;
+the legacy capture close accepts only a V1 snapshot. Valid V1/V2 journal and
+snapshot records still round-trip, with unchanged shapes and identities.
+Accounting bounds decode failures by consumed frames and unknown-event reasons
+by decoded events; arrays with multiple events per frame remain admissible.
+
+The affected 257 tests pass with branch-inclusive coverage of 97% for accounting,
+94% for journal/replay and 91% for snapshots. Ruff, formatting, mypy (90 source
+files) and `git diff --check` pass. The original T1-T8 proof remains verified:
+eight PASSED scenarios and 14,638 unchanged proof files. The complete test suite
+passes 2,535 tests, with two Windows symlink-privilege skips. The full per-module
+coverage gate was not rerun; the measurements above cover the affected modules.
+Published-head CI does not cover these local edits;
+updated-head CI/review remain required before merge. No historical evidence is
+migrated, and no live capture or merge is performed for this correction.
+Publication and updated-head CI/review are separate steps.
+
 ## 2026-10-03 PR #25 follow-up: counter/deadline/timing corrections
 
 Copilot's next review reproduced four additional defects at published head
