@@ -2,6 +2,32 @@
 
 Last updated: 2026-10-03
 
+## 2026-10-03 PR #25 Copilot follow-up — synthetic verification
+
+The manifest closure now omits `RunManifest`'s own envelope schema while still
+traversing its nested provenance. A separate visited-model set preserves
+cycle protection without adding a false self-inventory requirement. Other
+consumed/emitted dependencies and the legacy capture-close contract stay intact.
+
+If raw-directory creation fails before opening the store or consuming a frame,
+the owner removes only its new empty database reservation after checking file
+identity, type and size. Existing archives/databases and files written or
+replaced during setup are preserved. The original setup error still propagates;
+there is no automatic retry, deletion of capture evidence or crash-resume claim.
+
+New regression assertions first failed on the prior code for self-inventory and
+orphan reservations. The final affected set passes 317 tests, including setup
+permission/existence failures, corrected caller setup, changed/missing file
+guards, legacy snapshot/manifest contracts and arrival-integrity mutations.
+Branch-inclusive coverage rounds to 94% for both modified production modules.
+Ruff, formatting, mypy (90 source files) and `git diff --check` pass. The full
+suite was not rerun for this follow-up; the prior complete 2,494-test gate and
+successful Ubuntu/Windows CI belong to published head `9d539c1`, not these edits.
+The PR description is corrected on GitHub to explain retained excluded-boundary
+bytes, current published-head verification and outstanding limitations. Code
+changes require their own updated-head CI and review before merge. No merge or
+live campaign is performed.
+
 ## 2026-10-03 PR #25 integrity review corrections — not live qualification
 
 The review falsified the original terminal-journal integrity claim: a newly

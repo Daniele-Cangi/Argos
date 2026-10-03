@@ -401,6 +401,100 @@ async def test_capture_refuses_predecessor_raw_archive(tmp_path):
         await run_cohort_capture_owner_v2(
             **args, frame_source=_Source([], clock), clock=clock, pacer=RealPacer()
         )
+    assert not args["database_path"].exists()
+    assert args["raw_archive_dir"].is_dir()
+
+
+@pytest.mark.parametrize("failure", ["directory", "file", "permission"])
+async def test_raw_setup_failure_removes_only_new_empty_database(tmp_path, monkeypatch, failure):
+    args = _prepared(tmp_path)
+    raw = args["raw_archive_dir"]
+    if failure == "directory":
+        raw.mkdir()
+        sentinel = raw / "predecessor.txt"
+        sentinel.write_bytes(b"synthetic predecessor; never remove")
+    elif failure == "file":
+        raw.write_bytes(b"synthetic predecessor file; never remove")
+    original_mkdir = Path.mkdir
+
+    def refuse_raw(path, *values, **kwargs):
+        if path == raw:
+            assert args["database_path"].stat().st_size == 0
+            raise PermissionError("synthetic raw setup denial")
+        return original_mkdir(path, *values, **kwargs)
+
+    class ForbiddenSource:
+        async def frames(self):
+            raise AssertionError("setup failure must not consume a source frame")
+            yield
+
+    with monkeypatch.context() as patch:
+        if failure == "permission":
+            patch.setattr(Path, "mkdir", refuse_raw)
+        clock = ReplayClock(START + timedelta(seconds=35))
+        with pytest.raises(OSError):
+            await run_cohort_capture_owner_v2(
+                **args, frame_source=ForbiddenSource(), clock=clock, pacer=RealPacer()
+            )
+    assert not args["database_path"].exists()
+    if failure == "directory":
+        assert sentinel.read_bytes() == b"synthetic predecessor; never remove"
+    elif failure == "file":
+        assert raw.read_bytes() == b"synthetic predecessor file; never remove"
+    else:
+        assert not raw.exists()
+        # A caller may try corrected setup because no capture ever began.
+        clock = ReplayClock(START + timedelta(seconds=35))
+        result = await run_cohort_capture_owner_v2(
+            **args, frame_source=_Source([], clock), clock=clock, pacer=RealPacer()
+        )
+        assert await _verify(args, result) == result.journal
+
+
+@pytest.mark.parametrize("change", ["written", "replaced", "removed"])
+async def test_raw_setup_failure_does_not_remove_changed_database(tmp_path, monkeypatch, change):
+    args = _prepared(tmp_path)
+    original_mkdir = Path.mkdir
+    replacement = tmp_path / "synthetic-replacement.sqlite"
+    replacement.write_bytes(b"")
+    replacement_identity = replacement.stat().st_ino
+
+    def refuse_raw(path, *values, **kwargs):
+        if path == args["raw_archive_dir"]:
+            if change == "written":
+                args["database_path"].write_bytes(b"synthetic concurrent data; preserve")
+            elif change == "replaced":
+                replacement.replace(args["database_path"])
+            else:
+                args["database_path"].unlink()  # only this synthetic empty reservation
+            raise PermissionError("synthetic raw setup denial")
+        return original_mkdir(path, *values, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", refuse_raw)
+    clock = ReplayClock(START + timedelta(seconds=35))
+    with pytest.raises(PermissionError, match="synthetic raw setup denial"):
+        await run_cohort_capture_owner_v2(
+            **args, frame_source=_Source([], clock), clock=clock, pacer=RealPacer()
+        )
+    if change == "written":
+        assert args["database_path"].read_bytes() == b"synthetic concurrent data; preserve"
+    elif change == "replaced":
+        assert args["database_path"].stat().st_ino == replacement_identity
+        assert args["database_path"].read_bytes() == b""
+    else:
+        assert not args["database_path"].exists()
+
+
+async def test_existing_database_is_preserved_before_raw_setup(tmp_path):
+    args = _prepared(tmp_path)
+    args["database_path"].write_bytes(b"synthetic predecessor database; preserve")
+    clock = ReplayClock(START + timedelta(seconds=35))
+    with pytest.raises(FileExistsError):
+        await run_cohort_capture_owner_v2(
+            **args, frame_source=_Source([], clock), clock=clock, pacer=RealPacer()
+        )
+    assert args["database_path"].read_bytes() == b"synthetic predecessor database; preserve"
+    assert not args["raw_archive_dir"].exists()
 
 
 async def test_owner_refuses_reusing_database_without_consuming_source(tmp_path):

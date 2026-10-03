@@ -10,6 +10,7 @@ from test_cohort_capture_replay_v2 import _book, _prepared, _run, _Source, _veri
 from test_cohort_protocol_v2 import START
 
 from argos.clock import RealPacer, ReplayClock
+from argos.config.manifest import RunManifest
 from argos.evaluation.bundle import record_sha256
 from argos.evaluation.cohort_capture_arrivals_v2 import (
     CohortCaptureArrivalV1,
@@ -26,6 +27,7 @@ from argos.evaluation.cohort_capture_replay_v2 import (
     CohortCaptureFrameV1,
     CohortCaptureJournalV1,
     CohortCaptureJournalV2,
+    _schema_closure,
 )
 from argos.evaluation.prospective import (
     EvidenceArtifactKind,
@@ -212,6 +214,11 @@ def test_schema_inventory_covers_nested_and_dispatched_dependencies():
         "compiled_market_contract.v1",
         "order_book_snapshot.v1",
     }.issubset(REQUIRED_OWNER_CAPTURE_SCHEMAS_V2)
+
+
+def test_manifest_inventory_excludes_self_but_traverses_nested_provenance():
+    assert RunManifest.schema_version not in REQUIRED_OWNER_CAPTURE_SCHEMAS_V2
+    assert _schema_closure(RunManifest) == frozenset({"source_provenance.v1"})
 
 
 @pytest.mark.parametrize("frame", [[], None])
@@ -403,4 +410,7 @@ async def test_manifest_enumerates_schemas_in_actual_serialized_evidence(tmp_pat
     walk(result.receipt.to_record())
     for arrival in _chain(args, result.journal):
         walk(arrival.to_record())
+    # The manifest's own envelope version is not part of its data inventory.
+    observed.discard(RunManifest.schema_version)
+    assert RunManifest.schema_version not in args["manifest"].schema_versions
     assert observed.issubset(args["manifest"].schema_versions)

@@ -6,6 +6,7 @@ enforcement, crash/resume path or finality scheduler is provided here.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -127,11 +128,28 @@ async def run_cohort_capture_owner_v2(
         raise ValueError("capture manifest does not name the newly isolated database")
     # Exclusive creation is also a restart guard: never reuse a predecessor DB.
     database_path.parent.mkdir(parents=True, exist_ok=True)
-    with database_path.open("xb"):
-        pass
+    with database_path.open("xb") as reservation:
+        created_database = os.fstat(reservation.fileno())
     # Content-addressing alone cannot isolate runs: repeated bytes would reuse
     # a predecessor's sidecar. Never adopt an already populated target archive.
-    raw_archive_dir.mkdir(parents=True, exist_ok=False)
+    try:
+        raw_archive_dir.mkdir(parents=True, exist_ok=False)
+    except OSError:
+        # No store was opened and no capture started. Only remove this call's
+        # unchanged empty reservation; never delete predecessor/changed data.
+        try:
+            current = database_path.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            if (current.st_dev, current.st_ino, current.st_mode, current.st_size) == (
+                created_database.st_dev,
+                created_database.st_ino,
+                created_database.st_mode,
+                0,
+            ):
+                database_path.unlink()
+        raise
     store = open_sqlite_event_store(database_path)
     frames: list[CohortCaptureFrameV1] = []
     live_dispatcher = ObservationDispatcher()

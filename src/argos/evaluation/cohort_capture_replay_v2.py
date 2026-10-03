@@ -334,11 +334,16 @@ def _schema_closure(*models: type[VersionedModel]) -> frozenset[str]:
     the REST/compiled contracts read during admission replay are explicit roots.
     """
     schemas: set[str] = set()
+    visited: set[type[VersionedModel]] = set()
 
     def visit(annotation: Any) -> None:
         if isinstance(annotation, type) and issubclass(annotation, VersionedModel):
-            if annotation.schema_version not in schemas:
-                schemas.add(annotation.schema_version)
+            if annotation not in visited:
+                visited.add(annotation)
+                # A manifest names its own envelope version separately from
+                # its data inventory, but its nested provenance still matters.
+                if annotation is not RunManifest:
+                    schemas.add(annotation.schema_version)
                 for field in annotation.model_fields.values():
                     visit(field.annotation)
         else:
