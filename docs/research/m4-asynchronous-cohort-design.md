@@ -5,6 +5,13 @@ This plan replaces the unlaunched 4x4 design for future cohorts only. Historical
 evidence and V1 behavior remain unchanged. See
 `docs/adr/0020-budgeted-cohorts-and-separate-research-claims.md` for rationale.
 
+Implementation checkpoint (2026-10-03): PR #26 is merged; post-merge
+Windows/Ubuntu CI passed at `6dcc138`. The current synthetic owner uses
+`MarketBaselineForecastV3`, `CohortFrozenForecastSnapshotV2` and
+`CohortCaptureJournalV3`; their nested runtime types match the explicit readers.
+The next slice is total-storage/free-space enforcement and durable failure
+handling, not a new live campaign or a repeat of the full technical soak.
+
 ## Deliver outcomes independently
 
 1. **Operational M4:** bounded reviewed prospective capture, immutable shared
@@ -66,11 +73,13 @@ V8, invents finality, establishes calibration/edge or authorizes M5/trading.
   and empty arrays). V2 per-arrival records/receipts are written during capture,
   pinned at exclusive fixed ordinal paths and closed by a single immutable
   count/root seal. They bind ledger-silent arrivals independently of terminal
-  journal counters. A V2 terminal journal binds the outcome receipt,
+  journal counters. A V3 terminal journal binds the V2 outcome receipt,
   frame ordinals/provenance/processing bounds and optional four-method freeze.
   Re-normalization of archived WS bytes checks the full normalized ledger,
   source-frame offsets and health; stored replay reconstructs information hashes,
-  quotes and persistence history without needing a resolution. Processing-only
+  quotes and persistence history without needing a resolution. V3 forecasts
+  preserve book source time separately from the triggering event time; a
+  clock-only book refresh does not advance persistence. Processing-only
   rejection timestamps are checked against their frame interval, not reproduced
   as source times. First-arrival content-addressed sidecars do not replace each
   resend's independently anchored provenance. Empty/unseeded captures remain
@@ -89,8 +98,8 @@ V8, invents finality, establishes calibration/edge or authorizes M5/trading.
   requires a durable receipt before close. The new journal is terminal evidence,
   and uses a complete transitive manifest schema inventory. Snapshotless
   finalization at/after the boundary is explicitly `late_no_snapshot_excluded`,
-  retaining negative accounting without predictive use. V1 journal/outcome
-  records remain readable, never silently reinterpreted as V2 arrival proof.
+  retaining negative accounting without predictive use. Valid V1/V2 journals
+  remain readable, never silently reinterpreted as current clock/arrival proof.
   Local anchors do not protect against rewriting the entire storage system.
   The journal is not a crash-resume checkpoint and does not enforce total
   storage budgets or qualify a live source/campaign.
@@ -161,7 +170,7 @@ The owner reviews the concrete candidate and semantic receipts before launch.
 Check a candidate from a clean checkout with:
 
 ```text
-uv run python scripts/m4_async_cohort_preflight.py --spec <candidate.json>
+uv run python scripts/m4_async_cohort_preflight.py --spec path/to/candidate.json
 ```
 
 For V2, `PREFLIGHT_ONLY_NOT_FROZEN`, `live_launch_supported: false` and

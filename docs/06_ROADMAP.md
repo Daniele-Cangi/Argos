@@ -1,5 +1,20 @@
 # Roadmap
 
+## Current position — 2026-10-03
+
+Phase A is still in progress at M4; Owner Gate A has not passed. PR #26 is merged
+and its post-merge Windows/Ubuntu CI passes. The T1-T8 technical matrix is
+qualified, and V2 admission/capture/freeze/replay is synthetic-tested. Neither
+result establishes a completed live V2 cohort, calibration or predictive edge.
+
+Next: actual total-storage/free-space enforcement and durable failure handling,
+exclusive resumable early/late finality, then an integrated synthetic scoring
+proof. A separately owner-approved 2-4-slot live pilot follows those checks;
+pending settlement alone does not hold operational closure open. See
+[status](STATUS.md), [backlog](BACKLOG.md) and
+[ADR-0020 cohort plan](research/m4-asynchronous-cohort-design.md).
+Phases B-F below are future scope, not implemented or automatically authorized.
+
 ## Phase A — trustworthy instrument
 
 - M0 Foundation and governance

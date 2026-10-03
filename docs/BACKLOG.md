@@ -4,6 +4,13 @@ Work top to bottom unless a milestone dependency requires reordering.
 
 ## ADR-0020 budgeted prospective cohorts — current priority
 
+Current baseline: PR #26 merged at `6dcc138`, with successful post-merge
+Windows/Ubuntu CI. Current owner records are V3 forecasts / V2 frozen snapshots /
+V3 terminal journals; older valid readers and historical evidence are preserved.
+The next implementation slice is actual campaign-wide disk/free-space limits
+and durable failure accounting. Technical qualification is complete, operational
+M4 and Owner Gate A are not. See `STATUS.md` for dated verification results.
+
 - [x] Supersede future fixed 4x4/30-target rules with separate operational,
       descriptive and scientific claims; retain historical evidence unchanged.
 - [x] Add an independent V2 declaration/preflight for variable slot/stratum caps,

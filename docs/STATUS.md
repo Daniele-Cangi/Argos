@@ -2,6 +2,33 @@
 
 Last updated: 2026-10-03
 
+## Current summary — merged through PR #26
+
+PR #25 is merged at `c7b715f`; PR #26 is merged at `6dcc138`.
+Post-merge Windows/Ubuntu CI passed on `6dcc138`:
+https://github.com/Daniele-Cangi/Argos/actions/runs/37128655607.
+This includes the Ubuntu per-module branch-coverage gate. The corrected source
+at `6c8f172` passed 2,535 local tests with two Windows symlink-privilege skips.
+The original T1-T8 proof remains eight PASSED scenarios / 14,638 verified files.
+
+The current V2 protocol synthetic owner emits V3 baseline forecasts, V2 frozen
+snapshots and V3 terminal journals. Arrival chains, raw/store replay, accounting,
+separate book/trigger clocks and nested-version guards are implemented. This is
+not a crash checkpoint, total-storage guarantee or live cohort qualification.
+
+Operational M4 and Owner Gate A remain open. No ADR-0020/V2 live cohort has been
+frozen or launched. Complete campaign-wide disk enforcement and durable failure
+handling first, then exclusive resumable early/late finality and the unified
+capture-to-score proof. Only after that proof and owner approval should a new
+2-4-slot bounded live integration pilot run, normally with 180-minute monitoring.
+Pending settlement does not erase operational evidence or become a negative
+label. Calibration remains NOT_ESTABLISHED; M5-M8 and execution are not authorized.
+
+The documentation refresh adds a main-branch CI badge, explicitly descriptive
+technical/M4 badges and Apache-2.0 for original code/documentation. External
+payloads/dependencies retain their own rights and terms. Historical entries
+below describe their dated revisions; they are not rewritten as current claims.
+
 ## 2026-10-03 PR #26 Copilot corrections — synthetic verification
 
 Copilot identified four reproducible defects at `3912b2c`, despite successful

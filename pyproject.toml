@@ -7,6 +7,8 @@ name = "argos-probability-intelligence"
 version = "0.0.0"
 description = "Replayable probability intelligence research core for Polymarket"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.12"
 dependencies = [
   "anyio>=4.6",

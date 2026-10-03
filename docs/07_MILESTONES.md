@@ -1,6 +1,21 @@
 # Milestones and exit criteria
 
-Claude Code may progress autonomously through M4. It must close each milestone with architecture, testing, security, and documentation review.
+Codex work follows `AGENTS.md` and owner decisions. Each milestone requires
+architecture, testing, security and documentation review; M5-M8 require separate
+owner approval. Legacy Claude material does not override current governance.
+
+## Current milestone boundary — 2026-10-03
+
+M4 is in progress, not closed. PR #26 is merged with successful post-merge
+Windows/Ubuntu CI; T1-T8 technical qualification and the synthetic V2
+admission/capture/freeze/replay path are verified. V3 forecasts and terminal
+journals separate source clocks and pin nested versions. Technical/synthetic
+verification is not the prospective live evidence required for Owner Gate A.
+
+Remaining: runtime disk budgets, durable crash/failure accounting, exclusive
+resumable early/late finality and the unified outcome/scoring proof, followed
+by an owner-approved bounded 2-4-slot pilot. Calibration is NOT_ESTABLISHED.
+The exit criteria below remain criteria, not a checklist of completed work.
 
 ## M0 — Foundation
 
@@ -121,7 +136,8 @@ descriptive cohort cannot establish calibration or edge.
 - no advanced predictive engine is introduced merely to make metrics interesting;
 - all quality gates pass;
 - `docs/OWNER_REVIEW_GATE.md` checklist is complete;
-- `/handoff` produces the owner package and implementation stops.
+- an owner package records evidence, limitations and the three ADR-0020 result
+  levels; implementation stops at Owner Gate A until further owner approval.
 
 ## M5 — External evidence and semantic intelligence — owner approval required
 

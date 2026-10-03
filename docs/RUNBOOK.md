@@ -1,17 +1,36 @@
 # Local runbook
 
+## Current M4 boundary — 2026-10-03
+
+PR #26 is merged and post-merge CI passes. T1-T8 is technically qualified;
+V2 cohort admission/capture/freeze/replay remains synthetic-tested, not a live
+campaign. Current records use V3 forecasts, V2 snapshots and V3 journals.
+Runtime total-storage enforcement, durable failure/recovery and unified
+early/late finality/scoring are next; see `research/m4-asynchronous-cohort-design.md`.
+Do not treat generic M2 capture commands below as a V2 cohort launcher.
+
+Read-only verification of the original technical proof:
+
+```bash
+uv run python scripts/m4_technical_proof.py verify --proof experiments/m4-technical-20260926-v1/proof
+```
+
 ## Environment
 
 Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). CI pins 3.12; a newer
 interpreter is fine locally as long as the quality gate passes.
 
 ```bash
-uv sync --all-groups      # create .venv and install runtime + dev groups
+uv sync --frozen --all-groups # create .venv using committed dependency versions
 uv run argos --help
 ```
 
 `uv.lock` is committed. Regenerate it only when dependencies change, and record
 the reason (see `docs/12_TECH_STACK.md`, "Dependency additions").
+
+On Windows PowerShell, set `$env:PYTHONUTF8 = "1"` before CLI commands that print
+Unicode documentation (including `argos status`) when stdout uses a legacy
+encoding. This is an environment setting, not a rewrite of historical text.
 
 ## Quality gate
 

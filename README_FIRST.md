@@ -1,53 +1,65 @@
 # Read this first
 
-This package is the operating system for starting **ARGOS — a Polymarket Probability Intelligence Engine** with Claude Code.
+ARGOS is a read-only Polymarket research system, not a starter scaffold or a
+trading bot. See [README.md](README.md) for the current implementation boundary.
 
-It is deliberately more restrictive than a normal starter repository. The goal is to let a colleague and Claude Code advance independently through a well-defined research foundation without drifting into a dashboard, a generic AI agent, or an execution bot.
+## Current working boundary
 
-## What this package gives you
+As of 2026-10-03, PR #26 is merged and post-merge Windows/Ubuntu CI passes.
+T1-T8 technical qualification is independently verified. The ADR-0020/V2 cohort
+has synthetic admission/capture/freeze/replay proof, **not live qualification**.
+Operational M4 and Owner Gate A remain open; no live V2 cohort is frozen or
+launched, and no calibration or edge claim is established.
 
-- a repository-level `CLAUDE.md` with non-negotiable invariants;
-- a lead agent and specialized project subagents under `.claude/agents/`;
-- reusable Claude Code skills for bootstrapping, continuing milestones, ADRs, quality gates, market audits, and handoff;
-- deterministic safety hooks;
-- a complete product, architecture, domain, research, security, testing, and milestone specification;
-- a minimal Python scaffold and CI pipeline that Claude can extend;
-- an explicit autonomy boundary: Claude may build through **M4**, then must stop for owner review.
+The next work is campaign-wide disk enforcement and durable failure/recovery,
+followed by the unified early/late outcome and scoring path. A 2-4-slot live
+pilot requires its own concrete reviewed protocol and owner approval.
 
-## First use
+## Governance before implementation
 
-1. Copy the complete contents of this package into a new empty private Git repository.
-2. Install Python 3.12+, `uv`, Git, and a current Claude Code release.
-3. From the repository root, run:
+Read [AGENTS.md](AGENTS.md), [core invariants](docs/CORE_INVARIANTS.md),
+[current status](docs/STATUS.md), [backlog](docs/BACKLOG.md) and
+[ADR-0020](docs/adr/0020-budgeted-cohorts-and-separate-research-claims.md).
+The [cohort plan](docs/research/m4-asynchronous-cohort-design.md) names the
+remaining acceptance cases.
 
-   ```bash
-   uv sync
-   claude doctor
-   claude
-   ```
+`AGENTS.md` is authoritative for Codex work. `CLAUDE.md`, `.claude/`,
+`START_PROMPT.md` and earlier handoffs remain historical context; do not restart
+bootstrap or treat their older milestone-complete wording as the current verdict.
+The retained scripts under `scripts/claude/` are executable quality tools, not
+an override of current governance. Do not launch M5-M8 from a green CI result.
 
-4. Inside Claude Code, verify project configuration with `/status` and inspect agents with `/agents`.
-5. Run:
+## Local setup
 
-   ```text
-   /bootstrap
-   ```
+Use an existing clone with Python 3.12+, Git and `uv`. Check the current branch,
+dirty files and merged PRs before creating a dedicated branch from updated main.
+Preserve unrelated edits and all raw/proof archives.
 
-6. Then paste the contents of `START_PROMPT.md` as the first project prompt.
+On Windows PowerShell, enable UTF-8 output before printing documentation:
 
-## Human responsibility
+```powershell
+$env:PYTHONUTF8 = "1"
+```
 
-Claude is allowed to edit and commit locally. A human remains responsible for:
+```bash
+uv sync --frozen --all-groups
+uv run argos --help
+uv run python scripts/claude/quality_gate.py --quick
+uv run python scripts/claude/quality_gate.py
+uv run python scripts/m4_technical_proof.py verify --proof experiments/m4-technical-20260926-v1/proof
+```
 
-- repository creation and access control;
-- reviewing any permission prompt;
-- rotating and storing credentials;
-- pushing branches if project policy requires it;
-- approving the owner gate after M4;
-- deciding whether later phases may include external evidence, LLM extraction, or execution.
+These verification commands do not initiate live capture or finality polling.
+The full branch-coverage gate is separate; Ubuntu CI runs it. Consult
+[RUNBOOK.md](docs/RUNBOOK.md) before commands that access public sources.
 
-## Non-negotiable boundary
+## Human responsibility and license
 
-The autonomous target is a **read-only research core** with market discovery, market-rule normalization, public market-data capture, immutable storage, deterministic replay, baseline probability evaluation, and a complete handoff.
+The owner remains responsible for concrete semantic review, live protocol/pilot
+approval and the M4 exit gate. Keep pending, excluded and failed targets visible;
+never rewrite historical evidence to satisfy a new policy. Trading credentials,
+wallets and execution remain out of scope.
 
-It must not place orders, connect a wallet, request private trading credentials, or implement an execution adapter.
+Original code and documentation use [Apache-2.0](LICENSE), with attribution in
+[NOTICE](NOTICE). This does not change the rights or terms of external data,
+captured source payloads or third-party dependencies.

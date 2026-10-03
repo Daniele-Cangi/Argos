@@ -1,6 +1,19 @@
 # Owner Review Gate A — after M4
 
-Claude must stop implementation when this gate is reached.
+Implementation must stop at this gate until the owner authorizes further phases.
+
+## Implementation update — 2026-10-03, not a new owner verdict
+
+PR #26 is merged and post-merge Windows/Ubuntu CI passed. The T1-T8 proof remains
+verified; the V2 protocol capture/freeze owner has synthetic raw/store replay,
+arrival/accounting proof, separate V3 forecast clocks and nested-version guards.
+These results do not pass Gate A or establish prospective/predictive validity.
+
+Gate A remains open: campaign-wide disk/free-space enforcement, durable failure
+handling, exclusive resumable unified finality, end-to-end scoring proof and a
+separately approved live pilot remain outstanding. No ADR-0020/V2 live cohort
+is frozen or launched. M5-M8 and execution remain unauthorized. The dated owner
+decisions and negative experimental verdicts below are preserved unchanged.
 
 ## Owner decision update — 2026-09-27
 
