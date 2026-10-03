@@ -5,9 +5,10 @@ turns its stop reason, enforced bounds, frame/byte counts and excluded-boundary
 digest into a receipt-backed accounting assertion. The counts are not
 independently recomputed from the underlying EventStore or raw frame archive by
 this module; ``cohort_capture_replay_v2`` establishes that link for a journal. A
-boundary payload is not retained: it was excluded by the declared time/byte
-budget, so only its reported size and digest are accounted for here. This
-record does not certify a forecast snapshot or live readiness.
+V1 boundary payload is not retained. V2 instead declares retention in a separate
+excluded-boundary archive, independently verified through the V2 arrival chain;
+it is never fed into forecasts or charged to the included capture-byte counter.
+Neither summary alone certifies a forecast snapshot or live readiness.
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ from argos.ingestion.cohort_capture_v2 import (
 
 __all__ = [
     "CohortCaptureRunOutcomeV1",
+    "CohortCaptureRunOutcomeV2",
     "build_cohort_capture_run_outcome",
     "build_cohort_capture_run_outcome_id",
     "persist_cohort_capture_run_outcome",
@@ -156,6 +158,7 @@ class CohortCaptureRunOutcomeV1(VersionedModel):
             boundary_frame_bytes=self.boundary_frame_bytes,
             boundary_frame_sha256=self.boundary_frame_sha256,
             health=self.health,
+            schema_version=self.schema_version,
         )
         if self.outcome_id != expected_id:
             raise ValueError("capture outcome identity disagrees with its run accounting")
@@ -173,6 +176,24 @@ class CohortCaptureRunOutcomeV1(VersionedModel):
             not_applicable=self.health_not_applicable,
             unknown_event_type=self.health_unknown_event_type,
         )
+
+
+class CohortCaptureRunOutcomeV2(CohortCaptureRunOutcomeV1):
+    """Accounting whose fetched boundary is retained in a separate evidence budget.
+
+    Archival is verified by the V2 journal's independently pinned arrival chain,
+    not by this summary alone. No change to the V1 non-retention contract.
+    """
+
+    schema_version: ClassVar[str] = "m4_cohort_capture_run_outcome.v2"
+    # Deliberate widened field in a DIFFERENT schema; V1's literal stays unchanged.
+    boundary_payload_archived: bool = Field(default=False, strict=True)  # type: ignore[assignment]
+
+    @model_validator(mode="after")
+    def _boundary_evidence(self) -> CohortCaptureRunOutcomeV2:
+        if self.boundary_payload_archived != (self.boundary_frame_sha256 is not None):
+            raise ValueError("V2 fetched boundary must have separate archived evidence")
+        return self
 
 
 def build_cohort_capture_run_outcome_id(
@@ -194,9 +215,10 @@ def build_cohort_capture_run_outcome_id(
     boundary_frame_bytes: int | None,
     boundary_frame_sha256: str | None,
     health: CaptureHealth,
+    schema_version: str = _SCHEMA_VERSION,
 ) -> str:
     material = {
-        "version": "m4_cohort_capture_run_outcome_identity.v1",
+        "version": schema_version.replace("_run_outcome.", "_run_outcome_identity."),
         "experiment_id": experiment_id,
         "protocol_sha256": protocol_sha256,
         "protocol_receipt_id": protocol_receipt_id,
@@ -236,6 +258,7 @@ def build_cohort_capture_run_outcome(
     selection_receipt: EvidencePersistenceReceiptV1,
     entry_index: int,
     summary: BoundedCaptureSummaryV2,
+    record_model: type[CohortCaptureRunOutcomeV1] = CohortCaptureRunOutcomeV1,
 ) -> CohortCaptureRunOutcomeV1:
     """Bind run accounting to the already-durable declaration and admission."""
     _verify_protocol_receipt(protocol, protocol_receipt)
@@ -249,8 +272,28 @@ def build_cohort_capture_run_outcome(
     selection_bytes = orjson.dumps(selection.to_record(), option=orjson.OPT_SORT_KEYS)
     selection_digest = hashlib.sha256(selection_bytes).hexdigest()
     health = summary.health
-    return CohortCaptureRunOutcomeV1(
-        outcome_id=build_cohort_capture_run_outcome_id(
+    return record_model.model_validate(
+        dict(
+            outcome_id=build_cohort_capture_run_outcome_id(
+                experiment_id=protocol.experiment_id,
+                protocol_sha256=protocol_digest,
+                protocol_receipt_id=protocol_receipt.receipt_id,
+                target_id=summary.target_id,
+                capture_run_id=summary.capture_run_id,
+                selection_sha256=selection_digest,
+                selection_receipt_id=selection_receipt.receipt_id,
+                block_ordinal=selection.block_ordinal,
+                entry_index=entry_index,
+                started_at=summary.started_at,
+                finished_at=summary.finished_at,
+                stop_reason=summary.stop_reason,
+                frames_archived=summary.frames_archived,
+                raw_bytes_archived=summary.raw_bytes_archived,
+                boundary_frame_bytes=summary.boundary_frame_bytes,
+                boundary_frame_sha256=summary.boundary_frame_sha256,
+                health=health,
+                schema_version=record_model.schema_version,
+            ),
             experiment_id=protocol.experiment_id,
             protocol_sha256=protocol_digest,
             protocol_receipt_id=protocol_receipt.receipt_id,
@@ -267,32 +310,19 @@ def build_cohort_capture_run_outcome(
             raw_bytes_archived=summary.raw_bytes_archived,
             boundary_frame_bytes=summary.boundary_frame_bytes,
             boundary_frame_sha256=summary.boundary_frame_sha256,
-            health=health,
-        ),
-        experiment_id=protocol.experiment_id,
-        protocol_sha256=protocol_digest,
-        protocol_receipt_id=protocol_receipt.receipt_id,
-        target_id=summary.target_id,
-        capture_run_id=summary.capture_run_id,
-        selection_sha256=selection_digest,
-        selection_receipt_id=selection_receipt.receipt_id,
-        block_ordinal=selection.block_ordinal,
-        entry_index=entry_index,
-        started_at=summary.started_at,
-        finished_at=summary.finished_at,
-        stop_reason=summary.stop_reason,
-        frames_archived=summary.frames_archived,
-        raw_bytes_archived=summary.raw_bytes_archived,
-        boundary_frame_bytes=summary.boundary_frame_bytes,
-        boundary_frame_sha256=summary.boundary_frame_sha256,
-        health_frames_consumed=health.frames_consumed,
-        health_decode_failures=health.decode_failures,
-        health_events_seen=health.events_seen,
-        health_accepted=health.accepted,
-        health_duplicate=health.duplicate,
-        health_rejected=health.rejected,
-        health_not_applicable=health.not_applicable,
-        health_unknown_event_type=health.unknown_event_type,
+            boundary_payload_archived=(
+                record_model is CohortCaptureRunOutcomeV2
+                and summary.boundary_frame_sha256 is not None
+            ),
+            health_frames_consumed=health.frames_consumed,
+            health_decode_failures=health.decode_failures,
+            health_events_seen=health.events_seen,
+            health_accepted=health.accepted,
+            health_duplicate=health.duplicate,
+            health_rejected=health.rejected,
+            health_not_applicable=health.not_applicable,
+            health_unknown_event_type=health.unknown_event_type,
+        )
     )
 
 
@@ -352,9 +382,7 @@ def verify_cohort_capture_run_outcome_archives(
     persisted_protocol = load_persisted_record(
         archive_dir, protocol_receipt, AsynchronousCohortProtocolV2
     )
-    persisted_outcome = load_persisted_record(
-        archive_dir, outcome_receipt, CohortCaptureRunOutcomeV1
-    )
+    persisted_outcome = load_persisted_record(archive_dir, outcome_receipt, type(outcome))
     if persisted_protocol != protocol or persisted_outcome != outcome:
         raise ValueError("archived capture outcome chain disagrees with supplied evidence")
     return persisted_outcome
@@ -505,7 +533,7 @@ def _validate_outcome_against_protocol(
             health=outcome.health,
         ),
     )
-    if outcome.boundary_payload_archived:
+    if type(outcome) is CohortCaptureRunOutcomeV1 and outcome.boundary_payload_archived:
         raise ValueError("excluded boundary payload must not be claimed as archived")
 
 

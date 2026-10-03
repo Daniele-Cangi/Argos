@@ -24,8 +24,10 @@ from argos.errors import ImmutabilityViolationError
 from argos.evaluation.bundle import record_sha256
 from argos.evaluation.cohort_capture_outcome_v2 import CohortCaptureRunOutcomeV1
 from argos.evaluation.cohort_capture_replay_v2 import (
+    REQUIRED_OWNER_CAPTURE_SCHEMAS_V2,
     CohortCaptureFrameV1,
     CohortCaptureJournalV1,
+    CohortCaptureJournalV2,
     verify_cohort_capture_journal_v2,
 )
 from argos.evaluation.cohort_selection_v2 import select_block_candidates_v2
@@ -107,6 +109,7 @@ def _prepared(tmp_path: Path, **protocol_updates):
             "target_database_id": "capture.sqlite",
         },
         schema_versions=(
+            *REQUIRED_OWNER_CAPTURE_SCHEMAS_V2,
             ObservationEnvelopeV1.schema_version,
             RejectedObservationV1.schema_version,
             PriceChangeV1.schema_version,
@@ -210,7 +213,7 @@ async def test_owner_freezes_last_yes_state_not_last_frame_and_replays_all_basel
     ]
     args, result = await _run(tmp_path, frames)
     journal = result.journal
-    assert CohortCaptureJournalV1.from_record(journal.to_record()) == journal
+    assert CohortCaptureJournalV2.from_record(journal.to_record()) == journal
     assert await _verify(args, result) == journal
     assert journal.outcome.frames_archived == 6
     assert journal.outcome.health_accepted == 3
@@ -245,7 +248,7 @@ async def test_frame_cap_does_not_read_or_journal_a_boundary_payload(tmp_path):
     assert result.journal.outcome.boundary_frame_sha256 is None
 
 
-async def test_byte_cap_accounts_excluded_boundary_without_archiving_it(tmp_path):
+async def test_byte_cap_archives_excluded_boundary_separately(tmp_path):
     first, boundary = _book(36), _book(37)
     args, result = await _run(
         tmp_path, [first, boundary], capture_max_bytes_per_target=len(first.text.encode()) + 1
@@ -257,6 +260,12 @@ async def test_byte_cap_accounts_excluded_boundary_without_archiving_it(tmp_path
     assert not (
         args["raw_archive_dir"] / "clob_market_ws" / f"{boundary.provenance.raw_sha256}.raw.json"
     ).exists()
+    assert (
+        args["raw_archive_dir"]
+        / "excluded-boundary"
+        / "clob_market_ws"
+        / f"{boundary.provenance.raw_sha256}.raw.json"
+    ).read_bytes() == boundary.text.encode()
     assert await _verify(args, result) == result.journal
 
 
@@ -510,7 +519,7 @@ async def test_valid_receipts_do_not_mask_wrong_persistence_baseline(tmp_path):
     material.update(snapshot=changed.to_record(), snapshot_receipt=snapshot_receipt.to_record())
     material.pop("journal_id")
     material["journal_id"] = f"cohort-capture-journal-{record_sha256(material)[:32]}"
-    journal = CohortCaptureJournalV1.from_record(material)
+    journal = CohortCaptureJournalV2.from_record(material)
     receipt = persist_evidence_record(
         args["evidence_archive_dir"],
         record=journal,

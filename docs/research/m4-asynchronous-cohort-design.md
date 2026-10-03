@@ -48,10 +48,11 @@ V8, invents finality, establishes calibration/edge or authorizes M5/trading.
 - Synthetic bounded-ingestion slice: `run_bounded_cohort_capture_v2` drives the
   existing `run_capture`/`EventStore` path with a required raw archive, enforces
   the first duration/frame/byte cap, and tests that the next out-of-window
-  frame is not normalized or stored. For a time/byte boundary it returns only
-  that excluded frame's size/hash in a non-persistent run summary; this is not
-  complete evidence for the excluded payload. Tests use a fake source and no
-  socket. The adapter alone does not produce durable close/snapshot evidence;
+  frame is not normalized or stored. For a time/byte boundary it returns
+  that excluded frame's size/hash in a non-persistent run summary; the optional
+  owner callback now retains the fetched boundary separately. The adapter alone
+  still does not establish independent boundary evidence. Tests use a fake
+  source and no socket. The adapter alone does not produce durable close/snapshot evidence;
   the separate owner below adds a synthetic integration path, not disk or
   crash recovery qualification.
 - Persistent run-accounting sub-slice: a versioned receipt-backed outcome
@@ -62,24 +63,37 @@ V8, invents finality, establishes calibration/edge or authorizes M5/trading.
   below independently establishes its raw-frame/EventStore link.
 - Capture-to-freeze synthetic owner: a fresh exclusive per-target database and
   raw archive retain all included frame arrivals (including identical resends
-  and empty arrays). A versioned terminal journal binds the outcome receipt,
+  and empty arrays). V2 per-arrival records/receipts are written during capture,
+  pinned at exclusive fixed ordinal paths and closed by a single immutable
+  count/root seal. They bind ledger-silent arrivals independently of terminal
+  journal counters. A V2 terminal journal binds the outcome receipt,
   frame ordinals/provenance/processing bounds and optional four-method freeze.
   Re-normalization of archived WS bytes checks the full normalized ledger,
   source-frame offsets and health; stored replay reconstructs information hashes,
   quotes and persistence history without needing a resolution. Processing-only
   rejection timestamps are checked against their frame interval, not reproduced
   as source times. First-arrival content-addressed sidecars do not replace each
-  resend's journal provenance. Empty/unseeded captures remain admitted accounting
-  with no snapshot; one-sided seeded states retain four explicit abstentions.
-  The excluded boundary's size/hash and source-exhaustion reason remain owner
-  assertions, not claims of independently archived boundary bytes.
+  resend's independently anchored provenance. Empty/unseeded captures remain
+  admitted accounting with no snapshot; one-sided seeded states retain four
+  explicit abstentions.
+  A fetched excluded boundary is anchored and archived separately, with verified
+  size/hash/provenance/timing, never included in forecasts or capture-byte counts.
+  Frame-cap stops do not fetch an extra frame; receive timeouts may have no
+  boundary. The source-exhaustion reason remains an owner assertion. Separate
+  boundary/arrival evidence consumes additional storage, not yet a measured or
+  enforced campaign-wide storage reserve.
   Acquisition closes before finalization. Snapshot time is the real finalization
-  time, and a post-write clock check recorded as `finalized_at` must remain before
+  time, and for snapshots a post-write clock check recorded as `finalized_at` must remain before
   the reviewed knowable-time margin (ADR-0020 section 4). This does not produce or
   reinterpret the earlier `CohortCaptureCloseV1` synthetic proof record, which
   requires a durable receipt before close. The new journal is terminal evidence,
-  not a crash-resume checkpoint, and does not enforce total storage budgets or
-  qualify a live source/campaign.
+  and uses a complete transitive manifest schema inventory. Snapshotless
+  finalization at/after the boundary is explicitly `late_no_snapshot_excluded`,
+  retaining negative accounting without predictive use. V1 journal/outcome
+  records remain readable, never silently reinterpreted as V2 arrival proof.
+  Local anchors do not protect against rewriting the entire storage system.
+  The journal is not a crash-resume checkpoint and does not enforce total
+  storage budgets or qualify a live source/campaign.
 
 ## Remaining vertical slice: capture, outcome and synthetic end-to-end proof
 

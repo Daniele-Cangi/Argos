@@ -2,6 +2,52 @@
 
 Last updated: 2026-10-03
 
+## 2026-10-03 PR #25 integrity review corrections — not live qualification
+
+The review falsified the original terminal-journal integrity claim: a newly
+receipted alternate inventory could add/remove ledger-silent empty resends while
+still replaying the unchanged normalized store. The owner now emits
+`CohortCaptureJournalV2` and `CohortCaptureRunOutcomeV2`; V1 shapes, identities and
+non-retention semantics stay readable and are not upgraded retroactively.
+
+Each included frame, including empty/not-applicable frames and identical resends,
+has a separate durable, previous-receipt-linked arrival record and exclusive
+fixed-ordinal receipt anchor. A single fixed terminal seal pins the original
+count/root independently of the journal. Verification compares that chain with
+the journal before raw/store/baseline replay; alternate newly receipted journals
+cannot redefine the original arrivals. These are local immutable anchors, not
+signatures against an adversary rewriting the whole storage system, and they
+are not crash-resume qualification.
+
+A fetched time/byte-cap boundary is archived separately and anchored as an
+excluded arrival; size, hash, provenance and timing are rechecked. It never feeds
+the forecast or the included frame/raw-byte counters. No extra frame is fetched
+at a frame cap, and a receive timeout need not invent a boundary. The extra
+arrival/boundary evidence is separate storage overhead; total campaign storage
+and free-disk enforcement remain outstanding. Source exhaustion is still a
+source-owner assertion, not an independently proved transport event.
+
+The manifest requires a transitive inventory of consumed/emitted versioned
+models, including optional/nested records and opaque dispatched payload roots.
+Each required schema has a removal test before database creation. Empty/unseeded
+captures finalized at/after the reviewed blind boundary retain accounting as
+`late_no_snapshot_excluded`; they acquire no predictive validity. Available
+snapshots retain the strict actual durability/knowable-time checks. The reviewed
+deadline cannot be replaced by a newly receipted journal assertion.
+
+The final focused set passes 202 tests: arrivals 100%, accounting 96.88% and
+journal/replay 94.26% branch-inclusive coverage, above the unchanged thresholds.
+An initial complete run passed 2,491 tests with two Windows symlink skips but
+failed its accounting coverage gate (83.20%); source edits during that
+measurement made the line/branch report inconsistent with the stable focused
+run. The complete gate repeated on unchanged source passes 2,494 tests with
+the same two Windows symlink skips and every declared coverage threshold,
+including the measurements above. Ruff, formatting, mypy (90 source files)
+and `git diff --check` also pass.
+These corrections do not qualify a live campaign, change historical evidence,
+or establish calibration or predictive validity. Local verification is not
+a substitute for the updated PR's CI and review; merge remains separate.
+
 ## 2026-10-03 V2 capture-to-freeze owner — synthetic integration only
 
 The current branch adds an offline-testable target owner: exclusive fresh

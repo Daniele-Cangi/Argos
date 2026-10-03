@@ -7,8 +7,9 @@ both the arrival ledger and all ingestion counters before a snapshot is trusted.
 
 Only capture acquisition is bounded here, not total DB/WAL/artifact storage.
 No network client, campaign launcher, recovery or finality polling is provided.
-The terminal journal is not a crash-resume checkpoint. Excluded boundary bytes
-remain an owner assertion, not independently replayable evidence.
+The terminal journal is not a crash-resume checkpoint. V2 pins every arrival
+independently and retains a fetched excluded boundary separately. V1 journals
+remain readable but cannot establish that stronger integrity claim.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from collections.abc import AsyncIterator
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal, Self, get_args
 
 from pydantic import Field, field_validator, model_validator
 
@@ -28,14 +29,24 @@ from argos.baselines import (
     quote_from_book_state,
 )
 from argos.clock import ReplayClock, ensure_utc
+from argos.compiler.contract import CompiledMarketContractV1
 from argos.config.manifest import RunManifest
 from argos.domain.lasttrade import LastTradePriceV1
+from argos.domain.observation import ObservationEnvelopeV1, RejectedObservationV1
+from argos.domain.orderbook import OrderBookSnapshotV1
+from argos.domain.pricechange import PriceChangeV1
 from argos.domain.provenance import SourceProvenanceV1
 from argos.domain.versioning import VersionedModel, ensure_supported_version
 from argos.domain.wsbook import WsBookSnapshotV1
 from argos.evaluation.bundle import record_sha256
+from argos.evaluation.cohort_capture_arrivals_v2 import (
+    CohortCaptureArrivalSealV1,
+    CohortCaptureArrivalV1,
+    verify_capture_arrival_chain,
+)
 from argos.evaluation.cohort_capture_outcome_v2 import (
     CohortCaptureRunOutcomeV1,
+    CohortCaptureRunOutcomeV2,
     verify_cohort_capture_run_outcome_archives,
 )
 from argos.evaluation.cohort_protocol_v2 import AsynchronousCohortProtocolV2
@@ -43,6 +54,7 @@ from argos.evaluation.cohort_selection_v2 import (
     OfflineBlockSelectionV2,
 )
 from argos.evaluation.cohort_snapshot_v2 import (
+    CohortCaptureCloseV1,
     CohortFrozenForecastSnapshotV1,
     _capture_manifest_matches,
     _selected_target,
@@ -62,8 +74,10 @@ from argos.store.event_store import CompletionStatus, EventStore, open_sqlite_ev
 from argos.store.raw_archive import archive_relative_location, read_raw_payload
 
 __all__ = [
+    "REQUIRED_OWNER_CAPTURE_SCHEMAS_V2",
     "CohortCaptureFrameV1",
     "CohortCaptureJournalV1",
+    "CohortCaptureJournalV2",
     "verify_cohort_capture_journal_v2",
 ]
 
@@ -106,6 +120,7 @@ class CohortCaptureJournalV1(VersionedModel):
     """Terminal inventory linked to admission, accounting and optional blind freeze."""
 
     schema_version: ClassVar[str] = "m4_cohort_capture_journal.v1"
+    _outcome_model: ClassVar[type[CohortCaptureRunOutcomeV1]] = CohortCaptureRunOutcomeV1
     journal_id: str = Field(min_length=1)
     capture_run_manifest: RunManifest
     outcome: CohortCaptureRunOutcomeV1
@@ -135,12 +150,12 @@ class CohortCaptureJournalV1(VersionedModel):
         return record
 
     @classmethod
-    def from_record(cls, record: dict[str, Any]) -> CohortCaptureJournalV1:
+    def from_record(cls, record: dict[str, Any]) -> Self:
         payload = dict(record)
         ensure_supported_version(payload.pop("schema_version", None), (cls.schema_version,))
         for name, model in (
             ("capture_run_manifest", RunManifest),
-            ("outcome", CohortCaptureRunOutcomeV1),
+            ("outcome", cls._outcome_model),
             ("outcome_receipt", EvidencePersistenceReceiptV1),
             ("snapshot", CohortFrozenForecastSnapshotV1),
             ("snapshot_receipt", EvidencePersistenceReceiptV1),
@@ -225,6 +240,130 @@ class CohortCaptureJournalV1(VersionedModel):
         return self
 
 
+class CohortCaptureJournalV2(CohortCaptureJournalV1):
+    """Anchored inventory; late snapshotless accounting is explicitly excluded.
+
+    V1 remains readable but is not independently qualified by this verifier.
+    Boundary bytes live outside the included raw budget and never feed forecasts.
+    """
+
+    schema_version: ClassVar[str] = "m4_cohort_capture_journal.v2"
+    _outcome_model: ClassVar[type[CohortCaptureRunOutcomeV1]] = CohortCaptureRunOutcomeV2
+    outcome: CohortCaptureRunOutcomeV2
+    arrival_seal: CohortCaptureArrivalSealV1
+    arrival_seal_receipt: EvidencePersistenceReceiptV1
+    boundary: CohortCaptureArrivalV1 | None = None
+    blind_deadline: datetime
+    finalization_status: Literal["snapshot_frozen", "no_snapshot", "late_no_snapshot_excluded"]
+
+    @field_validator("blind_deadline")
+    @classmethod
+    def _deadline_utc(cls, value: datetime) -> datetime:
+        return ensure_utc(value)
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            **super().to_record(),
+            "arrival_seal": self.arrival_seal.to_record(),
+            "arrival_seal_receipt": self.arrival_seal_receipt.to_record(),
+            "boundary": self.boundary.to_record() if self.boundary else None,
+        }
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> CohortCaptureJournalV2:
+        payload = dict(record)
+        payload["arrival_seal"] = CohortCaptureArrivalSealV1.from_record(payload["arrival_seal"])
+        payload["arrival_seal_receipt"] = EvidencePersistenceReceiptV1.from_record(
+            payload["arrival_seal_receipt"]
+        )
+        if payload.get("boundary") is not None:
+            payload["boundary"] = CohortCaptureArrivalV1.from_record(payload["boundary"])
+        return super().from_record(payload)
+
+    @model_validator(mode="after")
+    def _anchored_inventory(self) -> CohortCaptureJournalV2:
+        outcome, seal = self.outcome, self.arrival_seal
+        _receipt(
+            self.arrival_seal_receipt,
+            seal,
+            outcome.experiment_id,
+            EvidenceArtifactKind.COHORT_CAPTURE_ARRIVAL_SEAL,
+            seal.seal_id,
+        )
+        if (
+            (seal.capture_run_id, seal.target_id) != (outcome.capture_run_id, outcome.target_id)
+            or seal.arrival_count != len(self.frames) + int(self.boundary is not None)
+            or not outcome.finished_at
+            <= seal.sealed_at
+            <= self.arrival_seal_receipt.persisted_at
+            <= self.finalized_at
+        ):
+            raise ValueError("journal disagrees with arrival seal identity/count/chronology")
+        if self.boundary is not None:
+            boundary = self.boundary
+            if (
+                boundary.included
+                or boundary.ordinal != len(self.frames) + 1
+                or (boundary.capture_run_id, boundary.target_id)
+                != (outcome.capture_run_id, outcome.target_id)
+                or (boundary.provenance.byte_length, boundary.provenance.raw_sha256)
+                != (outcome.boundary_frame_bytes, outcome.boundary_frame_sha256)
+                or boundary.processed_at > seal.sealed_at
+                or boundary.provenance.retrieved_at
+                < (self.frames[-1].provenance.retrieved_at if self.frames else outcome.started_at)
+            ):
+                raise ValueError("journal boundary differs from excluded arrival accounting")
+        elif outcome.boundary_frame_sha256 is not None:
+            raise ValueError("journal omitted fetched boundary evidence")
+        expected = (
+            "snapshot_frozen"
+            if self.snapshot is not None
+            else "late_no_snapshot_excluded"
+            if self.finalized_at >= self.blind_deadline
+            else "no_snapshot"
+        )
+        if self.finalization_status != expected:
+            raise ValueError("journal finalization requires explicit late/non-predictive status")
+        return self
+
+
+def _schema_closure(*models: type[VersionedModel]) -> frozenset[str]:
+    """All nested declared models, including optional/empty collection branches.
+
+    Envelope payloads are opaque mappings, so their dispatched payload models and
+    the REST/compiled contracts read during admission replay are explicit roots.
+    """
+    schemas: set[str] = set()
+
+    def visit(annotation: Any) -> None:
+        if isinstance(annotation, type) and issubclass(annotation, VersionedModel):
+            if annotation.schema_version not in schemas:
+                schemas.add(annotation.schema_version)
+                for field in annotation.model_fields.values():
+                    visit(field.annotation)
+        else:
+            for arg in get_args(annotation):
+                visit(arg)
+
+    for model in models:
+        visit(model)
+    return frozenset(schemas)
+
+
+REQUIRED_OWNER_CAPTURE_SCHEMAS_V2 = _schema_closure(
+    CohortCaptureJournalV2,
+    CohortCaptureArrivalV1,
+    ObservationEnvelopeV1,
+    RejectedObservationV1,
+    PriceChangeV1,
+    LastTradePriceV1,
+    WsBookSnapshotV1,
+    OrderBookSnapshotV1,
+    CompiledMarketContractV1,
+    CohortCaptureCloseV1,
+)
+
+
 def _receipt(
     receipt: EvidencePersistenceReceiptV1,
     record: VersionedModel,
@@ -252,14 +391,7 @@ def _runtime_reserve(
     admitted_at = max(selection.selected_at, selection_receipt.persisted_at)
     if manifest.created_at < admitted_at or started_at < max(admitted_at, manifest.created_at):
         raise ValueError("capture manifest/start predates durable target admission")
-    required = {
-        CohortCaptureFrameV1.schema_version,
-        CohortCaptureJournalV1.schema_version,
-        CohortCaptureRunOutcomeV1.schema_version,
-        LastTradePriceV1.schema_version,
-        WsBookSnapshotV1.schema_version,
-    }
-    if not required.issubset(manifest.schema_versions):
+    if not REQUIRED_OWNER_CAPTURE_SCHEMAS_V2.issubset(manifest.schema_versions):
         raise ValueError("capture manifest omits journal/accounting schemas")
     reserved_end = started_at + timedelta(
         seconds=protocol.capture_max_seconds_per_target + protocol.finalization_reserve_seconds
@@ -436,7 +568,7 @@ def _without_locations(value: object) -> object:
 
 
 async def verify_cohort_capture_journal_v2(
-    journal: CohortCaptureJournalV1,
+    journal: CohortCaptureJournalV2,
     receipt: EvidencePersistenceReceiptV1,
     *,
     protocol: AsynchronousCohortProtocolV2,
@@ -448,8 +580,10 @@ async def verify_cohort_capture_journal_v2(
     evidence_archive_dir: Path,
     prior_selections: tuple[OfflineBlockSelectionV2, ...] = (),
     prior_selection_receipts: tuple[EvidencePersistenceReceiptV1, ...] = (),
-) -> CohortCaptureJournalV1:
+) -> CohortCaptureJournalV2:
     """Read durable receipts, re-normalize raw frames, replay and compare freeze."""
+    if not isinstance(journal, CohortCaptureJournalV2):
+        raise ValueError("legacy journal does not provide independently anchored V2 integrity")
     outcome = journal.outcome
     _receipt(
         receipt,
@@ -464,7 +598,7 @@ async def verify_cohort_capture_journal_v2(
         journal.snapshot_receipt.persisted_at if journal.snapshot_receipt else outcome.finished_at,
     ):
         raise ValueError("journal receipt predates its child receipts")
-    if load_persisted_record(evidence_archive_dir, receipt, CohortCaptureJournalV1) != journal:
+    if load_persisted_record(evidence_archive_dir, receipt, CohortCaptureJournalV2) != journal:
         raise ValueError("archived journal differs from supplied evidence")
     verify_cohort_capture_run_outcome_archives(
         outcome,
@@ -481,6 +615,35 @@ async def verify_cohort_capture_journal_v2(
     market = decision.market
     assert market is not None
     tokens = (market.token_id_for("Yes"), market.token_id_for("No"))
+    deadline = review.earliest_outcome_knowable_at - timedelta(
+        seconds=protocol.outcome_blind_margin_seconds
+    )
+    if journal.blind_deadline != deadline:
+        raise ValueError("journal blind deadline differs from reviewed admission")
+    arrivals = verify_capture_arrival_chain(
+        journal.arrival_seal,
+        journal.arrival_seal_receipt,
+        experiment_id=protocol.experiment_id,
+        raw_archive_dir=raw_archive_dir,
+        evidence_archive_dir=evidence_archive_dir,
+    )
+    included = tuple(arrival for arrival in arrivals if arrival.included)
+    excluded = tuple(arrival for arrival in arrivals if not arrival.included)
+    if tuple((item.ordinal, item.provenance, item.processed_at) for item in included) != tuple(
+        (item.ordinal, item.provenance, item.processed_at) for item in journal.frames
+    ) or excluded != ((journal.boundary,) if journal.boundary else ()):
+        raise ValueError("journal differs from independently pinned frame arrivals")
+    if journal.boundary is not None:
+        boundary = journal.boundary
+        if outcome.stop_reason.value == "duration_cap" and (
+            max(boundary.provenance.retrieved_at, boundary.processed_at)
+            <= outcome.started_at + timedelta(seconds=protocol.capture_max_seconds_per_target)
+        ):
+            raise ValueError("duration boundary does not exceed capture deadline")
+    if outcome.stop_reason.value == "duration_cap" and outcome.finished_at != (
+        outcome.started_at + timedelta(seconds=protocol.capture_max_seconds_per_target)
+    ):
+        raise ValueError("duration-cap accounting did not reach capture deadline")
     _capture_manifest_matches(
         protocol,
         journal.capture_run_manifest,

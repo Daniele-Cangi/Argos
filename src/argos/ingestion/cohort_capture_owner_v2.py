@@ -17,7 +17,14 @@ from argos.clock import Clock, Pacer
 from argos.config.manifest import RunManifest
 from argos.domain.versioning import VersionedModel
 from argos.evaluation.bundle import record_sha256
+from argos.evaluation.cohort_capture_arrivals_v2 import (
+    CohortCaptureArrivalSealV1,
+    CohortCaptureArrivalV1,
+    persist_capture_arrival,
+    persist_capture_arrival_seal,
+)
 from argos.evaluation.cohort_capture_outcome_v2 import (
+    CohortCaptureRunOutcomeV2,
     _verify_protocol_receipt,
     _verify_selection_receipt,
     build_cohort_capture_run_outcome,
@@ -25,7 +32,7 @@ from argos.evaluation.cohort_capture_outcome_v2 import (
 )
 from argos.evaluation.cohort_capture_replay_v2 import (
     CohortCaptureFrameV1,
-    CohortCaptureJournalV1,
+    CohortCaptureJournalV2,
     _last_forecasts,
     _runtime_reserve,
     verify_cohort_capture_journal_v2,
@@ -58,7 +65,7 @@ __all__ = ["CohortCaptureOwnerResult", "run_cohort_capture_owner_v2"]
 
 @dataclass(frozen=True, slots=True)
 class CohortCaptureOwnerResult:
-    journal: CohortCaptureJournalV1
+    journal: CohortCaptureJournalV2
     receipt: EvidencePersistenceReceiptV1
 
 
@@ -128,13 +135,43 @@ async def run_cohort_capture_owner_v2(
     store = open_sqlite_event_store(database_path)
     frames: list[CohortCaptureFrameV1] = []
     live_dispatcher = ObservationDispatcher()
+    last_arrival_receipt: EvidencePersistenceReceiptV1 | None = None
+    boundary: CohortCaptureArrivalV1 | None = None
+
+    def record_arrival(
+        frame: MarketFrame, ordinal: int, *, included: bool
+    ) -> CohortCaptureArrivalV1:
+        nonlocal last_arrival_receipt
+        arrival = CohortCaptureArrivalV1(
+            capture_run_id=manifest.run_id,
+            target_id=target_id,
+            ordinal=ordinal,
+            included=included,
+            provenance=frame.provenance,
+            processed_at=clock.now(),
+            previous_receipt_id=last_arrival_receipt.receipt_id if last_arrival_receipt else None,
+        )
+        last_arrival_receipt = persist_capture_arrival(
+            arrival,
+            experiment_id=protocol.experiment_id,
+            raw=frame.text.encode("utf-8"),
+            raw_archive_dir=raw_archive_dir,
+            evidence_archive_dir=evidence_archive_dir,
+            persisted_at=clock.now(),
+        )
+        return arrival
 
     def after_frame(frame: MarketFrame, ordinal: int) -> None:
+        arrival = record_arrival(frame, ordinal, included=True)
         frames.append(
             CohortCaptureFrameV1(
-                ordinal=ordinal, provenance=frame.provenance, processed_at=clock.now()
+                ordinal=ordinal, provenance=frame.provenance, processed_at=arrival.processed_at
             )
         )
+
+    def after_boundary(frame: MarketFrame, ordinal: int) -> None:
+        nonlocal boundary
+        boundary = record_arrival(frame, ordinal, included=False)
 
     try:
         summary = await run_bounded_cohort_capture_v2(
@@ -151,6 +188,21 @@ async def run_cohort_capture_owner_v2(
             raw_archive_dir=raw_archive_dir,
             after_frame=after_frame,
             dispatcher=live_dispatcher,
+            after_boundary=after_boundary,
+        )
+        seal = CohortCaptureArrivalSealV1(
+            capture_run_id=manifest.run_id,
+            target_id=target_id,
+            arrival_count=len(frames) + int(boundary is not None),
+            last_receipt_id=last_arrival_receipt.receipt_id if last_arrival_receipt else None,
+            sealed_at=clock.now(),
+        )
+        seal_receipt = persist_capture_arrival_seal(
+            seal,
+            experiment_id=protocol.experiment_id,
+            raw_archive_dir=raw_archive_dir,
+            evidence_archive_dir=evidence_archive_dir,
+            persisted_at=clock.now(),
         )
         outcome = build_cohort_capture_run_outcome(
             protocol=protocol,
@@ -159,6 +211,7 @@ async def run_cohort_capture_owner_v2(
             selection_receipt=selection_receipt,
             entry_index=entry_index,
             summary=summary,
+            record_model=CohortCaptureRunOutcomeV2,
         )
         outcome_receipt = persist_cohort_capture_run_outcome(
             evidence_archive_dir, outcome=outcome, persisted_at=clock.now()
@@ -203,17 +256,29 @@ async def run_cohort_capture_owner_v2(
                 artifact_id=snapshot.snapshot_id,
                 persisted_at=clock.now(),
             )
+        finalized_at = clock.now()
         args_journal: dict[str, Any] = dict(
             capture_run_manifest=manifest,
             outcome=outcome,
             outcome_receipt=outcome_receipt,
             frames=tuple(frames),
-            finalized_at=clock.now(),
+            finalized_at=finalized_at,
             snapshot=snapshot,
             snapshot_receipt=snapshot_receipt,
+            arrival_seal=seal,
+            arrival_seal_receipt=seal_receipt,
+            boundary=boundary,
+            blind_deadline=deadline,
+            finalization_status=(
+                "snapshot_frozen"
+                if snapshot is not None
+                else "late_no_snapshot_excluded"
+                if finalized_at >= deadline
+                else "no_snapshot"
+            ),
         )
         material = {
-            "schema_version": CohortCaptureJournalV1.schema_version,
+            "schema_version": CohortCaptureJournalV2.schema_version,
             **{
                 name: (
                     [item.to_record() for item in value]
@@ -227,7 +292,7 @@ async def run_cohort_capture_owner_v2(
                 for name, value in args_journal.items()
             },
         }
-        journal = CohortCaptureJournalV1(
+        journal = CohortCaptureJournalV2(
             journal_id=f"cohort-capture-journal-{record_sha256(material)[:32]}", **args_journal
         )
         receipt = persist_evidence_record(

@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import timedelta
 
 import pytest
+from pydantic import TypeAdapter
 from test_capture_loop import _frame
 from test_cohort_capture_replay_v2 import _book, _prepared, _run, _Source, _verify
 from test_cohort_protocol_v2 import START
@@ -12,7 +13,7 @@ from argos.clock import RealPacer, ReplayClock
 from argos.evaluation.bundle import record_sha256
 from argos.evaluation.cohort_capture_replay_v2 import (
     CohortCaptureFrameV1,
-    CohortCaptureJournalV1,
+    CohortCaptureJournalV2,
     verify_cohort_capture_journal_v2,
 )
 from argos.evaluation.prospective import (
@@ -143,7 +144,7 @@ async def test_journal_rejects_inconsistent_nested_evidence(tmp_path, case, mess
     else:
         fields["journal_id"] = "foreign"
     with pytest.raises(ValueError, match=message):
-        CohortCaptureJournalV1.model_validate(fields)
+        CohortCaptureJournalV2.model_validate(fields)
 
 
 @pytest.mark.parametrize("case", ["missing-schema", "manifest-before-admission"])
@@ -154,7 +155,7 @@ async def test_owner_refuses_incomplete_manifest_before_creating_database(tmp_pa
             "schema_versions": tuple(
                 version
                 for version in args["manifest"].schema_versions
-                if version != CohortCaptureJournalV1.schema_version
+                if version != CohortCaptureJournalV2.schema_version
             )
         }
         message = "omits journal/accounting schemas"
@@ -174,8 +175,9 @@ async def test_owner_refuses_incomplete_manifest_before_creating_database(tmp_pa
 def _persist_altered_journal(args, journal, **updates):
     material = journal.to_record()
     material.update(updates)
+    material = TypeAdapter(dict).dump_python(material, mode="json")
     material.pop("journal_id")
-    altered = CohortCaptureJournalV1.from_record(
+    altered = CohortCaptureJournalV2.from_record(
         {**material, "journal_id": f"cohort-capture-journal-{record_sha256(material)[:32]}"}
     )
     receipt = persist_evidence_record(
@@ -191,7 +193,13 @@ def _persist_altered_journal(args, journal, **updates):
 
 async def test_hash_valid_journal_cannot_omit_available_snapshot(tmp_path):
     args, result = await _run(tmp_path, [_book(36)])
-    altered = _persist_altered_journal(args, result.journal, snapshot=None, snapshot_receipt=None)
+    altered = _persist_altered_journal(
+        args,
+        result.journal,
+        snapshot=None,
+        snapshot_receipt=None,
+        finalization_status="no_snapshot",
+    )
     with pytest.raises(ValueError, match="omitted an available snapshot"):
         await _verify(args, altered)
 
@@ -201,7 +209,7 @@ async def test_hash_valid_journal_cannot_change_frame_endpoint(tmp_path):
     frame = result.journal.frames[0].to_record()
     frame["provenance"]["endpoint"] = "wss://foreign.example/ws"
     altered = _persist_altered_journal(args, result.journal, frames=[frame])
-    with pytest.raises(ValueError, match="raw archive provenance"):
+    with pytest.raises(ValueError, match="independently pinned frame arrivals"):
         await _verify(args, altered)
 
 

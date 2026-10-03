@@ -4,7 +4,9 @@ This adapter wraps the shared ``run_capture`` path. It never opens a socket or
 chooses a target; callers must pass the two admitted token IDs and a separate
 per-target store/archive. A fetched frame that would cross the byte/time cap is
 not normalized or written into the bounded capture, but its digest and size are
-returned so the caller can account for the stopping boundary.
+returned so the caller can account for the stopping boundary. An optional
+boundary callback lets the owner retain it as separate evidence, never as an
+included frame or an input to the forecast projection.
 """
 
 from __future__ import annotations
@@ -70,6 +72,7 @@ class _BoundedFrameSource:
         max_frames: int,
         max_bytes: int,
         after_frame: Callable[[MarketFrame, int], None] | None,
+        after_boundary: Callable[[MarketFrame, int], None] | None,
     ) -> None:
         self._source = source
         self._clock = clock
@@ -78,6 +81,7 @@ class _BoundedFrameSource:
         self._max_frames = max_frames
         self._max_bytes = max_bytes
         self._after_frame = after_frame
+        self._after_boundary = after_boundary
         self.started_at: datetime | None = ensure_utc(clock.now())
         self.deadline: datetime | None = None
         self.stop_reason: BoundedCaptureStopReasonV2 | None = None
@@ -136,6 +140,8 @@ class _BoundedFrameSource:
                 if effective_now > deadline:
                     self.stop_reason = BoundedCaptureStopReasonV2.DURATION_CAP
                     self.boundary_frame = _BoundaryFrame(len(raw), frame.provenance.raw_sha256)
+                    if self._after_boundary is not None:
+                        self._after_boundary(frame, self.frames_archived + 1)
                     return
                 if received_at > clock_now:
                     raise ValueError(
@@ -144,6 +150,8 @@ class _BoundedFrameSource:
                 if self.raw_bytes_archived + len(raw) > self._max_bytes:
                     self.stop_reason = BoundedCaptureStopReasonV2.BYTE_CAP
                     self.boundary_frame = _BoundaryFrame(len(raw), frame.provenance.raw_sha256)
+                    if self._after_boundary is not None:
+                        self._after_boundary(frame, self.frames_archived + 1)
                     return
 
                 self.frames_archived += 1
@@ -172,6 +180,7 @@ async def run_bounded_cohort_capture_v2(
     raw_archive_dir: Path,
     after_frame: Callable[[MarketFrame, int], None] | None = None,
     dispatcher: ObservationDispatcher | None = None,
+    after_boundary: Callable[[MarketFrame, int], None] | None = None,
 ) -> BoundedCaptureSummaryV2:
     """Run the existing ingestion handlers under one V2 target's hard limits.
 
@@ -210,6 +219,7 @@ async def run_bounded_cohort_capture_v2(
         max_frames=max_frames,
         max_bytes=max_bytes,
         after_frame=after_frame,
+        after_boundary=after_boundary,
     )
     health = await run_capture(
         frame_source=bounded_source,
