@@ -8,11 +8,14 @@ Work top to bottom unless a milestone dependency requires reordering.
       descriptive and scientific claims; retain historical evidence unchanged.
 - [x] Add an independent V2 declaration/preflight for variable slot/stratum caps,
       snapshot policies, resource budgets and explicit non-launch readiness.
-- [ ] Add contract-bound human semantic review and real-world event grouping.
-- [ ] Implement archive-replayable V2 partial selection, anonymous quarantine,
-      empty-block accounting and no post-admission replacement.
-- [ ] Integrate capture-close snapshot and unified early/late finality owner;
-      enforce time/frame/byte/disk limits and actual outcome blindness.
+- [x] Add contract-bound human semantic review and real-world event grouping;
+      synthetic attestation/replay only, not a live review workflow.
+- [x] Implement archive-replayable V2 partial selection, anonymous quarantine,
+      empty-block accounting and no post-admission replacement; no live owner yet.
+- [x] Connect bounded acquisition, isolated EventStore/raw inventory and blind
+      baseline freeze; synthetic raw/ledger/forecast replay and fault tests only.
+- [ ] Finish total DB/WAL/log/artifact disk enforcement, durable crash accounting
+      and exclusive resumable early/late finality owner; no live qualification yet.
 - [ ] Prove the small vertical path synthetically, including fault cases in
       `docs/research/m4-asynchronous-cohort-design.md`.
 - [ ] Freeze and run a separately approved 2-4-slot live integration pilot.

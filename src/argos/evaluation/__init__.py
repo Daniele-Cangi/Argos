@@ -44,6 +44,20 @@ from argos.evaluation.claim_artifact import (
     ProspectiveClaimArtifactIndexV1,
     verify_published_claim_artifact,
 )
+from argos.evaluation.cohort_capture_outcome_v2 import (
+    CohortCaptureRunOutcomeV1,
+    CohortCaptureRunOutcomeV2,
+    build_cohort_capture_run_outcome,
+    build_cohort_capture_run_outcome_id,
+    persist_cohort_capture_run_outcome,
+    verify_cohort_capture_run_outcome_archives,
+)
+from argos.evaluation.cohort_capture_replay_v2 import (
+    CohortCaptureFrameV1,
+    CohortCaptureJournalV1,
+    CohortCaptureJournalV2,
+    verify_cohort_capture_journal_v2,
+)
 from argos.evaluation.cohort_protocol_v2 import AsynchronousCohortProtocolV2, CohortStratumV1
 from argos.evaluation.cohort_review_v2 import HumanSemanticReviewV1, SemanticReviewDecision
 from argos.evaluation.cohort_selection_v2 import (
@@ -206,6 +220,11 @@ __all__ = [
     "CaptureRunSummaryV1",
     "CohortBlockV1",
     "CohortCaptureCloseV1",
+    "CohortCaptureFrameV1",
+    "CohortCaptureJournalV1",
+    "CohortCaptureJournalV2",
+    "CohortCaptureRunOutcomeV1",
+    "CohortCaptureRunOutcomeV2",
     "CohortFrozenForecastSnapshotV1",
     "CohortReport",
     "CohortStratumV1",
@@ -292,6 +311,8 @@ __all__ = [
     "build_capture_rejection_evidence",
     "build_capture_run_summary",
     "build_cohort_capture_close_id",
+    "build_cohort_capture_run_outcome",
+    "build_cohort_capture_run_outcome_id",
     "build_cohort_frozen_forecast_snapshot_id",
     "build_frozen_forecast_snapshot_id",
     "build_late_final_outcome_id",
@@ -307,6 +328,7 @@ __all__ = [
     "evaluation_context",
     "log_loss",
     "pending_late_resolution_score",
+    "persist_cohort_capture_run_outcome",
     "prospective_experiment_digest_v2",
     "prospective_terminal_digest_v1",
     "require_bin_count",
@@ -321,6 +343,8 @@ __all__ = [
     "verify_block_selection_v2",
     "verify_block_selection_v2_archives",
     "verify_cohort_capture_close_archives",
+    "verify_cohort_capture_journal_v2",
+    "verify_cohort_capture_run_outcome_archives",
     "verify_late_outcome_archives",
     "verify_published_claim_artifact",
 ]

@@ -1,6 +1,132 @@
 # ARGOS status
 
-Last updated: 2026-09-27
+Last updated: 2026-10-03
+
+## 2026-10-03 PR #25 Copilot follow-up — synthetic verification
+
+The manifest closure now omits `RunManifest`'s own envelope schema while still
+traversing its nested provenance. A separate visited-model set preserves
+cycle protection without adding a false self-inventory requirement. Other
+consumed/emitted dependencies and the legacy capture-close contract stay intact.
+
+If raw-directory creation fails before opening the store or consuming a frame,
+the owner removes only its new empty database reservation after checking file
+identity, type and size. Existing archives/databases and files written or
+replaced during setup are preserved. The original setup error still propagates;
+there is no automatic retry, deletion of capture evidence or crash-resume claim.
+
+New regression assertions first failed on the prior code for self-inventory and
+orphan reservations. The final affected set passes 317 tests, including setup
+permission/existence failures, corrected caller setup, changed/missing file
+guards, legacy snapshot/manifest contracts and arrival-integrity mutations.
+Branch-inclusive coverage rounds to 94% for both modified production modules.
+Ruff, formatting, mypy (90 source files) and `git diff --check` pass. The full
+suite was not rerun for this follow-up; the prior complete 2,494-test gate and
+successful Ubuntu/Windows CI belong to published head `9d539c1`, not these edits.
+The PR description is corrected on GitHub to explain retained excluded-boundary
+bytes, current published-head verification and outstanding limitations. Code
+changes require their own updated-head CI and review before merge. No merge or
+live campaign is performed.
+
+## 2026-10-03 PR #25 integrity review corrections — not live qualification
+
+The review falsified the original terminal-journal integrity claim: a newly
+receipted alternate inventory could add/remove ledger-silent empty resends while
+still replaying the unchanged normalized store. The owner now emits
+`CohortCaptureJournalV2` and `CohortCaptureRunOutcomeV2`; V1 shapes, identities and
+non-retention semantics stay readable and are not upgraded retroactively.
+
+Each included frame, including empty/not-applicable frames and identical resends,
+has a separate durable, previous-receipt-linked arrival record and exclusive
+fixed-ordinal receipt anchor. A single fixed terminal seal pins the original
+count/root independently of the journal. Verification compares that chain with
+the journal before raw/store/baseline replay; alternate newly receipted journals
+cannot redefine the original arrivals. These are local immutable anchors, not
+signatures against an adversary rewriting the whole storage system, and they
+are not crash-resume qualification.
+
+A fetched time/byte-cap boundary is archived separately and anchored as an
+excluded arrival; size, hash, provenance and timing are rechecked. It never feeds
+the forecast or the included frame/raw-byte counters. No extra frame is fetched
+at a frame cap, and a receive timeout need not invent a boundary. The extra
+arrival/boundary evidence is separate storage overhead; total campaign storage
+and free-disk enforcement remain outstanding. Source exhaustion is still a
+source-owner assertion, not an independently proved transport event.
+
+The manifest requires a transitive inventory of consumed/emitted versioned
+models, including optional/nested records and opaque dispatched payload roots.
+Each required schema has a removal test before database creation. Empty/unseeded
+captures finalized at/after the reviewed blind boundary retain accounting as
+`late_no_snapshot_excluded`; they acquire no predictive validity. Available
+snapshots retain the strict actual durability/knowable-time checks. The reviewed
+deadline cannot be replaced by a newly receipted journal assertion.
+
+The final focused set passes 202 tests: arrivals 100%, accounting 96.88% and
+journal/replay 94.26% branch-inclusive coverage, above the unchanged thresholds.
+An initial complete run passed 2,491 tests with two Windows symlink skips but
+failed its accounting coverage gate (83.20%); source edits during that
+measurement made the line/branch report inconsistent with the stable focused
+run. The complete gate repeated on unchanged source passes 2,494 tests with
+the same two Windows symlink skips and every declared coverage threshold,
+including the measurements above. Ruff, formatting, mypy (90 source files)
+and `git diff --check` also pass.
+These corrections do not qualify a live campaign, change historical evidence,
+or establish calibration or predictive validity. Local verification is not
+a substitute for the updated PR's CI and review; merge remains separate.
+
+## 2026-10-03 V2 capture-to-freeze owner — synthetic integration only
+
+The current branch adds an offline-testable target owner: exclusive fresh
+database/raw archive, bounded shared ingestion, durable accounting and a
+versioned frame journal preserving empty arrays, duplicate frame arrivals and
+processing timestamps separately from ingest sequence. Independent raw
+re-normalization checks the EventStore delivery/rejection ledger and all health
+counters; stored replay reconstructs the final four baseline decisions and
+persistence history without any final label. Empty/unseeded captures retain
+accounting without an invented snapshot. Corrupt bytes, extra deliveries,
+altered forecasts and missed blind boundaries are refused.
+
+Actual snapshot finalization follows acquisition close and must be durably
+confirmed before the reviewed outcome-knowable margin, as allowed by ADR-0020.
+It does not rewrite `CohortCaptureCloseV1`'s earlier synthetic before-close
+receipt rule. Total DB/WAL/artifact disk enforcement, crash recovery, exclusive
+resumable finality and the capture-to-score join remain outstanding. No live
+campaign is frozen or launched; no calibration or predictive claim is made.
+Local verification on the final source tree: 2,343 tests passed, two Windows
+symlink-privilege skips; Ruff, formatting, mypy (89 source files) and
+`git diff --check` passed. This slice is isolated on the dedicated branch pending
+CI/review and merge; it is not yet part of `main`.
+
+PR #25 initially passed its functional tests on both CI platforms but failed
+the Ubuntu coverage gate: run accounting measured 76.42%, journal/replay 84.35%,
+against the unchanged 90% per-module threshold. The test-only follow-up adds
+69 synthetic falsification cases for wrong receipt/admission bindings,
+self-identified but inconsistent outcomes, journal inventory/chronology,
+omitted snapshots, altered endpoints and corrupt store metadata. Focused local
+coverage measures 97.56% and 95.36% respectively; no production behavior,
+threshold or historical evidence is changed.
+
+The first complete Windows coverage attempt recorded a pre-existing T5
+subprocess readiness timeout (five-second startup bound): 2,411 passed, two
+symlink-privilege skips and one failed. Its temporary failure artifact was
+inspected without alteration; isolated T5 under coverage then passed. The
+complete follow-up gate passed with 2,412 tests, two symlink-privilege skips,
+all declared coverage thresholds satisfied and the same 97.56%/95.36%
+measurements. Ruff, formatting, mypy and diff checks also passed. The startup
+timeout remains an observed intermittent limitation, not a repaired guarantee.
+
+## 2026-10-02 V2 capture-run accounting sub-slice — not an owner
+
+The first sub-slice on `feat/m4-v2-capture-close-owner` added a versioned capture
+outcome recording stop reason, frame/raw-byte counts, health counters, and the
+size/hash of an excluded boundary frame. It binds the declaration and admitted
+target, replays their archive receipts, and checks the declared capture bounds.
+That subrecord alone remains a runner-reported assertion: counts are not derived
+independently from EventStore/raw frames, nor is the record joined to the
+capture-close/snapshot owner or crash/resume path. It establishes no live
+readiness, finality, scoring, calibration, or predictive claim. The full suite
+passed locally (2,321 passed; two symlink-capability skips), as did Ruff, format
+and mypy. The 2026-10-03 entry records the next integration sub-slice.
 
 ## 2026-09-27 M4 methodology revision — no live launch
 

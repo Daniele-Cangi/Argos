@@ -110,6 +110,10 @@ class EvidenceArtifactKind(StrEnum):
     COHORT_BOOK_ATTEMPT = "cohort_book_attempt"
     COHORT_BLOCK_SELECTION = "cohort_block_selection"
     COHORT_CAPTURE_CLOSE = "cohort_capture_close"
+    COHORT_CAPTURE_RUN_OUTCOME = "cohort_capture_run_outcome"
+    COHORT_CAPTURE_JOURNAL = "cohort_capture_journal"
+    COHORT_CAPTURE_ARRIVAL = "cohort_capture_arrival"
+    COHORT_CAPTURE_ARRIVAL_SEAL = "cohort_capture_arrival_seal"
 
 
 class ProspectiveExperimentProtocolV1(VersionedModel):
